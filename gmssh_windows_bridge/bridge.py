@@ -344,12 +344,15 @@ def load_key(path):
 
 
 def main():
+    from contextlib import ExitStack
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", action="version", version=__version__)
     parser.add_argument("--target", required=True, help="Windows SSH host or Tailscale IP")
     parser.add_argument("--username", required=True, help="Existing Windows SSH user")
     parser.add_argument("--target-port", type=int, default=22)
     parser.add_argument("--listen-port", type=int, default=22229)
+    parser.add_argument("--desktop-port", type=int, help="Enable experimental free RustDesk web viewer on a separate loopback port")
+    parser.add_argument("--rustdesk-port", type=int, default=21118, help="Windows loopback RustDesk direct-access port; used only with --desktop-port")
     parser.add_argument("--known-hosts", type=Path, default=Path.home() / ".ssh/known_hosts")
     parser.add_argument("--host-key", type=Path, default=Path.home() / ".gmssh-windows-bridge/host_key")
     parser.add_argument("--timeout", type=int, default=15)
@@ -370,6 +373,9 @@ def main():
         config.enable_terminal = True
     if not (1 <= config.target_port <= 65535 and 1 <= config.listen_port <= 65535 and 3 <= config.timeout <= 120):
         parser.error("ports must be 1..65535 and timeout must be 3..120 seconds")
+    if config.desktop_port is not None and (not 1 <= config.desktop_port <= 65535 or
+            not 1 <= config.rustdesk_port <= 65535 or config.desktop_port == config.listen_port):
+        parser.error("desktop and SSH listen ports must be different valid ports")
     if not config.known_hosts.is_file():
         parser.error("known_hosts missing: verify the Windows SSH host key first")
     if config.background:
@@ -385,10 +391,24 @@ def main():
     LOG.setLevel(logging.INFO if config.verbose else logging.WARNING)
     key = load_key(config.host_key)
     slots = threading.BoundedSemaphore(8)
-    with socket.socket() as listener:
+    with socket.socket() as listener, ExitStack() as resources:
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         listener.bind(("127.0.0.1", config.listen_port))
         listener.listen(8)
+        if config.desktop_port is not None:
+            try:
+                from .desktop import ASSETS, create_server
+                if not (ASSETS / 'index.html').is_file():
+                    parser.error("desktop frontend assets are missing; build desktop-web first")
+                desktop_config = argparse.Namespace(**{**vars(config), 'listen_port': config.desktop_port,
+                                                       'timeout': min(config.timeout, 60)})
+                desktop = resources.enter_context(create_server(desktop_config))
+                threading.Thread(target=desktop.serve_forever, daemon=True).start()
+                print(f"RustDesk desktop preview: http://127.0.0.1:{config.desktop_port}/", flush=True)
+            except ImportError:
+                parser.error("install desktop support with: pip install '.[desktop]'")
+            except OSError as error:
+                parser.error(f"desktop listener failed ({type(error).__name__})")
         print(f"Monitoring bridge ready: 127.0.0.1:{config.listen_port}", flush=True)
         if config.gmssh_terminal:
             print("GMSSH 2.0.4 Windows terminal enabled; Windows account permissions unchanged.", flush=True)

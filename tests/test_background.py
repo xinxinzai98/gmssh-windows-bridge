@@ -1,5 +1,7 @@
 """Local detached-process checks; no real Windows credentials or target required."""
 import os
+import importlib.util
+import json
 from pathlib import Path
 import re
 import signal
@@ -9,6 +11,7 @@ import sys
 import tempfile
 import time
 import unittest
+import urllib.request
 import gmssh_windows_bridge
 
 
@@ -22,13 +25,19 @@ class BackgroundTests(unittest.TestCase):
                 '--known-hosts', str(known), '--host-key', str(root / 'host key'),
                 '--background-log', str(root / 'bridge.log'), '--listen-port', str(port)]
 
-    def test_child_listens_after_launcher_exits(self):
+    def detached_roundtrip(self, desktop=False):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             with socket.socket() as available:
                 available.bind(('127.0.0.1', 0))
                 port = available.getsockname()[1]
-            result = subprocess.run(self.command(root, port), cwd=self.package_dir,
+            command = self.command(root, port)
+            if desktop:
+                with socket.socket() as available:
+                    available.bind(('127.0.0.1', 0))
+                    desktop_port = available.getsockname()[1]
+                command.extend(['--desktop-port', str(desktop_port), '--rustdesk-port', '21218'])
+            result = subprocess.run(command, cwd=self.package_dir,
                                     capture_output=True, text=True, timeout=35)
             self.assertEqual(result.returncode, 0, result.stderr)
             pid = int(re.search(r'PID (\d+)', result.stdout).group(1))
@@ -36,6 +45,11 @@ class BackgroundTests(unittest.TestCase):
                 with socket.create_connection(('127.0.0.1', port), timeout=3) as peer:
                     self.assertTrue(peer.recv(128).startswith(b'SSH-2.0-'))
                 self.assertIn('Monitoring bridge ready', (root / 'bridge.log').read_text())
+                if desktop:
+                    http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                    with http.open(f'http://127.0.0.1:{desktop_port}/config.json', timeout=3) as response:
+                        self.assertEqual(json.load(response)['username'], 'synthetic')
+                    self.assertIn(f'RustDesk desktop preview: http://127.0.0.1:{desktop_port}/', (root / 'bridge.log').read_text())
             finally:
                 os.kill(pid, signal.SIGTERM)
                 deadline = time.monotonic() + 5
@@ -45,6 +59,13 @@ class BackgroundTests(unittest.TestCase):
                             time.sleep(0.02)
                     except OSError:
                         break
+
+    def test_child_listens_after_launcher_exits(self):
+        self.detached_roundtrip()
+
+    @unittest.skipUnless(importlib.util.find_spec('websockets'), 'optional desktop dependency not installed')
+    def test_desktop_and_ssh_both_listen_after_launcher_exits(self):
+        self.detached_roundtrip(desktop=True)
 
     def test_occupied_port_reports_startup_failure(self):
         with tempfile.TemporaryDirectory() as folder, socket.socket() as occupied:

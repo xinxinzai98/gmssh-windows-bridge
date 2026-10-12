@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+<script type="module" crossorigin src="./assets/index-D-VUPdNH.js"></script>
+<link rel="stylesheet" crossorigin href="./assets/index-Btvm-fWq.css">
+
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Windows 桌面 · RustDesk</title>
+<div id="app">
+  <header>
+    <h1>Windows 桌面 <span>RustDesk · 免费实验版</span></h1>
+    <p id="target">正在读取连接配置…</p>
+    <form id="login" autocomplete="off">
+      <label>Windows SSH 密码<input id="ssh-password" type="password" required autocomplete="off"></label>
+      <label>RustDesk 密码<input id="desktop-password" type="password" autocomplete="off" placeholder="留空时在 Windows 端确认"></label>
+      <button id="connect" type="submit" disabled>连接桌面</button>
+      <button id="disconnect" type="button" disabled>断开</button>
+      <button id="fullscreen" type="button" disabled>全屏</button>
+    </form>
+    <p id="status" role="status" aria-live="polite">未连接。</p>
+  </header>
+  <main id="viewport">
+    <div id="empty">
+      <h2>直接操作 Windows 桌面</h2>
+      <p>Windows 上需运行 RustDesk 并启用“直接 IP 访问”。</p>
+      <p>画面和输入通过现有 SSH 连接传送。两种密码分别验证，不保存到本地。</p>
+      <p>本实验版支持 VP9 画面、鼠标和基本键盘；暂不支持剪贴板、音频和多屏切换。</p>
+    </div>
+    <canvas id="screen" tabindex="0" aria-label="Windows 远程桌面，点击后可使用键盘" hidden></canvas>
+    <button id="leave-fullscreen" type="button">退出全屏</button>
+  </main>
+  <footer>开源协议组件：<a href="/third-party-licenses/kessoku-MIT.txt" target="_blank" rel="noopener">Kessoku MIT</a> · <a href="/third-party-licenses/protobuf.txt" target="_blank" rel="noopener">Protobuf 许可</a></footer>
+</div>
+</html>

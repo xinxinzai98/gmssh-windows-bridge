@@ -28,6 +28,7 @@ Windows OpenSSH Server → 固定 PowerShell / CIM 采集脚本
 | GMSSH 2.0.4 页面中的终端入口 | `--gmssh-terminal`，已在 Windows 11 实机验证 |
 | GMSSH 桌面应用、sudo、Linux 服务管理 | 不支持 |
 | 本地后台运行 | `--background`；输出 PID 和日志路径 |
+| 免费 RustDesk Web 查看器 | 0.4.0a1 实验功能；`--desktop-port`；需要 Windows 上运行 RustDesk，GMSSH 原生桌面按钮尚未替换 |
 | Windows 原生安装包、开机启动服务 | 尚未实现 |
 | 多台 Windows | 每台运行一个实例，使用不同本地端口 |
 
@@ -153,7 +154,9 @@ gmssh-windows-bridge --target windows-host --username windows-user \
 
 ## 必须知道的限制
 
-- **不是原生 Windows 管理插件**：仅兼容机器卡片的指标协议。
+0.4.0a1 增加免费 RustDesk Web 查看器，可独立运行或随桥在后台启动。已通过本地协议、视频与输入测试，真实 Windows 画面和 GMSSH 原生桌面按钮仍需接通。安装、启动和许可见 [免费 RustDesk 桌面接入](docs/desktop-rustdesk.md)。
+
+- **非官方 Windows 集成**：页面终端及指标属于协议适配；桌面查看器是独立的实验入口。
 - 客户端可能显示 Linux 企鹅图标，因为其系统识别逻辑仅面向 Linux。实际 OS 名称仍返回 Windows，并明确注明协议适配。
 - 卡片延迟是到 **本机桥** 的 SSH 延迟，不代表 Windows 网络延迟；“在线”表示本次采集可用，不是独立的可用性监控。
 - Windows 可见内存不等于标称物理内存；客户端标为 GB 的展示可能按 GiB 换算。
@@ -184,6 +187,8 @@ gmssh-windows-bridge --target windows-host --username windows-user \
 python -m pip install -e .
 python -m unittest discover -s tests -v
 ```
+
+构建实验桌面查看器时，在 `desktop-web/` 中执行 `npm ci --ignore-scripts` 和 `npm run build`，随后用 `python -m pip install -e '.[desktop]'` 安装其可选传输依赖。默认监控与终端模式不要求此依赖。
 
 测试使用合成数据和模拟 SSH/SFTP 对端，验证协议识别、认证边界、超时、默认拒绝任意命令，以及启用后的转发、输出 EOF、退出码、窗口缩放和文件往返；不需要实际 Windows。可选的实机只读验收：
 

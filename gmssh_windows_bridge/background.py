@@ -15,6 +15,9 @@ def start_background(config):
             '--timeout', str(config.timeout), '--shell', config.shell,
             '--known-hosts', str(config.known_hosts.resolve()),
             '--host-key', str(config.host_key.resolve())]
+    if getattr(config, 'desktop_port', None) is not None:
+        args.extend(['--desktop-port', str(config.desktop_port),
+                     '--rustdesk-port', str(config.rustdesk_port)])
     for flag in ('enable_terminal', 'enable_sftp', 'gmssh_terminal', 'verbose'):
         if getattr(config, flag):
             args.append('--' + flag.replace('_', '-'))

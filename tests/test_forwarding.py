@@ -96,6 +96,14 @@ class Upstream(paramiko.ServerInterface):
         return True
 
     def execute(self, channel, command):
+        try:
+            self._execute(channel, command)
+        except OSError:
+            # A test may close the peer while an independent synthetic worker writes.
+            if not channel.closed:
+                raise
+
+    def _execute(self, channel, command):
         if command == b'wait':
             self.release.wait(3)
         if command == b'status-before-output':
