@@ -17,6 +17,7 @@ from .relay import relay
 LOG = logging.getLogger("gmssh_windows_bridge")
 SCRIPT = Path(__file__).with_name("collector.ps1").read_text(encoding="utf-8")
 LOGIN_SCRIPT = Path(__file__).with_name("login.ps1").read_text(encoding="utf-8")
+POWERSHELL_SCRIPT = Path(__file__).with_name("powershell.ps1").read_text(encoding="utf-8")
 MAX_OUTPUT = 1024 * 1024
 # Fingerprint of GMSSH 2.0.4's captured on-wire Bash terminal bootstrap.
 # Never execute or distribute the client bootstrap body.
@@ -222,7 +223,14 @@ class Session(paramiko.ServerInterface):
             with self.lock:
                 self.upstreams[chanid] = upstream
             if kind == "shell":
-                upstream.invoke_shell()
+                shell = getattr(self.config, "shell", "default")
+                if shell == "powershell":
+                    encoded = base64.b64encode(POWERSHELL_SCRIPT.encode("utf-16le")).decode("ascii")
+                    upstream.exec_command("powershell.exe -NoLogo -NoProfile -NoExit -EncodedCommand " + encoded)
+                elif shell == "cmd":
+                    upstream.exec_command("cmd.exe")
+                else:
+                    upstream.invoke_shell()
                 if getattr(self.config, "gmssh_terminal", False):
                     channel.sendall(b"[GMSSH Windows bridge] Native Windows shell; no privilege elevation.\r\n")
             elif kind == "sftp":
@@ -346,6 +354,11 @@ def main():
     parser.add_argument("--host-key", type=Path, default=Path.home() / ".gmssh-windows-bridge/host_key")
     parser.add_argument("--timeout", type=int, default=15)
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--shell", choices=("default", "cmd", "powershell"), default="default",
+                        help="Interactive shell only; leaves Windows OpenSSH DefaultShell unchanged")
+    parser.add_argument("--background", action="store_true", help="Start a detached local bridge and return its PID")
+    parser.add_argument("--background-log", type=Path,
+                        default=Path.home() / ".gmssh-windows-bridge/bridge.log")
     parser.add_argument("--enable-terminal", action="store_true",
                         help="Allow native Windows shell and exec using the authenticated account")
     parser.add_argument("--enable-sftp", action="store_true",
@@ -359,6 +372,15 @@ def main():
         parser.error("ports must be 1..65535 and timeout must be 3..120 seconds")
     if not config.known_hosts.is_file():
         parser.error("known_hosts missing: verify the Windows SSH host key first")
+    if config.background:
+        from .background import start_background
+        try:
+            pid, log = start_background(config)
+        except (OSError, RuntimeError, TimeoutError) as exc:
+            parser.error(str(exc))
+        print(f"Background bridge started (PID {pid}); log: {log}", flush=True)
+        print(f"Stop with Stop-Process -Id {pid}" if os.name == 'nt' else f"Stop with kill {pid}", flush=True)
+        return
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
     LOG.setLevel(logging.INFO if config.verbose else logging.WARNING)
     key = load_key(config.host_key)

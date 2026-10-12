@@ -23,9 +23,11 @@ Windows OpenSSH Server → 固定 PowerShell / CIM 采集脚本
 | 本地固定磁盘容量、已用空间 | 支持真实采集 |
 | 系统名称、运行时间、进程数量 | 提供相应字段 |
 | Windows 原生 SSH 终端、命令执行 | `--enable-terminal` 显式启用 |
+| 指定 CMD / PowerShell | `--shell cmd` / `--shell powershell`，默认沿用 OpenSSH 设置 |
 | Windows 原生 SFTP 文件访问 | `--enable-sftp` 显式启用，权限由 Windows 账号决定 |
 | GMSSH 2.0.4 页面中的终端入口 | `--gmssh-terminal`，已在 Windows 11 实机验证 |
 | GMSSH 桌面应用、sudo、Linux 服务管理 | 不支持 |
+| 本地后台运行 | `--background`；输出 PID 和日志路径 |
 | Windows 原生安装包、开机启动服务 | 尚未实现 |
 | 多台 Windows | 每台运行一个实例，使用不同本地端口 |
 
@@ -132,7 +134,22 @@ GMSSH 2.0.4 有两处 Linux 假设：登录必须通过 sudo 探测，交互终�
 
 ### 多台机器
 
-分别启动多个进程，例如端口 `22229`、`22230`，各自指定目标、用户名和独立 `--host-key`。在 GMSSH 建立相应条目。当前版本不提供后台进程管理。
+分别启动多个进程，例如端口 `22229`、`22230`，各自指定目标、用户名和独立 `--host-key`。在 GMSSH 建立相应条目。当前版本不提供多实例统一管理。
+
+### PowerShell 与后台运行（0.3）
+
+直接在页面终端使用 PowerShell，并让本地桥在启动终端关闭后继续运行：
+
+```bash
+gmssh-windows-bridge --target windows-host --username windows-user \
+  --gmssh-terminal --shell powershell --background
+```
+
+`--shell default` 沿用目标 OpenSSH 的默认 Shell；`cmd` / `powershell` 只影响该桥新开的交互会话，不修改目标注册表、SSH 服务设置或用户 profile。普通 exec 命令仍按原样转发。PowerShell 提供 UTF-8 输出，提示符显示真实工作目录；GMSSH 的目录联动和页面文件管理尚未适配。
+
+后台启动会等待本地监听就绪再返回 PID；失败时返回非零退出码。默认日志在 `~/.gmssh-windows-bridge/bridge.log`，可用 `--background-log PATH` 指定；日志不保存密码、原始客户端命令或指标。启动器退出后进程继续运行，但电脑重启后不会自动恢复。
+
+停止时使用启动器输出的当前 PID：macOS/Linux 执行 `kill PID`，Windows 执行 `Stop-Process -Id PID`。不要使用以前启动时的旧 PID。当前不提供自动重启、开机自启动或多实例管理器；后台运行在 macOS 实测，其他运行平台仍需验收。
 
 ## 必须知道的限制
 

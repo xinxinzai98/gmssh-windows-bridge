@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0 — 2026-10-12 (development snapshot)
+
+- Select the interactive shell with `--shell default|cmd|powershell` without modifying Windows OpenSSH settings.
+- PowerShell sessions use UTF-8 output and display the actual working directory in the prompt.
+- `--background` detaches the local bridge, checks startup readiness, redirects logs and reports its PID.
+- Preserve password/host-key checks and opt-in terminal/SFTP permissions.
+
 ## 0.2.1 — 2026-10-12 (development snapshot)
 
 - Opt-in `--gmssh-terminal` compatibility for the GMSSH 2.0.4 page terminal.

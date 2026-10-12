@@ -139,7 +139,7 @@ class Upstream(paramiko.ServerInterface):
 
 
 @contextmanager
-def bridge(terminal=True, sftp=True, gmssh=False):
+def bridge(terminal=True, sftp=True, gmssh=False, shell='default'):
     key = paramiko.RSAKey.generate(2048)
     upstream = Upstream()
     us, uc = socket.socketpair()
@@ -165,7 +165,7 @@ def bridge(terminal=True, sftp=True, gmssh=False):
         remote.connect(hostkey=key, username='synthetic', password='synthetic')
         ds, dc = socket.socketpair()
         config = SimpleNamespace(timeout=3, enable_terminal=terminal, enable_sftp=sftp,
-                                 gmssh_terminal=gmssh)
+                                 gmssh_terminal=gmssh, shell=shell)
         slots = threading.BoundedSemaphore(1)
         slots.acquire()
         def auth(session, user, password):
@@ -191,6 +191,30 @@ def bridge(terminal=True, sftp=True, gmssh=False):
 
 
 class ForwardingTests(unittest.TestCase):
+    def test_shell_selection_forwards_fixed_command_without_changing_exec(self):
+        import base64
+        for shell in ('cmd', 'powershell'):
+            with bridge(shell=shell) as (client, _):
+                channel = client.open_session(timeout=3)
+                channel.settimeout(3)
+                channel.get_pty()
+                channel.invoke_shell()
+                output = channel.makefile('rb').read()
+                self.assertEqual(channel.recv_exit_status(), 7)
+                if shell == 'cmd':
+                    self.assertEqual(output, b'forwarded:cmd.exe')
+                else:
+                    command = output.removeprefix(b'forwarded:').decode()
+                    self.assertTrue(command.startswith('powershell.exe -NoLogo -NoProfile -NoExit -EncodedCommand '))
+                    script = base64.b64decode(command.split()[-1]).decode('utf-16le')
+                    self.assertNotIn('GMB_CWD', script)
+                    self.assertIn('Get-Location', script)
+                    self.assertNotIn('Set-Content', script)
+                direct = client.open_session(timeout=3)
+                direct.settimeout(3)
+                direct.exec_command('user-command')
+                self.assertEqual(direct.makefile('rb').read(), b'forwarded:user-command')
+
     def test_gmssh_bootstrap_opens_native_shell_only_when_enabled(self):
         # A synthetic fingerprint tests routing, not a real client version.
         command = b'synthetic-gmssh-terminal-bootstrap'

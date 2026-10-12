@@ -33,3 +33,13 @@
 - 已从真实 GMSSH 页面进入 Windows CMD，并成功执行 `whoami`、`hostname` 及 PowerShell 的 `Win32_OperatingSystem.Caption` 查询，屏幕返回真实 Windows 用户、主机名和 Windows 11 系统名称。
 - 新增模拟协议检查覆盖开关启用/关闭、原生 shell 启动、真实用户名查询和拒绝错误启动指纹。源码通过 18 项自动测试；测试中的启动指纹是合成数据，与上述真实页面验收分开记录。
 - Linux Agent、桌面应用、服务管理、GMSSH 页面文件管理及其他客户端版本未验收。未执行 Windows 提权或账户修改，未创建 tag/Release；本节记录本地验收。
+
+## 0.3.0 本地候选版本
+
+2026-10-12，默认 PowerShell 与本地后台运行：
+
+- 在 GMSSH 2.0.4 的真实页面中进入 Windows PowerShell 5.1；`$PSVersionTable.PSVersion.ToString()`、`whoami`、`Get-Location` 和系统名称查询均成功回显，中文正常显示。
+- 后台启动器返回 PID 并退出后，本地桥继续监听；启动就绪和占用端口失败路径均有独立进程测试。源码通过 21 项自动测试。
+- 工作目录只在 PowerShell 提示符中呈现。尝试直接发送原来的控制字符目录标记时，Windows ConPTY 过滤了控制字符，因此已去除此路径，未声称完成 GMSSH 目录联动。
+- `--shell` 不修改目标 OpenSSH 默认 Shell、注册表或 profile。后台模式不保存密码、不设置开机自启动；本轮后台运行只在 macOS 验收。
+- 页面文件管理仍需完整桌面目录、回收站和权限等接口适配，本轮未完成。本节记录 0.3.0 的本地验收；源代码推送与 tag/Release 分开进行。
