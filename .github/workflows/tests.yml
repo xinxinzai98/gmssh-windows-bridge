@@ -15,4 +15,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: python -m pip install .
+      # Isolated imports exercise the installed package, not the checkout.
+      - run: python -I -m gmssh_windows_bridge --help
+      - run: python -I -m gmssh_windows_bridge --version
       - run: python -m unittest discover -s tests -v

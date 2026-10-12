@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import paramiko
 
-from gmssh_windows_bridge.bridge import Session, collect, load_key, metric_mode, serve
+from gmssh_windows_bridge.bridge import Session, collect, gmssh_shell_request, load_key, login_probe, metric_mode, serve
 
 
 def request(mode, body="ignored shell body"):
@@ -18,6 +18,11 @@ def request(mode, body="ignored shell body"):
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_gmssh_bootstrap_does_not_match_arbitrary_bash_or_marker_text(self):
+        for command in (b'bash -i', b'bash -c "echo GMB_CWD; exec bash -i"',
+                        b'sudo bash', b'\xff', b'x' * 65537):
+            self.assertFalse(gmssh_shell_request(command))
+
     def test_recognizes_only_metric_envelopes(self):
         for mode in ("fast", "slow"):
             self.assertEqual(metric_mode(request(mode)), mode)
@@ -32,6 +37,15 @@ class ProtocolTests(unittest.TestCase):
             self.assertEqual(first.asbytes(), load_key(path).asbytes())
             if __import__('os').name != 'nt':
                 self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_login_probe_does_not_request_root_or_profile_changes(self):
+        from gmssh_windows_bridge.bridge import LOGIN_SCRIPT
+        command = b'profile_state=$(ignored); __GMB_LOGIN_PROFILE__ __GMB_LOGIN_USER__ __GMB_LOGIN_SUDO__ __GMB_LOGIN_OS__'
+        self.assertTrue(login_probe(command))
+        self.assertFalse(login_probe(b'echo __GMB_LOGIN_USER__'))
+        self.assertIn('__GMB_LOGIN_SUDO_ACCESS__=0', LOGIN_SCRIPT)
+        self.assertNotIn('Set-Content', LOGIN_SCRIPT)
+        self.assertNotIn('Remove-Item', LOGIN_SCRIPT)
 
     def test_authentication_requires_expected_user_and_trusted_host(self):
         cfg = SimpleNamespace(username="tester", target="example.invalid", target_port=22,

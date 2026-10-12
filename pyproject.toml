@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gmssh-windows-bridge"
-version = "0.1.0"
-description = "Unofficial read-only Windows metrics bridge for GMSSH"
+version = "0.2.1"
+description = "Unofficial Windows metrics bridge with opt-in SSH terminal and SFTP"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {file = "LICENSE"}
@@ -16,7 +16,7 @@ classifiers = ["Development Status :: 3 - Alpha", "Topic :: System :: Monitoring
 gmssh-windows-bridge = "gmssh_windows_bridge.bridge:main"
 
 [tool.setuptools.package-data]
-gmssh_windows_bridge = ["collector.ps1"]
+gmssh_windows_bridge = ["*.ps1"]
 
 [tool.setuptools.packages.find]
 include = ["gmssh_windows_bridge*"]

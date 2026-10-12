@@ -43,4 +43,22 @@ Windows 直接使用字节计数，因此块字节数为 `1`。例如 C: 的设�
 
 已验证的客户端会拒绝 OS/内核描述中不含 `linux` 的结果，同时过滤不以 `/dev/` 开头的磁盘设备名。因此使用明确的 `Windows … (Linux metrics protocol adapter)` 描述和 `/dev/windows/<盘符>` 协议别名。
 
-这不会赋予 Windows Linux 的能力，也不会影响目标 Windows 配置。首页的 Linux 图标和本机连接延迟属于客户端展示限制。仅验证监控卡片，不支持桌面应用部署、root/sudo 或文件管理。
+这不会赋予 Windows Linux 的能力，也不会影响目标 Windows 配置。首页的 Linux 图标和本机连接延迟属于客户端展示限制。
+
+## 可选原生 SSH 转发
+
+| 请求 | 启用条件 | 处理 |
+|---|---|---|
+| 已识别的快/慢指标 exec | 始终可用 | 固定只读 Windows 采集器 |
+| GMSSH 登录前置探测 | `--enable-terminal` | 固定 `login.ps1`，返回实际用户、Windows 系统和 sudo 不可用状态 |
+| 其他 exec、shell、PTY、窗口缩放 | `--enable-terminal` | 原样转发到目标 Windows OpenSSH |
+| 2.0.4 固定 Bash 终端启动 exec | `--gmssh-terminal` | 精确匹配请求指纹，转接 Windows 原生 shell |
+| `id -nu` / `id -un` | `--gmssh-terminal` | 固定只读探测，返回真实 Windows 用户名 |
+| `sftp` subsystem | `--enable-sftp` | 透明转发二进制 SFTP 数据 |
+| 其他 subsystem、端口转发 | 不提供 | 拒绝 |
+
+标准输入 EOF 和远端输出 EOF 分别传递；退出码先于最终输出到达时，仍继续转发到输出结束。每条执行/文件通道独立处理，监控采集另行缓存，同一连接最多四条并发会话通道。
+
+`--gmssh-terminal` 仅在登录探测响应中将 `SUDO` / `SUDO_ACCESS` 改为 `1`，保留实际用户名及 `SUDO_PASSWORD=0`。这是 Linux 协议前置条件的适配标志，不代表目标 Windows 具有 sudo/root，也不改变 Windows 权限。没有启用此模式时，这些探测字段仍为 `0`。
+
+2.0.4 启动请求的指纹来自实机捕获的 SSH exec 字节串；不执行或发布其 Bash 正文。该模式已经验证页面终端。页面文件管理、桌面应用部署、root/sudo、Linux 服务及 Agent 管理均未验收或不支持，不能宣称完整 GMSSH 桌面兼容。
