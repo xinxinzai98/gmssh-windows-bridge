@@ -60,7 +60,7 @@ export class DirectClient {
     });
     socket.addEventListener("error", () => fail(new Error("本地桌面服务连接失败。")));
     socket.addEventListener("close", () => fail(new Error("桌面连接已关闭。")));
-    this.#timer = window.setTimeout(() => fail(new Error("登录超时，请检查 RustDesk 密码或 Windows 端确认提示。")), 60_000);
+    this.#timer = window.setTimeout(() => fail(new Error("登录超时，请检查 RustDesk 密码或 Windows 端确认提示。")), desktopPassword ? 60_000 : 300_000);
     this.events.status("正在验证 Windows SSH…");
   }
 
@@ -88,6 +88,7 @@ export class DirectClient {
         },
       } });
       wipe(response); this.#stage = "login";
+      this.events.status("已发送 RustDesk 登录请求；留空密码时请在 Windows 端确认（最多等待 5 分钟）。");
       return;
     }
     if (this.#stage === "login") {

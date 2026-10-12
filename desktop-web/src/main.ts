@@ -10,6 +10,12 @@ const password = get<HTMLInputElement>("desktop-password");
 const connect = get<HTMLButtonElement>("connect");
 const disconnect = get<HTMLButtonElement>("disconnect");
 const fullscreen = get<HTMLButtonElement>("fullscreen");
+const viewport = get("viewport");
+const embedded = window.parent !== window;
+if (embedded) {
+  fullscreen.textContent = "放大画面";
+  get("leave-fullscreen").textContent = "恢复面板";
+}
 const status = (text: string): void => { get("status").textContent = text; };
 let frames = 0;
 let peer = "";
@@ -19,7 +25,7 @@ const client = new DirectClient(canvas, {
   status,
   peer(name) { peer = name; status(`${name} 已批准连接，等待画面…`); },
   frame() { frames++; canvas.hidden = false; empty.hidden = true; fullscreen.disabled = false; status(`${peer} · 已收到画面（${frames} 帧）`); },
-  stopped() { keys.clear(); buttons.clear(); frames = 0; canvas.hidden = true; empty.hidden = false; connect.disabled = false; disconnect.disabled = fullscreen.disabled = true; },
+  stopped() { keys.clear(); buttons.clear(); frames = 0; viewport.classList.remove("expanded"); canvas.hidden = true; empty.hidden = false; connect.disabled = false; disconnect.disabled = fullscreen.disabled = true; },
 });
 
 fetch("/config.json").then(response => {
@@ -96,5 +102,11 @@ canvas.addEventListener("keyup", event => {
   keys.delete(event.code);
   if (wire) { client.key(wire); event.preventDefault(); }
 });
-fullscreen.addEventListener("click", () => { get("viewport").requestFullscreen().catch(() => status("此容器未允许全屏，请最大化窗口。")); });
-get("leave-fullscreen").addEventListener("click", () => { document.exitFullscreen().catch(() => status("请尝试 Esc 退出全屏。")); });
+fullscreen.addEventListener("click", () => {
+  if (embedded) { viewport.classList.add("expanded"); canvas.focus(); }
+  else viewport.requestFullscreen().catch(() => status("此容器未允许全屏，请最大化窗口。"));
+});
+get("leave-fullscreen").addEventListener("click", () => {
+  if (embedded) { viewport.classList.remove("expanded"); canvas.focus(); }
+  else document.exitFullscreen().catch(() => status("请尝试 Esc 退出全屏。"));
+});

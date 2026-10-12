@@ -28,7 +28,7 @@ Windows OpenSSH Server → 固定 PowerShell / CIM 采集脚本
 | GMSSH 2.0.4 页面中的终端入口 | `--gmssh-terminal`，已在 Windows 11 实机验证 |
 | GMSSH 桌面应用、sudo、Linux 服务管理 | 不支持 |
 | 本地后台运行 | `--background`；输出 PID 和日志路径 |
-| 免费 RustDesk Web 查看器 | 0.4.0a2 实验功能；真实 Windows 画面与基本键鼠已验收；GMSSH 按钮入口仍需手动激活临时脚本 |
+| 免费 RustDesk Web 查看器 | 0.4.0a3 实验功能；已接通 GMSSH 2.0.4 内嵌真实桌面；入口需手动激活临时脚本 |
 | Windows 原生安装包、开机启动服务 | 尚未实现 |
 | 多台 Windows | 每台运行一个实例，使用不同本地端口 |
 
@@ -154,7 +154,7 @@ gmssh-windows-bridge --target windows-host --username windows-user \
 
 ## 必须知道的限制
 
-0.4.0a2 提供免费 RustDesk Web 查看器，可独立运行或随桥在后台启动。已在真实 Windows 会话中验收画面、基本键鼠、窗口最大化、全屏退出及断开重连；VP9 默认优先使用软件解码。GMSSH 内嵌入口采用手动激活的临时脚本，完整客户端接入仍需验证。安装、启动、入口与许可见 [免费 RustDesk 桌面接入](docs/desktop-rustdesk.md)。
+0.4.0a3 提供免费 RustDesk Web 查看器，可独立运行或随桥在后台启动。已在 GMSSH 2.0.4 中接通真实 Windows 桌面，验证临时桌面按钮、基本输入、关闭重开和画面放大/恢复；VP9 默认优先使用软件解码。内嵌入口需手动激活脚本，刷新页面或重启客户端后需重新加载。中文输入法、管理员窗口及快速连续输入仍待验收。安装、启动、入口与许可见 [免费 RustDesk 桌面接入](docs/desktop-rustdesk.md)。
 
 - **非官方 Windows 集成**：页面终端及指标属于协议适配；桌面查看器是独立的实验入口。
 - 客户端可能显示 Linux 企鹅图标，因为其系统识别逻辑仅面向 Linux。实际 OS 名称仍返回 Windows，并明确注明协议适配。

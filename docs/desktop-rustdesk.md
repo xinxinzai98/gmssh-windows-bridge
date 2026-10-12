@@ -1,4 +1,4 @@
-# 免费 RustDesk 桌面接入（0.4.0a2 实验版）
+# 免费 RustDesk 桌面接入（0.4.0a3 实验版）
 
 用户选择在 GMSSH 页面中显示并操作 Windows 的真实桌面，并优先使用免费方案。本版选择 **小型开源 Web 查看器 + 已验证主机密钥的 SSH 隧道 + Windows 上的 RustDesk**。无需 RustDesk Server Pro、独立 ID/中继服务器或第三方公共查看器。
 
@@ -14,9 +14,9 @@ GMSSH 网页容器 / 浏览器
 
 浏览器组件采用 Kessoku 项目的 MIT 协议编解码、VP9 WebCodecs 解码与基本键盘辅助代码。原始出处固定在 `desktop-web/vendor/UPSTREAM.md`，保留 MIT 和 Protobuf 依赖的完整许可。连接状态机、本地 SSH 传输及页面为本项目新增代码，不包含 RustDesk 商业 Web V2 资源，也没有引入 Kessoku 的账号、数据库、ID 或中继服务栈。
 
-目前支持密码挑战应答、当前显示器的 VP9 画面、鼠标、基本键盘、全屏和主动断开；不支持音频、剪贴板、文件传输、显示器切换。中文输入法、UAC/安全桌面、复杂组合键尚未验收。需要支持 VP9 WebCodecs 的现代 Chromium 安全上下文；本机回环地址符合开发环境使用条件，嵌入时还需核实全部上层容器。
+目前支持密码挑战应答、当前显示器的 VP9 画面、鼠标、基本键盘和主动断开。独立浏览器支持全屏；内嵌模式采用“放大画面/恢复面板”，在 iframe 内铺满画面。不支持音频、剪贴板、文件传输、显示器切换。中文输入法、UAC/安全桌面、复杂组合键尚未验收。需要支持 VP9 WebCodecs 的现代 Chromium 安全上下文；本轮已在 GMSSH 2.0.4 的实际 iframe 中解码真实画面。
 
-这是 **0.4.0a2 开发预览**。已发布的 0.3.0 继续提供终端、SFTP 和监控。真实 Windows RustDesk 会话已完成画面和基本操作验收；GMSSH 原生按钮使用手动激活的临时入口脚本，尚未完成客户端联调。
+这是 **0.4.0a3 开发预览**。已发布的 0.3.0 继续提供终端、SFTP 和监控。真实 Windows RustDesk 会话及 GMSSH 页面内的临时桌面按钮已完成基本联调；入口仍需手动激活，未提供持久化客户端插件。
 
 ## 启动
 
@@ -34,7 +34,7 @@ gmssh-windows-bridge --target windows-host --username windows-user \
   --gmssh-terminal --shell powershell --desktop-port 22240 --background
 ```
 
-浏览器打开 `http://127.0.0.1:22240/`。SSH 入口的端口仍由 `--listen-port` 控制，两者必须不同。桌面窗口需分别验证原有 Windows SSH 密码和 RustDesk 密码；RustDesk 密码留空时可在 Windows 端确认连接。页面会清空密码输入，不保存凭据。
+浏览器打开 `http://127.0.0.1:22240/`。SSH 入口的端口仍由 `--listen-port` 控制，两者必须不同。桌面窗口需分别验证原有 Windows SSH 密码和 RustDesk 密码；RustDesk 密码留空时可在 Windows 端确认连接，最多等待 5 分钟。页面会清空密码输入，不保存凭据。状态区区分 SSH 验证、RustDesk 登录请求和实际收到画面。
 
 也可以独立测试桌面服务：
 
@@ -49,17 +49,22 @@ Windows 上需要 RustDesk 程序已启动、直接 IP 访问已启用，并能�
 
 ## GMSSH 临时入口
 
-GMSSH SDK 提供自定义网页窗口，纯前端应用无需 `init()` 启动服务，理论上可承载这个本地查看器。服务的 `frame-ancestors` 允许本机回环和 `file:` 来源；需要实际 GMSSH 联调确认它的窗口、快捷键与安全上下文。
+GMSSH SDK 提供自定义网页窗口，纯前端应用无需 `init()` 启动服务。服务的 `frame-ancestors` 允许本机回环和 `file:` 来源；本轮使用实际 GMSSH 页面中的 iframe 完成了画面和基本输入联调。
 
-在 2.0.4 的公开 SDK 中未找到按机器替换原生“桌面”按钮的接口。`tools/gmssh-desktop-entry.js` 提供当前页面内的临时挂接：只拦截指定机器的桌面按钮，在可关闭的 iframe 面板中加载回环查看器。它不修改 GMSSH 安装包、不部署 Linux Agent，也不读取账号数据。刷新页面或重启客户端后，需要重新激活。
+在 2.0.4 的公开 SDK 中未找到按机器替换原生“桌面”按钮的接口。`desktop-web/public/gmssh-entry.js` 提供当前页面内的临时挂接：只拦截指定机器的桌面按钮，在可关闭的 iframe 面板中加载回环查看器。它不修改 GMSSH 安装包、不部署 Linux Agent，也不读取账号数据。刷新页面或重启客户端后，需要重新激活。
 
-先审阅该脚本，再从 GMSSH 的 `View → Toggle Developer Tools → Console` 激活。开发控制台如果显示粘贴安全警告，应由操作者亲自处理。将脚本内容放入当前机器列表页面的控制台，然后调用：
+先审阅该脚本，再从 GMSSH 的 `View → Toggle Developer Tools → Console` 激活。开发控制台如果显示粘贴安全警告，应由操作者亲自处理。页面没有 Node.js 的 `require`；桌面服务通过 HTTP 提供同一份通用脚本，使用标准浏览器加载方式：
 
 ```javascript
-installWindowsDesktopEntry({
-  machineId: "your-windows-machine-id",
-  viewerUrl: "http://127.0.0.1:22240/",
-});
+(() => {
+  const script = document.createElement("script");
+  script.src = "http://127.0.0.1:22240/gmssh-entry.js";
+  script.onload = () => installWindowsDesktopEntry({
+    machineId: "your-windows-machine-id",
+    viewerUrl: "http://127.0.0.1:22240/",
+  }).open();
+  document.head.append(script);
+})();
 ```
 
 必须使用机器记录的准确 ID；这里的占位值不能直接使用。`removeWindowsDesktopEntry()` 可恢复当前页面的按钮行为并关闭面板。不同 GMSSH 版本可能不提供所需的 `data-machine-id` / `data-machine-action` 属性，正式使用前需验证实际页面。先前的 `examples/rustdesk-desktop/index.html` 只演示 iframe 承载，不是本版选定的免费协议客户端。
@@ -74,7 +79,9 @@ installWindowsDesktopEntry({
 
 SSH 通道打开确认不能证明 RustDesk 正在监听，客户端只有在 RustDesk 批准登录并解码出画面后才显示相应状态。设备身份、截图和现场日志仅存于工作区私有记录。
 
-剩余完成条件：在实际 GMSSH 页面中激活临时入口，验证 iframe 的安全上下文、画面、键鼠与退出，并复查现有终端和监控。正式客户端入口、中文输入法、UAC/安全桌面和长期运行仍未验收，全部所需检查通过后再发布稳定版本。
+随后在 GMSSH 2.0.4 的实际机器列表激活临时脚本，由正常 RustDesk 连接弹窗批准会话，收到真实画面。桌面按钮关闭后可重新打开；放大画面、恢复面板后画面完整，监控卡片继续刷新。曾发现系统全屏返回后窗口裁切，因此内嵌模式改用页内放大。已有终端与 SFTP 的协议回归通过，本轮没有重新操作其他机器的用户终端。
+
+自动逐键和快速批量输入曾出现乱序或漏字，来源尚未定位；基本输入的通过结果不能代表高速连打可靠性。持久化客户端入口、中文输入法、UAC/管理员窗口和长期运行仍待验收，全部所需检查通过后再发布稳定版本。
 
 ## 依据与许可
 

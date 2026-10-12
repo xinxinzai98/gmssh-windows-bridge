@@ -26,7 +26,10 @@ window.installWindowsDesktopEntry = function ({ machineId, viewerUrl }) {
     title.textContent = "Windows 桌面 · RustDesk";
     title.style.flex = "1";
     const close = document.createElement("button");
+    close.type = "button";
     close.textContent = "关闭桌面";
+    Object.assign(close.style, { color: "#e9edf3", background: "#29374b", border: "1px solid #53637b",
+      borderRadius: "6px", padding: "4px 10px", cursor: "pointer" });
     close.addEventListener("click", () => { panel.remove(); panel = undefined; });
     const frame = document.createElement("iframe");
     frame.title = "Windows RustDesk 查看器";
