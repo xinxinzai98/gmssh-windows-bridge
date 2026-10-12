@@ -31,12 +31,12 @@ export class Vp9CanvasRenderer {
       output: (frame) => this.#draw(frame),
       error: (error) => this.#fail(error instanceof Error ? error : new Error("VP9 decoder failed")),
     });
-    this.#decoder.configure({ codec: VP9_CODEC, optimizeForLatency: true, hardwareAcceleration: "no-preference" });
+    this.#decoder.configure({ codec: VP9_CODEC, optimizeForLatency: true, hardwareAcceleration: "prefer-software" });
   }
 
   static async create(canvas: HTMLCanvasElement, acknowledge: () => void, fail: (error: Error) => void): Promise<Vp9CanvasRenderer> {
     if (!("VideoDecoder" in globalThis) || !("EncodedVideoChunk" in globalThis)) throw new Error("VP9 WebCodecs is unavailable");
-    const support = await VideoDecoder.isConfigSupported({ codec: VP9_CODEC, optimizeForLatency: true, hardwareAcceleration: "no-preference" });
+    const support = await VideoDecoder.isConfigSupported({ codec: VP9_CODEC, optimizeForLatency: true, hardwareAcceleration: "prefer-software" });
     if (!support.supported) throw new Error("This browser cannot decode VP9 with WebCodecs");
     return new Vp9CanvasRenderer(canvas, acknowledge, fail);
   }
