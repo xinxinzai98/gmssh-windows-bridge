@@ -6,7 +6,7 @@ GitHub 应同时提供 Windows 服务端和 Mac 增强控制端。只发 Windows
 
 | 对象 | 交付方式 | 依赖与当前状态 |
 |---|---|---|
-| Windows 服务端 | `GMSSH-Windows-Setup.exe` 与本项目源码 | 离线 OpenSSH、内部桌面引擎、GMSSH 托盘和密码窗口；新电脑完整安装仍待验收 |
+| Windows 服务端 | `GMSSH-Windows-Setup.exe` 与本项目源码 | 0.4.0a6 已通过试验机备份重装、接入自检和核心连接实测；纯新机 OpenSSH MSI 首装、Windows 重启恢复与改密提交仍待验收 |
 | Mac 增强端 | `gmssh-windows-bridge` wheel、前端源码、本地启动器构建工具 | 依赖用户安装的原版 GMSSH 2.0.4；当前按目标设备构建，尚无通用多设备安装向导 |
 | 私有验收包 | 按指定设备生成的启动器或账号工具 | 包含本机路径或设备配置，仅供相应设备使用，不作为通用 Release 附件 |
 

@@ -1,5 +1,5 @@
 ﻿#Requires -Version 5.1
-<## First-run setup after installing the official RustDesk 1.5 client.
+<## First-run setup for the verified RustDesk 1.5 desktop engine.
     Passwords are entered interactively on Windows, never supplied in this script.
     -CheckOnly reads prerequisites. -SelfTest checks quoting without changing settings.
 ##>
@@ -52,13 +52,13 @@ public static class DesktopArgumentCheck {
     exit 0
 }
 
-if (-not (Test-Path -LiteralPath $RustDesk -PathType Leaf)) { throw '请先用官方安装程序安装 RustDesk 1.5。' }
+if (-not (Test-Path -LiteralPath $RustDesk -PathType Leaf)) { throw '桌面后台组件缺失，请检查 GMSSH 安装包。' }
 $program = Get-Item -LiteralPath $RustDesk
 if ($program.VersionInfo.ProductName -notlike '*RustDesk*' -or $program.VersionInfo.ProductVersion -notmatch '^1\.5\.') {
     throw '本预览配置向导仅核验过官方 RustDesk 1.5。'
 }
 if ((Get-AuthenticodeSignature -LiteralPath $RustDesk).Status -ne 'Valid') { throw 'RustDesk 程序签名未通过核验。' }
-if ((Get-Service RustDesk).Status -ne 'Running') { throw '请先完成 RustDesk 正式安装并启动服务。' }
+if ((Get-Service RustDesk).Status -ne 'Running') { throw '桌面后台服务未运行，请从 GMSSH 托盘启动后台服务后重试。' }
 if ($CheckOnly) {
     [ordered]@{ HostName=$env:COMPUTERNAME; RustDeskVersion=$program.VersionInfo.ProductVersion; Service='Running' } | ConvertTo-Json
     exit 0
@@ -144,7 +144,7 @@ try {
     foreach ($name in $options.Keys) {
         [void](Invoke-RustDesk @('--option', $name, $options[$name]))
         if ((Invoke-RustDesk @('--option', $name)) -cne $options[$name]) {
-            throw "固定密码已提交，但 $name 未通过回读。请在 RustDesk 正常设置界面核对后再连接。"
+            throw "固定密码已提交，但 $name 未通过回读。请使用 GMSSH 接入自检，并由管理员检查桌面后台配置。"
         }
     }
     Write-Host '固定密码和访问选项已配置。请在 GMSSH 首次连接时输入这个密码并记住；真实连接通过后才算验收完成。'

@@ -3,6 +3,7 @@ import argparse
 import hashlib
 import ipaddress
 import json
+import re
 from pathlib import Path
 import zipfile
 
@@ -44,7 +45,7 @@ def build(output, installer=None, controller="LocalSubnet", openssh=None, engine
         payload = buffer.getvalue()
     output.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as bundle:
-        names = ['setup-windows.cmd', 'setup-windows.ps1', 'setup-progress.ps1', 'setup-monitor.ps1', 'install-vc-runtime.ps1', 'windows-installers.json', 'credential-dialog.ps1']
+        names = ['setup-windows.cmd', 'setup-windows.ps1', 'setup-checks.ps1', 'setup-progress.ps1', 'setup-monitor.ps1', 'install-vc-runtime.ps1', 'windows-installers.json', 'credential-dialog.ps1']
         if not monitor_only:
             names += ['setup-desktop.ps1', 'install-desktop-engine.ps1', 'gmssh-agent.ps1']
         for name in names:
@@ -57,7 +58,8 @@ def build(output, installer=None, controller="LocalSubnet", openssh=None, engine
         for file in sorted((source / 'brand').glob('*')):
             if file.is_file():
                 bundle.write(file, 'brand/' + file.name)
-        bundle.writestr("setup-config.json", json.dumps({"controllerAddress": controller, "monitorOnly": monitor_only,
+        version = re.search(r'__version__\s*=\s*[\'"]([^\'"]+)', (source / '__init__.py').read_text()).group(1)
+        bundle.writestr("setup-config.json", json.dumps({"version": version, "controllerAddress": controller, "monitorOnly": monitor_only,
                                                       "preserveDesktop": preserve_desktop,
                                                       "expectedComputer": expected_computer}, indent=2))
         bundle.writestr("README.txt", (root / "docs/windows-first-run.md").read_text().encode("utf-8-sig"))

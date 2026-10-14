@@ -8,6 +8,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+. (Join-Path $PSScriptRoot 'setup-checks.ps1')
 
 # Pairing metadata only; this does not verify or enable hardware wake support.
 function Get-GMSSHWakeAdapters {
@@ -77,7 +78,7 @@ if ($service) {
     }
 }
 if (Test-Path $configPath) { throw 'An SSH configuration already exists. Review it before installing.' }
-if ((Test-Path $sshDirectory) -and @(Get-ChildItem $sshDirectory -Force).Count) {
+if (-not (Test-GMSSHHostKeyDirectory $sshDirectory)) {
     throw 'The SSH data directory is not empty. Review the existing files first.'
 }
 if (-not $firewallEnabled) { throw 'A Windows firewall profile is disabled; review it before enabling remote SSH.' }

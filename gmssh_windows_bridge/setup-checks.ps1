@@ -1,0 +1,147 @@
+﻿#requires -Version 5.1
+# Read-only setup checks. No account, service, password or firewall changes.
+function Test-GMSSHHostKeyDirectory([string]$Path) {
+    if (-not (Test-Path $Path)) { return $true }
+    $directory = Get-Item -LiteralPath $Path
+    if (-not $directory.PSIsContainer -or ($directory.Attributes -band [IO.FileAttributes]::ReparsePoint)) { return $false }
+    $items = @(Get-ChildItem -LiteralPath $Path -Force)
+    if (-not $items.Count) { return $true }
+    # A clean reinstall may preserve only complete, standard OS host-key pairs.
+    # The SSH server still validates the actual keys and their ACL during startup.
+    if (@($items | Where-Object { $_.PSIsContainer -or ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+        $_.Length -eq 0 -or $_.Name -notmatch '^ssh_host_(rsa|ecdsa|ed25519)_key(\.pub)?$' }).Count) { return $false }
+    foreach ($item in $items) {
+        $name = $item.Name -replace '\.pub$',''
+        if ($items.Name -notcontains $name -or $items.Name -notcontains ($name+'.pub')) { return $false }
+    }
+    return $true
+}
+
+function Get-GMSSHAddresses {
+    Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.AddressState -eq 'Preferred' -and $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } | Select-Object -ExpandProperty IPAddress -Unique
+}
+
+function Get-GMSSHConnectionInfo {
+    param([string]$DataRoot = (Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'GMSSHWindowsBridge'))
+    $public = Get-Content (Join-Path $DataRoot 'connection.json') -Raw | ConvertFrom-Json
+    $public.addresses = @(Get-GMSSHAddresses)
+    $ssh = Get-Service sshd -ErrorAction SilentlyContinue
+    $public.sshStatus = if ($ssh) { [string]$ssh.Status } else { 'NotInstalled' }
+    $public.sshStartup = if ($ssh) { [string]$ssh.StartType } else { '' }
+    $public
+}
+
+function Get-GMSSHInstallPlan {
+    param([string]$SetupRoot, [bool]$Dedicated, [bool]$MonitorOnly, [bool]$TrayOnly,
+          [string]$DataRoot = (Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'GMSSHWindowsBridge'),
+          [string]$ProgramRoot = (Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'GMSSHWindowsBridge'),
+          [string]$SSHRoot = (Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'ssh'))
+    if ($env:OS -ne 'Windows_NT' -or [Environment]::OSVersion.Version.Major -lt 10) { throw '需要 Windows 10 / Windows Server 2016 或更新版本。' }
+    $agentPath = Join-Path $DataRoot 'agent.json'
+    $connectionPath = Join-Path $DataRoot 'connection.json'
+    if (Test-Path $agentPath) {
+        $agent = Get-Content $agentPath -Raw | ConvertFrom-Json
+        $connection = Get-Content $connectionPath -Raw | ConvertFrom-Json
+        $account = Get-LocalUser -Name $agent.username -ErrorAction SilentlyContinue
+        if ($agent.computer -ine [Environment]::MachineName -or $connection.computer -ine $agent.computer -or
+            $connection.username -cne $agent.username -or -not $account -or
+            ($agent.managedAccountSid -and $agent.managedAccountSid -cne $account.SID.Value) -or
+            -not (Test-Path (Join-Path $ProgramRoot 'gmssh-agent.ps1'))) {
+            throw '现有安装记录不完整或账号身份已变化。本次不会覆盖账号、密码和配置，请先检查原安装。'
+        }
+        return 'Existing'
+    }
+    if (-not [Environment]::Is64BitProcess -or @(Get-CimInstance Win32_Processor | Where-Object Architecture -ne 9).Count) {
+        throw '当前离线安装包需要 x64 Windows 和 64 位 Windows PowerShell。'
+    }
+    if ($Dedicated -and (Get-LocalUser -Name gmssh -ErrorAction SilentlyContinue)) { throw '本机已有 gmssh 账号，安装不会覆盖其密码。请先由管理员确认此账号用途。' }
+    if ($Dedicated -and ((Test-Path $connectionPath) -or (Test-Path $ProgramRoot))) { throw '发现已有或未完成的 GMSSH 安装，本次不会覆盖。请保留现场并检查原安装结果。' }
+    if (-not $TrayOnly) {
+        $sshData = $SSHRoot
+        $ssh = Get-Service sshd -ErrorAction SilentlyContinue
+        if (($ssh -and $ssh.Status -ne 'Stopped') -or (Test-Path (Join-Path $sshData 'sshd_config')) -or
+            -not (Test-GMSSHHostKeyDirectory $sshData) -or
+            (Get-NetTCPConnection -State Listen -LocalPort 22 -ErrorAction SilentlyContinue) -or
+            (Get-NetFirewallRule -Name 'GMSSH-Windows-Monitor-SSH' -ErrorAction SilentlyContinue)) {
+            throw '发现已有 SSH 服务、配置或端口占用。本次尚未创建账号或安装组件，请先由管理员核对现有 SSH。'
+        }
+        if (@(Get-NetFirewallProfile -PolicyStore ActiveStore | Where-Object { [string]$_.Enabled -ne 'True' }).Count) { throw 'Windows 防火墙未全部启用，请先检查防火墙状态。' }
+    }
+    if ($Dedicated -and (Get-Service RustDesk -ErrorAction SilentlyContinue)) { throw '发现独立的桌面服务，本次不会重设其密码。已有桌面请使用保留模式。' }
+    $manifest = Get-Content (Join-Path $SetupRoot 'windows-installers.json') -Raw | ConvertFrom-Json
+    foreach ($name in @('openssh','vcredist')) {
+        $item = $manifest.$name
+        if ($item.filename -notmatch '^[a-zA-Z0-9_.-]+$' -or $item.sha256 -notmatch '^[a-f0-9]{64}$') { throw '离线组件清单无效。' }
+        $file = Join-Path $SetupRoot ('installers\' + $item.filename)
+        if (-not (Test-Path $file) -or (Get-FileHash $file -Algorithm SHA256).Hash.ToLowerInvariant() -cne $item.sha256 -or
+            (Get-AuthenticodeSignature $file).Status -ne 'Valid') { throw ('离线组件缺失或校验失败：' + $item.filename) }
+    }
+    if (-not $MonitorOnly) {
+        $payload = Get-Content (Join-Path $SetupRoot 'desktop-payload.json') -Raw | ConvertFrom-Json
+        if ($payload.filename -cne 'desktop-engine.zip' -or $payload.sourceSha256 -cne $manifest.rustdesk.sha256 -or
+            (Get-FileHash (Join-Path $SetupRoot 'desktop-engine.zip') -Algorithm SHA256).Hash.ToLowerInvariant() -cne $payload.sha256) { throw '离线桌面组件校验失败。' }
+    }
+    return 'New'
+}
+
+function Get-GMSSHReadiness {
+    param([bool]$MonitorOnly = $false,
+          [string]$DataRoot = (Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'GMSSHWindowsBridge'),
+          [string]$ProgramRoot = (Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'GMSSHWindowsBridge'),
+          [string]$SSHRoot = (Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'ssh'))
+    $checks = New-Object 'Collections.Generic.List[object]'
+    function Add-Check([string]$Name, [bool]$Ok, [string]$Detail) { $checks.Add([ordered]@{name=$Name;ok=$Ok;detail=$Detail}) }
+    $connection = Get-Content (Join-Path $DataRoot 'connection.json') -Raw | ConvertFrom-Json
+    $ssh = Get-Service sshd -ErrorAction SilentlyContinue
+    Add-Check 'SSH 服务' ([bool]($ssh -and $ssh.Status -eq 'Running' -and $ssh.StartType -eq 'Automatic')) '应运行并自动启动'
+    $ports = @(Get-NetTCPConnection -State Listen -LocalPort 22,21118 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty LocalPort -Unique)
+    Add-Check 'SSH 端口' ($ports -contains 22) 'TCP 22 本机监听'
+    $sshData = $SSHRoot
+    try {
+        $config = Get-Content (Join-Path $sshData 'sshd_config') -Raw
+        Add-Check '文件互传' ($config -match '(?m)^\s*Subsystem\s+sftp\s+sftp-server\.exe\s*$') 'SFTP 子系统配置'
+        $public = (Get-Content (Join-Path $sshData 'ssh_host_ed25519_key.pub') -Raw).Trim()
+        $hash = [Security.Cryptography.SHA256]::Create()
+        try { $fingerprint = 'SHA256:' + [Convert]::ToBase64String($hash.ComputeHash([Convert]::FromBase64String($public.Split(' ')[1]))).TrimEnd('=') }
+        finally { $hash.Dispose() }
+        Add-Check '主机身份' ($public -ceq $connection.sshHostPublicKey -and $connection.sshHostFingerprint.Contains($fingerprint)) '实际公钥与连接文件一致'
+    } catch { Add-Check 'SSH 配置与身份' $false '无法读取或核验 SSH 配置，请使用管理员自检' }
+    $account = Get-LocalUser -Name $connection.username -ErrorAction SilentlyContinue
+    Add-Check '连接账号' ([bool]($account -and $account.Enabled)) '账号存在且已启用'
+    $rule = Get-NetFirewallRule -Name 'GMSSH-Windows-Monitor-SSH' -ErrorAction SilentlyContinue
+    $filter = if ($rule) { $rule | Get-NetFirewallAddressFilter }
+    $portFilter = if ($rule) { $rule | Get-NetFirewallPortFilter }
+    $profiles = @(Get-NetFirewallProfile -PolicyStore ActiveStore | Where-Object { [string]$_.Enabled -ne 'True' })
+    Add-Check '局域网防火墙' ([bool]($rule -and [string]$rule.Enabled -eq 'True' -and $rule.Direction -eq 'Inbound' -and $rule.Action -eq 'Allow' -and
+        @($filter.RemoteAddress).Count -eq 1 -and $filter.RemoteAddress -eq $connection.controller -and
+        [string]$portFilter.LocalPort -eq '22' -and [string]$portFilter.Protocol -in @('TCP','6') -and -not $profiles.Count)) '安装器的 SSH 规则及防火墙状态'
+    if (-not $MonitorOnly) {
+        $agent = Get-Content (Join-Path $DataRoot 'agent.json') -Raw | ConvertFrom-Json
+        Add-Check '安装账号身份' ([bool]($account -and $agent.computer -ieq [Environment]::MachineName -and $agent.username -ceq $connection.username -and
+            (-not $agent.managedAccountSid -or $agent.managedAccountSid -ceq $account.SID.Value))) '保留安装记录中的账号身份'
+        if ($agent.accountRole -eq 'Administrator') {
+            $administrators = Get-LocalGroup -SID 'S-1-5-32-544'
+            Add-Check '管理权限' ([bool](Get-LocalGroupMember -Group $administrators.Name | Where-Object { $_.SID.Value -eq $account.SID.Value })) '专用账号仍在管理员组中'
+        }
+        $desktop = Get-Service RustDesk -ErrorAction SilentlyContinue
+        Add-Check '桌面服务' ([bool]($desktop -and $desktop.Status -eq 'Running' -and $desktop.StartType -eq 'Automatic')) '应运行并自动启动'
+        Add-Check '桌面端口' ($ports -contains 21118) 'TCP 21118 本机监听，实际连接经 SSH 隧道'
+        $task = Get-ScheduledTask -TaskName 'GMSSH Windows Tray' -TaskPath '\' -ErrorAction SilentlyContinue
+        $powerShell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+        $arguments = '-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + (Join-Path $ProgramRoot 'gmssh-agent.ps1') + '"'
+        Add-Check '托盘自启' ([bool]($task -and @($task.Actions).Count -eq 1 -and $task.Actions[0].Execute -ieq $powerShell -and
+            $task.Actions[0].Arguments -ceq $arguments -and $task.State -ne 'Disabled')) '登录任务指向本程序'
+    }
+    $addresses = @(Get-GMSSHAddresses)
+    Add-Check '网络地址' ($addresses.Count -gt 0) '当前可用 IPv4 地址'
+    [ordered]@{schema=1;computer=[Environment]::MachineName;checkedAt=[DateTime]::Now.ToString('o');
+        readyToPair=(@($checks | Where-Object { -not $_.ok }).Count -eq 0);addresses=$addresses;checks=@($checks.ToArray())}
+}
+
+function Format-GMSSHReadiness($Result) {
+    $title = if ($Result.readyToPair) { '本机自检通过，可以进行首次配对。' } else { '部分项目需要检查；本次未修改密码和服务配置。' }
+    $lines = @($title, ('当前地址：' + ($Result.addresses -join ', ')), '')
+    foreach ($check in $Result.checks) { $lines += $(if ($check.ok) { '[通过] ' } else { '[检查] ' }) + $check.name + '：' + $check.detail }
+    $lines += @('', '本机自检不能代替控制端的指纹核对、局域网连接和实际传输验收。')
+    $lines -join "`r`n"
+}

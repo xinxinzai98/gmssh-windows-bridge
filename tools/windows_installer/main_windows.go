@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"syscall"
@@ -40,16 +41,26 @@ func systemDirectory() (string, error) {
 }
 
 func install() error {
-	user := os.Getenv("USERNAME")
-	if len(os.Args) == 3 && os.Args[1] == "--windows-user" { user = os.Args[2] }
-	if !regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,64}$`).MatchString(user) { return fmt.Errorf("当前版本需要使用英文或数字名称的本机 Windows 账号") }
+	current, err := user.Current()
+	if err != nil {
+		return fmt.Errorf("无法确认当前登录用户，请从 Windows 桌面运行安装程序")
+	}
+	traySID := current.Uid
+	if len(os.Args) == 3 && os.Args[1] == "--tray-user-sid" {
+		traySID = os.Args[2]
+	} else if len(os.Args) != 1 {
+		return fmt.Errorf("安装参数无效")
+	}
+	if !regexp.MustCompile(`^S-1-[0-9]+(?:-[0-9]+){1,15}$`).MatchString(traySID) {
+		return fmt.Errorf("无法确认当前登录用户，请从 Windows 桌面运行安装程序")
+	}
 	admin, _, _ := shell.NewProc("IsUserAnAdmin").Call()
 	if admin == 0 {
 		executable, err := os.Executable()
 		if err != nil {
 			return err
 		}
-		verb, target, arguments := wide("runas"), wide(executable), wide("--windows-user "+user)
+		verb, target, arguments := wide("runas"), wide(executable), wide("--tray-user-sid "+traySID)
 		result, _, _ := shell.NewProc("ShellExecuteW").Call(0, uintptr(unsafe.Pointer(verb)), uintptr(unsafe.Pointer(target)), uintptr(unsafe.Pointer(arguments)), 0, 1)
 		if result <= 32 {
 			return fmt.Errorf("管理员授权已取消或未完成")
@@ -80,7 +91,7 @@ func install() error {
 		return err
 	}
 	command := exec.Command(filepath.Join(system, "WindowsPowerShell", "v1.0", "powershell.exe"),
-		"-NoProfile", "-STA", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", filepath.Join(root, "setup-windows.ps1"), "-WindowsUser", user)
+		"-NoProfile", "-STA", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", filepath.Join(root, "setup-windows.ps1"), "-TrayUserSid", traySID)
 	command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	command.Dir = root
 	if err := command.Run(); err != nil {

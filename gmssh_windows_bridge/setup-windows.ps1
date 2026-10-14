@@ -1,8 +1,9 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 [CmdletBinding()]
 param(
-    [ValidatePattern('^[a-zA-Z0-9-]{1,63}$')][string]$ExpectedComputer = $([Environment]::MachineName),
-    [ValidatePattern('^[a-zA-Z0-9_.-]{1,64}$')][string]$WindowsUser = $env:USERNAME,
+    [ValidatePattern('^[\p{L}\p{N}-]{1,63}$')][string]$ExpectedComputer = $([Environment]::MachineName),
+    [ValidatePattern('^[\p{L}\p{M}\p{N}_. -]{1,64}$')][string]$WindowsUser = $env:USERNAME,
+    [ValidatePattern('^S-1-[0-9]+(?:-[0-9]+){1,15}$')][string]$TrayUserSid,
     [string]$ControllerAddress,
     [switch]$MonitorOnly,
     [switch]$TrayOnly,
@@ -22,6 +23,7 @@ if (Test-Path $settingsPath) {
     if ($settings.expectedComputer -and $([Environment]::MachineName) -ine $settings.expectedComputer) { throw 'This test package is for a different computer.' }
 }
 if (-not $ControllerAddress) { $ControllerAddress = 'LocalSubnet' }
+if (-not $TrayUserSid) { $TrayUserSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value }
 if ($ControllerAddress -ne 'LocalSubnet') {
     $controller = [Net.IPAddress]::Parse($ControllerAddress)
     if ($controller.GetAddressBytes().Length -ne 4) { throw 'Use LocalSubnet or one controller IPv4 address.' }
@@ -31,7 +33,7 @@ $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
     [Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $admin) {
     $arguments = '-NoProfile -STA -ExecutionPolicy Bypass -File "' + $PSCommandPath + '"' +
-        ' -ExpectedComputer ' + $ExpectedComputer + ' -WindowsUser ' + $WindowsUser + ' -ControllerAddress ' + $ControllerAddress
+        ' -ExpectedComputer ' + $ExpectedComputer + ' -WindowsUser "' + $WindowsUser + '" -TrayUserSid ' + $TrayUserSid + ' -ControllerAddress ' + $ControllerAddress
     if ($MonitorOnly) { $arguments += ' -MonitorOnly' }
     if ($TrayOnly) { $arguments += ' -TrayOnly' }
     if ($PreserveDesktop) { $arguments += ' -PreserveDesktop' }
@@ -43,10 +45,38 @@ $reportDirectory = Join-Path ([Environment]::GetFolderPath('CommonApplicationDat
 $connection = Join-Path $reportDirectory 'connection.json'
 $desktopNew = $false
 $createdAccount = $null
+$installationCommitted = $false
 $connectionPassword = $null
-$trayUser = $WindowsUser
 $dedicated = -not $MonitorOnly -and -not $TrayOnly -and -not $PreserveDesktop
 Add-Type -AssemblyName System.Windows.Forms
+. (Join-Path $PSScriptRoot 'setup-checks.ps1')
+function Save-ConnectionResult($Readiness) {
+    $public = Get-GMSSHConnectionInfo
+    $public | ConvertTo-Json -Depth 5 | Set-Content $connection -Encoding UTF8
+    $Readiness | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $reportDirectory 'readiness.json') -Encoding UTF8
+    # Another administrator's desktop is not the original interactive user's desktop.
+    if ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value -cne $TrayUserSid) { return $false }
+    try {
+        $desktopPath = [Environment]::GetFolderPath('Desktop')
+        $public | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $desktopPath 'GMSSH-connection.json') -Encoding UTF8
+        $Readiness | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $desktopPath 'GMSSH-readiness.json') -Encoding UTF8
+        return $true
+    } catch { return $false }
+}
+$exportHint = '连接文件和自检报告保存在 %ProgramData%\GMSSHWindowsBridge；也可从系统托盘复制连接信息。'
+try {
+    $plan = Get-GMSSHInstallPlan -SetupRoot $PSScriptRoot -Dedicated $dedicated -MonitorOnly ([bool]$MonitorOnly) -TrayOnly ([bool]$TrayOnly)
+    if ($plan -eq 'Existing') {
+        $readiness = Get-GMSSHReadiness
+        $desktopSaved = Save-ConnectionResult $readiness
+        if ($desktopSaved) { $exportHint = '桌面上的 GMSSH-connection.json 和 GMSSH-readiness.json 已更新。也可从系统托盘复制连接信息。' }
+        [void][Windows.Forms.MessageBox]::Show(("检测到已有 GMSSH 安装，账号与密码已保留。`r`n`r`n" + (Format-GMSSHReadiness $readiness) + "`r`n`r`n" + $exportHint), 'GMSSH Windows · 已安装')
+        return
+    }
+} catch {
+    [void][Windows.Forms.MessageBox]::Show(('安装前检查未通过：' + $_.Exception.Message + "`r`n本次未创建账号或安装组件。"), 'GMSSH Windows')
+    exit 1
+}
 $description = "将安装局域网 SSH 和桌面后台服务，设置开机启动及 GMSSH 托盘。`r`n同一子网可访问本机 SSH 22 端口，登录账号为 $WindowsUser。`r`nWindows 账号密码不会更改。"
 if ($MonitorOnly) { $description = "只补装局域网 SSH，允许同一子网访问 22 端口，登录账号为 $WindowsUser。`r`n保留现有桌面密码和设置。" }
 elseif ($PreserveDesktop -or $TrayOnly) { $description += "`r`n本次复用已有桌面引擎，保留其密码和访问设置。" }
@@ -95,7 +125,7 @@ try {
         }
         New-Item -ItemType Directory -Path $root -Force | Out-Null
         '正在配置 GMSSH 托盘…' | Set-Content $progressFile -Encoding UTF8
-        foreach ($name in @('gmssh-agent.ps1','setup-desktop.ps1','credential-dialog.ps1')) {
+        foreach ($name in @('gmssh-agent.ps1','setup-desktop.ps1','credential-dialog.ps1','setup-checks.ps1')) {
             Copy-Item (Join-Path $PSScriptRoot $name) (Join-Path $root $name)
         }
         if (Test-Path (Join-Path $PSScriptRoot 'brand')) {
@@ -105,29 +135,35 @@ try {
         [ordered]@{ schema=1; computer=$ExpectedComputer; username=$WindowsUser; engine=$engine;
                     managedAccountSid=if ($createdAccount) { $createdAccount.SID.Value } else { $null };
                     accountRole=if ($createdAccount) { 'Administrator' } else { 'Existing' };
-                    unifiedPassword=$dedicated } |
+                    unifiedPassword=$dedicated; trayUserSid=$TrayUserSid; version=$settings.version } |
             ConvertTo-Json | Set-Content (Join-Path $reportDirectory 'agent.json') -Encoding UTF8
-        $account = Get-LocalUser -Name $trayUser
         $arguments = '-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + (Join-Path $root 'gmssh-agent.ps1') + '"'
         $action = New-ScheduledTaskAction -Execute (Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe') -Argument $arguments
-        $trigger = New-ScheduledTaskTrigger -AtLogOn -User $account.SID.Value
-        $principal = New-ScheduledTaskPrincipal -UserId $account.SID.Value -LogonType Interactive -RunLevel Limited
-        $taskSettings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -StartWhenAvailable
+        $trigger = New-ScheduledTaskTrigger -AtLogOn -User $TrayUserSid
+        $principal = New-ScheduledTaskPrincipal -UserId $TrayUserSid -LogonType Interactive -RunLevel Limited
+        $taskSettings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
         Register-ScheduledTask -TaskName 'GMSSH Windows Tray' -Action $action -Trigger $trigger `
             -Principal $principal -Settings $taskSettings -Description 'GMSSH Windows local management panel' | Out-Null
         Start-ScheduledTask -TaskName 'GMSSH Windows Tray'
     }
-    $export = Join-Path ([Environment]::GetFolderPath('Desktop')) 'GMSSH-connection.json'
-    Copy-Item $connection $export -Force
+    $installationCommitted = $true
+    '正在执行接入自检…' | Set-Content $progressFile -Encoding UTF8
+    $readiness = Get-GMSSHReadiness -MonitorOnly ([bool]$MonitorOnly)
+    $desktopSaved = Save-ConnectionResult $readiness
+    if ($desktopSaved) { $exportHint = '桌面上已生成 GMSSH-connection.json 和 GMSSH-readiness.json。也可从系统托盘复制连接信息。' }
     Remove-Item $progressFile
     Add-Type -AssemblyName System.Windows.Forms
     $credentialNote = if ($dedicated) { '账号：gmssh（管理员）。使用刚设置的 GMSSH 连接密码添加机器。' } else { '使用现有 Windows 账号密码添加机器。' }
-    [void][Windows.Forms.MessageBox]::Show("安装完成。连接信息已保存到桌面：GMSSH-connection.json`r`n$credentialNote", 'GMSSH Windows')
+    $resultTitle = if ($readiness.readyToPair) { '安装完成 · 本机自检通过' } else { '组件已安装 · 有项目需要检查' }
+    [void][Windows.Forms.MessageBox]::Show(("$credentialNote`r`n`r`n" + (Format-GMSSHReadiness $readiness) + "`r`n`r`n" + $exportHint + "`r`n连接文件交给控制端管理员完成首次添加；这两个文件不含密码。"), ('GMSSH Windows · ' + $resultTitle))
 } catch {
-    if ($desktopNew) { Stop-Service RustDesk -ErrorAction SilentlyContinue }
-    if ($createdAccount) { Remove-LocalUser -Name gmssh -ErrorAction SilentlyContinue }
+    if (-not $installationCommitted) {
+        if ($desktopNew) { Stop-Service RustDesk -ErrorAction SilentlyContinue }
+        if ($createdAccount) { Remove-LocalUser -Name gmssh -ErrorAction SilentlyContinue }
+    }
     Add-Type -AssemblyName System.Windows.Forms
-    [void][Windows.Forms.MessageBox]::Show(('安装未完成：' + $_.Exception.Message), 'GMSSH Windows')
+    $failureTitle = if ($installationCommitted) { '组件已安装，自检或导出未完成；现有账号和密码已保留：' } else { '安装未完成：' }
+    [void][Windows.Forms.MessageBox]::Show(($failureTitle + $_.Exception.Message), 'GMSSH Windows')
     exit 1
 } finally {
     if ($connectionPassword) { $connectionPassword.Dispose() }
