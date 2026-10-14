@@ -10,7 +10,7 @@ export function keyboardModifiers(event: KeyboardEvent): ControlKey[] {
 }
 
 export function keyEvent(event: KeyboardEvent, down: boolean): KeyEvent | undefined {
-  if (event.isComposing || event.repeat) return undefined;
+  if (event.isComposing) return undefined;
   const controls: Readonly<Record<string, ControlKey>> = {
     Alt: ControlKey.Alt, Backspace: ControlKey.Backspace, CapsLock: ControlKey.CapsLock, Control: ControlKey.Control,
     Delete: ControlKey.Delete, ArrowDown: ControlKey.DownArrow, End: ControlKey.End, Escape: ControlKey.Escape,

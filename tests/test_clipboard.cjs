@@ -1,0 +1,10 @@
+const test=require('node:test'),assert=require('node:assert/strict'),path=require('node:path');
+const esbuild=require('../desktop-web/node_modules/esbuild');
+const vm=require('node:vm');
+const result=esbuild.buildSync({entryPoints:[path.join(__dirname,'../desktop-web/src/clipboard.ts')],bundle:true,platform:'node',format:'cjs',write:false});
+const scope={module:{exports:{}},TextDecoder,TextEncoder,Uint8Array,DataView,Error,BigInt};vm.runInNewContext(result.outputFiles[0].text,scope);const{clipboardText,multiClipboard}=scope.module.exports;
+const value=content=>({format:0,compress:false,content});
+const rawFrame=bytes=>{const frame=new Uint8Array(9+bytes.length);frame.set([0x28,0xb5,0x2f,0xfd,0x20,bytes.length]);const header=(bytes.length<<3)|1;frame.set([header&255,(header>>>8)&255,(header>>>16)&255],6);frame.set(bytes,9);return frame;};
+test('RustDesk UTF-8 and zstd clipboard text round trip',()=>{const bytes=new TextEncoder().encode('GMSSH 中文 clipboard');assert.equal(clipboardText(value(bytes)),'GMSSH 中文 clipboard');assert.equal(clipboardText({...value(rawFrame(bytes)),compress:true}),'GMSSH 中文 clipboard');assert.equal(clipboardText({...value(bytes),format:2}),undefined);});
+test('reject malformed text, zstd window bombs and concatenated frames',()=>{const frame=rawFrame(new Uint8Array([65]));assert.throws(()=>clipboardText({...value(new Uint8Array([0x28,0xb5,0x2f,0xfd,0,255,1,0,0])),compress:true}),/大小超过/);assert.throws(()=>clipboardText({...value(new Uint8Array([...frame,...frame])),compress:true}),/不唯一/);assert.throws(()=>clipboardText(value(new Uint8Array([255]))));});
+test('RustDesk 1.5 field28 carries repeated Clipboard field1',()=>{const envelope=new Uint8Array([0xe2,1,7,0x0a,5,0x12,3,65,66,67]);const messages=multiClipboard(envelope);assert.equal(messages.length,1);assert.equal(clipboardText(messages[0]),'ABC');assert.throws(()=>multiClipboard(new Uint8Array([...envelope,0x08,1])),/不唯一/);});

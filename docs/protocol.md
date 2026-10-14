@@ -61,4 +61,6 @@ Windows 直接使用字节计数，因此块字节数为 `1`。例如 C: 的设�
 
 `--gmssh-terminal` 仅在登录探测响应中将 `SUDO` / `SUDO_ACCESS` 改为 `1`，保留实际用户名及 `SUDO_PASSWORD=0`。这是 Linux 协议前置条件的适配标志，不代表目标 Windows 具有 sudo/root，也不改变 Windows 权限。没有启用此模式时，这些探测字段仍为 `0`。
 
+0.4.0a5 增强启动器另适配原生机器添加/编辑：仅对本机 `/node/add`、`/node/edit` 的 POST 请求，且记录地址、端口、账号与已配置的 Windows 桥一致时，设置原生 `sudoPolicy: skip` 并移除 Linux `sudoPassword`。保留原 SSH 凭据和请求目标，不影响 Linux 记录。此处理只省略不适用于 Windows 的 Linux 权限验证，SSH 密码、主机密钥和 Windows ACL 仍生效。
+
 2.0.4 启动请求的指纹来自实机捕获的 SSH exec 字节串；不执行或发布其 Bash 正文。该模式已经验证页面终端。页面文件管理、桌面应用部署、root/sudo、Linux 服务及 Agent 管理均未验收或不支持，不能宣称完整 GMSSH 桌面兼容。

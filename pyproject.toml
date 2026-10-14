@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gmssh-windows-bridge"
-version = "0.4.0a3"
+version = "0.4.0a5"
 description = "Unofficial Windows metrics bridge with opt-in SSH terminal and SFTP"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -18,9 +18,10 @@ desktop = ["websockets>=15,<18"]
 [project.scripts]
 gmssh-windows-bridge = "gmssh_windows_bridge.bridge:main"
 gmssh-windows-desktop = "gmssh_windows_bridge.desktop:main"
+gmssh-windows-launcher = "gmssh_windows_bridge.macos_launcher:main"
 
 [tool.setuptools.package-data]
-gmssh_windows_bridge = ["*.ps1", "desktop_web/**/*", "desktop_web/*"]
+gmssh_windows_bridge = ["*.ps1", "*.cjs", "setup-windows.cmd", "windows-installers.json", "third_party/*", "brand/*", "desktop_web/**/*", "desktop_web/*"]
 
 [tool.setuptools.packages.find]
 include = ["gmssh_windows_bridge*"]

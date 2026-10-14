@@ -1,8 +1,10 @@
 # GMSSH Windows Bridge
 
-**让 Windows 的真实 CPU、内存和磁盘指标显示在 GMSSH / 极目Linux桌面的机器卡片中。**
+**将 Windows 的监控、PowerShell、文件访问和远程桌面接入 GMSSH / 极目Linux桌面。**
 
-非官方、实验性兼容项目。默认只读监控，可显式启用 Windows 原生终端和 SFTP 转发。无需修改 GMSSH 客户端，也不把 Windows 伪装成一台完整的 Linux 服务器。
+非官方、实验性兼容项目。基础桥默认只读监控，可显式启用 Windows 原生终端和 SFTP 转发。可选 Mac 增强启动器增加统一设备列表和桌面工作区；它使用本机已安装的 GMSSH 2.0.4，保留原版应用文件。
+
+项目交付分为 **Windows 一体化服务端** 和 **Mac 增强控制端**。Windows 用户安装一个程序，使用 GMSSH 自己的托盘、状态窗口和密码设置；Mac 端提供增强源码与本机构建工具。当前 Mac 启动器按设备配置构建，通用多设备安装向导仍待开发。GitHub 交付范围、原版依赖和许可说明见 [发布说明](docs/releasing.md)。
 
 ```text
 GMSSH 机器卡片
@@ -28,8 +30,15 @@ Windows OpenSSH Server → 固定 PowerShell / CIM 采集脚本
 | GMSSH 2.0.4 页面中的终端入口 | `--gmssh-terminal`，已在 Windows 11 实机验证 |
 | GMSSH 桌面应用、sudo、Linux 服务管理 | 不支持 |
 | 本地后台运行 | `--background`；输出 PID 和日志路径 |
-| 免费 RustDesk Web 查看器 | 0.4.0a3 实验功能；已接通 GMSSH 2.0.4 内嵌真实桌面；入口需手动激活临时脚本 |
-| Windows 原生安装包、开机启动服务 | 尚未实现 |
+| 免费 RustDesk Web 查看器 | 0.4.0a5 实验功能；监控与桌面复用已认证的 SSH 连接 |
+| 统一首页、顶部桌面标签、文件侧栏 | 列表/卡片切换、独立滚动及分页、状态灯、配置悬浮提示、IP 复制和原生右键编辑 |
+| 设备详情 | CPU/内存/磁盘，Windows 网卡链路、流量、配置与运行时间；信息经现有 SSH 只读采集 |
+| Linux 文件互传入口 | 打开对应 GMSSH 原生桌面并调用内置文件管理器，不新增一套 Linux 传输协议 |
+| 桌面工具栏 | 键盘、文本剪贴板、屏幕切换与画质控制已实现；新增功能待目标机复核 |
+| 文件上传与下载 | 经已认证 SSH/SFTP；单文件上限 512 MiB，不覆盖已有目标文件 |
+| 电源操作 | 锁屏、重启、关机；重启/关机在控制端倒计时 30 秒后发送，实机操作未执行 |
+| 局域网唤醒 | 配置已配对网卡 MAC 和实际子网广播地址后可用；依赖目标硬件支持 |
+| Windows 端安装器候选 | 离线 SSH、内部桌面引擎、开机服务、GMSSH 托盘与密码窗口；待 Windows 全流程验收 |
 | 多台 Windows | 每台运行一个实例，使用不同本地端口 |
 
 首个原型已在 **Apple Silicon macOS + Windows 11 25H2 + GMSSH 2.0.4**上验证机器卡片的动态 CPU、内存和磁盘显示。此结果不代表所有客户端版本都兼容，也不代表本项目获得官方支持。兼容依据见 [协议说明](docs/protocol.md)。
@@ -38,10 +47,12 @@ Windows OpenSSH Server → 固定 PowerShell / CIM 采集脚本
 
 - 运行桥的电脑：Python 3.10+，可访问目标 Windows 的 SSH 端口。
 - 目标 Windows：OpenSSH Server 已配置，现有账号允许密码登录，可运行 Windows PowerShell 5.1、CIM 和 `Add-Type`；文件访问还需原生 SFTP 子系统可用。
-- 网络：局域网或已配置的 Tailscale 等私有网络。本项目不安装 VPN，也不自动开放防火墙。
+- 网络：局域网 IP 或可解析主机名。本项目不安装或配置 VPN；其他网络方式由使用者自行管理。桥进程不改远端设置，Windows 首次接入向导在明确运行后配置 SSH 和局域网防火墙规则。
 - 只支持密码认证。桥将 GMSSH 输入的账号密码用于目标认证，**不落盘**；GMSSH 自身保存凭据的行为另计。
 
 ## 快速开始
+
+新 Windows 电脑的[局域网端安装器候选](docs/windows-first-run.md)提供单个 `GMSSH-Windows-Setup.exe`，内含官方离线 OpenSSH MSI 和校验后的桌面引擎。使用 GMSSH 自己的托盘和密码窗口，设置开机服务；默认仅允许本地子网访问 SSH。已有桌面的测试机可使用 `-MonitorOnly`，保留原密码和配置。Windows 全流程验收状态单独记录。
 
 在项目目录中执行：
 
@@ -88,7 +99,7 @@ gmssh-windows-bridge --target windows-host --username windows-user \
 | 密码 | 该 Windows 账号的现有 SSH 密码 |
 | 跳板机 | 不设置 |
 
-测试连接后添加。如果客户端询问 Linux sudo 密码，选择 **跳过**。Windows 不存在对应的 sudo 密码，不要修改 Windows 账号或赋予额外权限来通过这个界面。
+测试连接后添加。0.4.0a5 增强启动器会为已配置的 Windows 兼容桥自动选择原生 `sudoPolicy: skip`，添加和编辑时无需输入 Linux sudo 密码。匹配要求本机桥地址、端口和 Windows 账号全部一致，其他机器保留原验证。单独使用原 GMSSH 客户端时，仍可在该提示选择 **跳过**；Windows 不存在对应的 sudo 密码。
 
 保持桥进程运行，刷新机器列表。按 `Ctrl-C` 停止；停止后该试验条目会显示离线，原来的 Windows SSH 服务不受影响。
 
@@ -154,10 +165,10 @@ gmssh-windows-bridge --target windows-host --username windows-user \
 
 ## 必须知道的限制
 
-0.4.0a3 提供免费 RustDesk Web 查看器，可独立运行或随桥在后台启动。已在 GMSSH 2.0.4 中接通真实 Windows 桌面，验证临时桌面按钮、基本输入、关闭重开和画面放大/恢复；操作者复核手动英文输入顺序正确。VP9 默认优先使用软件解码。内嵌入口需手动激活脚本，刷新页面或重启客户端后需重新加载。自动输入测试仍有异常；中文输入法、管理员窗口及长期运行仍待验收。安装、启动、入口与许可见 [免费 RustDesk 桌面接入](docs/desktop-rustdesk.md)。
+0.4.0a5 的 macOS 启动器默认进入首页，点击设备原蓝色图标打开同一行的 Windows 桌面标签。局域网版本通过 SSH 同时提供监控、文件和桌面，桌面复用已认证的监控连接。此前真实桌面、标签切换和保存密码后退出重开已验收；本次界面、统一监控和首次安装流程的新增实机验收另见 [验证记录](docs/validation.md)。使用方法见 [免费 RustDesk 桌面接入](docs/desktop-rustdesk.md)。
 
 - **非官方 Windows 集成**：页面终端及指标属于协议适配；桌面查看器是独立的实验入口。
-- 客户端可能显示 Linux 企鹅图标，因为其系统识别逻辑仅面向 Linux。实际 OS 名称仍返回 Windows，并明确注明协议适配。
+- 增强端为已绑定的 Windows 设备显示独立系统图标；单独使用原版 GMSSH 时仍可能显示 Linux 图标。实际 OS 名称返回 Windows。
 - 卡片延迟是到 **本机桥** 的 SSH 延迟，不代表 Windows 网络延迟；“在线”表示本次采集可用，不是独立的可用性监控。
 - Windows 可见内存不等于标称物理内存；客户端标为 GB 的展示可能按 GiB 换算。
 - 磁盘只列固定逻辑卷，不显示物理 RAID 健康、网络盘或可移动盘。
@@ -165,6 +176,9 @@ gmssh-windows-bridge --target windows-host --username windows-user \
 - 超过 64 个逻辑处理器的系统可能受 Windows processor groups 限制，未验证。
 - 最快 2 秒缓存快指标，30 秒缓存慢指标，避免每次界面请求都重复执行昂贵采集。
 - GMSSH 的协议没有兼容承诺，升级后可能失效。不要用它替代业务告警系统。
+- 文件侧栏只支持单文件上传/下载和目录浏览，尚无文件夹递归传输、断点续传；下载在浏览器内存中组装。
+- 当前只支持文本剪贴板；音频、会话录制、隐私屏幕、远程打印和剪贴板文件尚未实现。
+- 关机后自动重连和远程硬件唤醒未实机验收。发送唤醒包不代表电脑已经启动。
 
 ## 排错
 

@@ -10,10 +10,129 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import paramiko
-from gmssh_windows_bridge.desktop import MAX_FRAME, connect_target, create_server, frame_header, read_frame
+from gmssh_windows_bridge.desktop import MAX_FRAME, MonitorDesktopPool, MonitorUnavailable, connect_target, create_server, frame_header, read_frame, tailnet_channel
+from gmssh_windows_bridge.bridge import Session
 
 
 class DesktopTransportTests(unittest.TestCase):
+    def test_monitor_authentication_and_desktop_lease_share_only_one_fixed_transport(self):
+        pool = MonitorDesktopPool(21118, 0.01)
+        config = SimpleNamespace(username='synthetic-user', target='windows.example.invalid', target_port=22,
+                                 timeout=1, known_hosts=Path('synthetic-hosts'), desktop_sessions=pool)
+        session = Session(config)
+        with self.assertRaises(MonitorUnavailable): pool.connect()
+        with patch('gmssh_windows_bridge.bridge.paramiko.SSHClient') as factory:
+            self.assertEqual(session.check_auth_password('other-user', 'synthetic-password'), paramiko.AUTH_FAILED)
+            factory.assert_not_called()
+            self.assertEqual(session.check_auth_password('synthetic-user', 'synthetic-password'), paramiko.AUTH_SUCCESSFUL)
+            remote = factory.return_value
+            lease, channel = pool.connect()
+            remote.get_transport.return_value.open_channel.assert_called_once_with(
+                'direct-tcpip', ('127.0.0.1', 21118), ('127.0.0.1', 0), timeout=0.01)
+            with self.assertRaises(MonitorUnavailable): MonitorDesktopPool(21118, 0.01).connect()
+            session.close_remote()
+            remote.close.assert_not_called()
+            lease.close(); lease.close()
+            remote.close.assert_called_once()
+            self.assertFalse(pool.clients)
+
+    @unittest.skipUnless(importlib.util.find_spec('websockets'), 'optional desktop dependency not installed')
+    def test_shared_monitoring_requires_private_token_even_without_saved_passwords(self):
+        from websockets.sync.client import connect
+        cfg = SimpleNamespace(listen_port=0, target='windows.example.invalid', username='synthetic-user',
+                              target_port=22, rustdesk_port=21118, timeout=1, monitor_channel=MagicMock())
+        with self.assertRaises(ValueError): create_server(cfg)
+        cfg.access_token = 's' * 43
+        remote, peer = socket.socketpair(); remote.settimeout(0.1)
+        lease = MagicMock(); released = threading.Event(); lease.close.side_effect = released.set
+        cfg.monitor_channel.return_value = (lease, remote)
+        with create_server(cfg) as server:
+            thread = threading.Thread(target=server.serve_forever); thread.start()
+            port = server.socket.getsockname()[1]; origin = f'http://127.0.0.1:{port}'
+            try:
+                http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                with http.open(origin + '/config.json', timeout=3) as response:
+                    info = json.load(response)
+                self.assertEqual(info['transport'], 'monitor'); self.assertTrue(info['requires_token']); self.assertFalse(info['keychain'])
+                with connect(f'ws://127.0.0.1:{port}/socket', origin=origin, proxy=None) as ws:
+                    ws.send(json.dumps({'password': ''}))
+                    self.assertEqual(json.loads(ws.recv(timeout=3))['code'], 'DesktopAccessError')
+                cfg.monitor_channel.assert_not_called()
+                with connect(f'ws://127.0.0.1:{port}/socket', origin=origin, proxy=None) as ws:
+                    ws.send(json.dumps({'password': '', 'token': cfg.access_token}))
+                    self.assertEqual(json.loads(ws.recv(timeout=3)), {'type': 'ssh_ready'})
+                    ws.send(b'\x08\x01'); self.assertEqual(read_frame(peer, threading.Event()), b'\x08\x01')
+                self.assertTrue(released.wait(4)); lease.close.assert_called_once()
+            finally:
+                server.shutdown(); thread.join(timeout=3); remote.close(); peer.close()
+
+    @unittest.skipUnless(importlib.util.find_spec('websockets'), 'optional desktop dependency not installed')
+    def test_saved_credentials_stay_in_the_fixed_origin_and_save_is_bounded(self):
+        from websockets.sync.client import connect
+        cfg = SimpleNamespace(listen_port=0, target='100.64.0.7', username='', target_port=22,
+            direct_tailscale=True, rustdesk_port=21118, timeout=3, keychain_store=MagicMock(), access_token='s' * 43)
+        cfg.keychain_store.get.return_value = 'synthetic-desktop-password'
+        remote, peer = socket.socketpair()
+        with patch('gmssh_windows_bridge.desktop.tailnet_channel', return_value=remote) as upstream, create_server(cfg) as server:
+            thread = threading.Thread(target=server.serve_forever)
+            thread.start()
+            port = server.socket.getsockname()[1]
+            origin = f'http://127.0.0.1:{port}'
+            try:
+                http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                cfg.keychain_store.exists.return_value = False
+                with http.open(origin + '/config.json', timeout=3) as response:
+                    self.assertFalse(json.load(response)['has_saved_password'])
+                cfg.keychain_store.exists.side_effect = OSError('locked synthetic keychain')
+                with http.open(origin + '/config.json', timeout=3) as response:
+                    self.assertFalse(json.load(response)['has_saved_password'])
+                cfg.keychain_store.get.assert_not_called()
+                cfg.keychain_store.exists.side_effect = None
+                for token in (None, 'wrong-token'):
+                    with connect(f'ws://127.0.0.1:{port}/socket', origin=origin, proxy=None) as ws:
+                        credentials = {'password': '', 'saved': True}
+                        if token: credentials['token'] = token
+                        ws.send(json.dumps(credentials))
+                        self.assertEqual(json.loads(ws.recv(timeout=3))['code'], 'DesktopAccessError')
+                upstream.assert_not_called()
+                cfg.keychain_store.get.assert_not_called()
+                with connect(f'ws://127.0.0.1:{port}/socket', origin=origin, proxy=None) as ws:
+                    ws.send(json.dumps({'password': '', 'saved': True, 'token': cfg.access_token}))
+                    self.assertEqual(json.loads(ws.recv(timeout=3)), {'type': 'desktop_credential', 'password': 'synthetic-desktop-password'})
+                    self.assertEqual(json.loads(ws.recv(timeout=3)), {'type': 'tailscale_ready'})
+                    for bad in ({'remember': 'x' * 4097}, {'remember': 'x', 'target': 'other-device'}, {'remember': 7}):
+                        ws.send(json.dumps(bad))
+                        self.assertEqual(json.loads(ws.recv(timeout=3)), {'type': 'credential_error'})
+                    cfg.keychain_store.save.assert_not_called()
+                    ws.send(json.dumps({'remember': 'synthetic-desktop-password'}))
+                    self.assertEqual(json.loads(ws.recv(timeout=3)), {'type': 'credential_saved'})
+                    cfg.keychain_store.save.assert_called_once_with('synthetic-desktop-password')
+                    ws.send(b'\x08\x01')
+                    self.assertEqual(read_frame(peer, threading.Event()), b'\x08\x01')
+            finally:
+                server.shutdown(); thread.join(timeout=3)
+                remote.close(); peer.close()
+
+    def test_tailscale_requires_the_exact_online_peer_before_any_socket(self):
+        cfg = SimpleNamespace(target='100.64.0.7', tailscale_name='test-windows',
+                              tailscale_cli=Path('/synthetic/tailscale'), timeout=3, rustdesk_port=21118)
+        peer = {'HostName': 'test-windows', 'TailscaleIPs': ['100.64.0.7'], 'Online': True}
+        state = {'BackendState': 'Running', 'Peer': {'synthetic-key': peer}}
+        with patch('gmssh_windows_bridge.desktop.subprocess.run') as command, \
+                patch('gmssh_windows_bridge.desktop.socket.create_connection') as connection:
+            command.return_value.stdout = json.dumps(state)
+            self.assertIs(tailnet_channel(cfg), connection.return_value)
+            self.assertEqual(command.call_args.kwargs['env']['TAILSCALE_BE_CLI'], '1')
+            connection.assert_called_once_with(('100.64.0.7', 21118), timeout=3)
+            connection.reset_mock()
+            for changed in ({**peer, 'HostName': 'other-windows'}, {**peer, 'Online': False}):
+                state['Peer']['synthetic-key'] = changed
+                command.return_value.stdout = json.dumps(state)
+                with self.assertRaises(ValueError): tailnet_channel(cfg)
+            cfg.target = '203.0.113.7'
+            with self.assertRaises(ValueError): tailnet_channel(cfg)
+            connection.assert_not_called()
+
     def test_native_header_vectors_and_fragmented_packets(self):
         # Native RustDesk BytesCodec boundary vectors, independent of a round trip.
         vectors = {0: b'\x00', 63: b'\xfc', 64: b'\x01\x01',

@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>桌面图标路由回归检查</title>
+<style>
+body{font:16px system-ui;background:#17191d;color:#eee;padding:24px}.tabs-container{height:48px;display:flex;align-items:center;gap:12px}.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}.native-card{padding:20px;background:#30343c}.machine-operate-btn-gm{background:#5267f4;color:white;border:0;border-radius:50%;width:34px;height:34px;cursor:pointer}pre{white-space:pre-wrap}button{cursor:pointer}
+</style>
+<h1>桌面图标路由回归检查</h1>
+<p>只使用本机模拟卡片，不连接远程电脑。由项目根目录运行 python -m http.server 后打开本页。</p>
+<button id="run">运行检查</button><pre id="result">待运行</pre>
+<div class="tabs-container"><div class="tabs-home"><button class="tab-chip tab-chip--home">首页</button></div></div>
+<input placeholder="搜索机器名称、IP或备注">
+<div class="machine-body"><div class="native-table-header">原生表头</div><div class="machine-card-scroll"><div class="n-scrollbar-container"><div class="grid"></div></div></div></div>
+<script src="../desktop-web/public/gmssh-entry.js"></script>
+<script src="../desktop-web/public/gmssh-home.js"></script>
+<script>
+document.querySelector('#run').onclick = async () => {
+  const result = document.querySelector('#result');
+  const grid = document.querySelector('.grid');
+  const checks = [];
+  const assert = (ok, message) => { if (!ok) throw Error(message); checks.push('PASS ' + message); };
+  const viewerUrl = location.origin + '/tests/desktop-entry-viewer.html';
+  const settle = () => new Promise(resolve => requestAnimationFrame(resolve));
+  const addNative = (id) => {
+    const node = document.createElement('article');
+    node.className = 'native-card'; node.dataset.machineId = id;
+    node.innerHTML = '<img class="machine-icon-img" src="../desktop-web/public/ui-icons/terminal-window.svg" alt="Linux"><b class="machine-name"></b><span class="machine-ip">192.0.2.7</span><div class="h-[22px] rounded-full">80ms</div><div class="machine-progress"><span class="label">CPU(8核):</span><span class="label-value">12.0%</span></div><div class="machine-progress"><span class="label-value">4 / 16GB</span></div><div class="machine-progress"><span class="label-value">80 / 256GB</span></div><button class="machine-operate-btn machine-operate-btn-gm" data-machine-action="desktop"><i>◉</i></button>';
+    node.querySelector('b').textContent = id;
+    node.querySelector('button').onclick = () => { node.dataset.nativeCalls = String(Number(node.dataset.nativeCalls || 0) + 1); };
+    grid.append(node); return node;
+  };
+  try {
+    window.removeGMSSHHome?.(); window.removeWindowsDesktopEntry?.(); grid.replaceChildren();
+    localStorage.setItem('GmsshMachineView','list');
+    const controller = installWindowsDesktopEntry({ machineId: 'synthetic-windows', viewerUrl });
+    const windows = addNative('synthetic-windows'), linux = addNative('synthetic-linux');
+    const extra = Array.from({length:14}, (_,index)=>addNative('synthetic-linux-' + (index+3)));
+    await settle();
+    assert(windows.querySelector('img').src.endsWith('/ui-icons/windows.svg') && linux.querySelector('img').alt === 'Linux', '仅已绑定的 Windows 原生卡片使用 Windows 图标，Linux 图标保留');
+    const css = await fetch('../desktop-web/public/gmssh-theme.css').then(response=>response.text());
+    const home = installGMSSHHome({ machineId:'synthetic-windows', viewerUrl, css });
+    assert(document.querySelector('.machine-body').classList.contains('gm-native-source') && !document.querySelector('.machine-body').contains(document.querySelector('#gmssh-machine-workspace')),'替换整个原生列表区域，增强表格放在原生表头与滚动容器之外');
+    assert(document.querySelector('[data-gmssh-row="synthetic-windows"] .gm-os-icon').alt === 'Windows' && document.querySelector('[data-gmssh-row="synthetic-linux"] .gm-os-icon').src === linux.querySelector('img').src, '首页设备列表区分 Windows 与 Linux 系统图标');
+    assert(document.querySelectorAll('th .gm-ui-icon').length === 3 && document.querySelectorAll('.gm-detail-metric .gm-ui-icon').length === 3, 'CPU、内存、磁盘表头及详情使用小图标');
+    assert([...document.querySelectorAll('[data-gmssh-row] button[title="文件互传"] img')].every(image=>image.src.endsWith('/arrows-left-right.svg')), 'Windows 和 Linux 统一使用双向箭头与文件互传名称');
+    assert(document.querySelector('.gm-device-details h3:nth-of-type(2)').textContent==='资源使用' && !document.querySelector('.gm-identity-text small').textContent.includes('Windows'), '资源使用去掉当前，设备名称旁不重复标注 Windows');
+    assert(document.querySelector('[data-gmssh-row="synthetic-linux"] .gm-status-dot.good').title==='80ms' && document.querySelector('[data-gmssh-row="synthetic-linux"] .gm-device-identity').title.includes('8 逻辑核'), '延迟读取原生徽标，设备悬浮提示包含处理器和配置容量');
+    const savedAPI=window.electronAPI;let copied;
+    window.electronAPI={invoke:async(_channel,request)=>{copied=request.data;return {status:'ok'};}};
+    document.querySelector('.gm-copy-address').click();await settle();
+    assert(copied==='192.0.2.7' && document.querySelector('[role="status"]').textContent==='IP 地址已复制','右侧 IP 点击复制精确地址并显示成功提示');
+    window.electronAPI={invoke:async()=>({status:'error'})};document.querySelector('.gm-copy-address').click();await settle();
+    assert(document.querySelector('[role="status"]').textContent.includes('复制失败'),'复制失败不会显示成功提示');window.electronAPI=savedAPI;
+    const list = document.querySelector('.gm-device-list');
+    assert(list.clientHeight > 0 && list.scrollHeight > list.clientHeight && list.getBoundingClientRect().bottom <= innerHeight, '16 台设备的列表在窗口内独立滚动');
+    list.scrollTop = list.scrollHeight;
+    const last = document.querySelector('[data-gmssh-row="synthetic-linux-16"]');
+    assert(last.getBoundingClientRect().bottom <= list.getBoundingClientRect().bottom + 1, '滚动到底部后最后一台设备完整可见');
+    const headerTop = list.querySelector('th').getBoundingClientRect().top;
+    assert(Math.abs(headerTop - list.getBoundingClientRect().top) < 3, '滚动时设备表头保持固定');
+    last.click();
+    assert(document.querySelector('.gm-device-details h2').textContent === 'synthetic-linux-16', '最后一台设备可选择并显示详情');
+    const bottom = list.scrollTop;
+    windows.querySelector('.machine-name').textContent = 'updated Windows'; home.refresh();
+    assert(document.querySelector('.gm-device-list') === list && Math.abs(list.scrollTop-bottom) < 1, '实时刷新和选择设备保留同一滚动区域及底部位置');
+    let paged=false;const nativeScroll=document.querySelector('.n-scrollbar-container');nativeScroll.addEventListener('scroll',()=>{paged=true;},{once:true});list.dispatchEvent(new Event('scroll'));
+    assert(paged,'滚到底部同步原生分页滚动事件，继续加载尚未呈现的设备');
+    localStorage.setItem('GmsshMachineView','card');home.refresh();
+    assert(document.querySelectorAll('.gm-device-card').length===16 && !document.querySelector('.gm-device-table'),'原生卡片显示设置生成完整卡片布局');
+    list.scrollTop=list.scrollHeight;document.querySelector('[data-gmssh-row="synthetic-linux-16"]').click();
+    assert(document.querySelector('.gm-device-details h2').textContent==='synthetic-linux-16','卡片模式也可滚动选择最后的设备');
+    localStorage.setItem('GmsshMachineView','list');home.refresh();
+    assert(document.querySelector('.gm-device-table') && Math.abs(list.scrollTop-bottom)<1,'切回列表保留独立的滚动位置与设备选择');
+    let context,backgroundMenu=0;const background=event=>{if(event.target.closest('#gmssh-machine-workspace'))backgroundMenu++;};document.body.addEventListener('contextmenu',background);
+    linux.addEventListener('contextmenu',event=>{context={target:event.target.dataset.machineId,x:event.clientX,y:event.clientY};event.preventDefault();});
+    document.querySelector('[data-gmssh-row="synthetic-linux"]').dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,clientX:40,clientY:60}));
+    assert(context?.target==='synthetic-linux'&&context.x===40&&context.y===60&&backgroundMenu===0,'右键只转交原机器的编辑菜单，避免被背景菜单覆盖');document.body.removeEventListener('contextmenu',background);
+    const nativeView=document.createElement('webview');nativeView.className='home-container-view';nativeView.setAttribute('src',location.origin+'/newweb/#/home?machineId=synthetic-linux');let fileCalls=0;
+    nativeView.executeJavaScript=async code=>{assert(code.includes('window.$gm.openFolder("/")')&&!code.includes('token'),'Linux 文件入口只调用固定的内置文件 SDK');fileCalls++;return true;};document.body.append(nativeView);
+    document.querySelector('[data-gmssh-row="synthetic-linux"] button[title="文件互传"]').click();await settle();
+    assert(fileCalls===1&&linux.dataset.nativeCalls==='1','Linux 先打开对应原生桌面再进入文件管理器，未发起安装或额外认证');
+    nativeView.remove();delete linux.dataset.nativeCalls;
+    home.remove();
+    extra.forEach(node=>node.remove());
+    windows.querySelector('i').click();
+    const panel = document.querySelector('#gmssh-windows-panel'), frame = panel?.querySelector('iframe');
+    assert(frame && !windows.dataset.nativeCalls, '已绑定机器的原蓝色图标进入 Windows 分支，阻止原 Linux 入口');
+    assert(document.querySelector('[role="tab"] img').src.endsWith('/ui-icons/windows.svg'), '顶部 Windows 桌面标签沿用同一系统图标');
+    document.querySelector('.tab-chip--home').click();
+    assert(panel.hidden && panel.querySelector('iframe') === frame, '切回首页保留同一会话');
+    linux.querySelector('i').click();
+    assert(linux.dataset.nativeCalls === '1' && panel.hidden, '其他机器的原生桌面逻辑不受影响');
+    windows.querySelector('i').click();
+    assert(!panel.hidden && panel.querySelector('iframe') === frame, '再次点击机器原图标切回原会话');
+    controller.remove(); windows.querySelector('i').click();
+    assert(windows.dataset.nativeCalls === '1', '卸载后恢复原图标逻辑');
+    assert(windows.querySelector('img').alt === 'Linux' && windows.querySelector('img').getAttribute('src') === '../desktop-web/public/ui-icons/terminal-window.svg', '卸载后恢复原始系统图标与替代文本');
+    windows.classList.add('list-item-group');
+    const listController = installWindowsDesktopEntry({ machineId:'synthetic-windows', viewerUrl });
+    assert(windows.querySelector('img').alt === 'Windows', '原生列表视图也使用 Windows 图标');
+    windows.dataset.machineId = 'recycled-linux'; await settle();
+    assert(windows.querySelector('img').alt === 'Linux', '原生节点复用于 Linux 设备时恢复系统图标');
+    listController.remove();
+
+    const desktop = installWindowsDesktopEntry({ viewerUrl, label: 'Test A4', card: { host: '100.64.0.7', name: 'synthetic-a4' } });
+    const card = document.querySelector('[data-windows-desktop-card]');
+    assert(card?.querySelector('.machine-operate [data-machine-action="desktop"].machine-operate-btn-gm') && !document.querySelector('[data-windows-desktop-launcher]'), '桌面专用卡片复用原蓝色图标及样式容器，没有悬浮入口');
+    const search = document.querySelector('input'); search.value = 'Test A4';
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    windows.remove(); linux.remove();
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    assert(card.isConnected && !card.hidden, '仅匹配桌面卡片时搜索仍保留入口');
+    card.querySelector('i').click();
+    assert(document.querySelector('#gmssh-windows-panel') && document.querySelectorAll('.gmssh-windows-tab').length === 1, '桌面卡片沿同一图标事件进入对应顶部标签');
+    desktop.remove();
+    assert(!document.querySelector('[data-windows-desktop-card]'), '卸载清除桌面专用卡片');
+    let rejected = false;
+    try { installWindowsDesktopEntry({ machineId: 'synthetic-windows', viewerUrl: 'https://example.com/' }); } catch { rejected = true; }
+    assert(rejected, '继续拒绝非本机查看器');
+    result.textContent = checks.join('\n') + '\n全部通过';
+  } catch (error) { result.textContent = checks.join('\n') + '\nFAIL ' + error.message; }
+};
+</script>
+</html>

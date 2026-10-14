@@ -6,6 +6,7 @@ import logging
 import os
 from pathlib import Path
 import socket
+import sys
 import threading
 import time
 
@@ -139,9 +140,19 @@ class Session(paramiko.ServerInterface):
             LOG.warning("Upstream connection failed (%s)", type(exc).__name__)
             return paramiko.AUTH_FAILED
         if self.remote:
-            self.remote.close()
+            self.close_remote()
         self.remote = remote
+        if getattr(self.config, "desktop_sessions", None) is not None:
+            self.config.desktop_sessions.attach(remote)
         return paramiko.AUTH_SUCCESSFUL
+
+    def close_remote(self):
+        if self.remote:
+            pool = getattr(self.config, "desktop_sessions", None)
+            if pool is not None:
+                pool.detach(self.remote)
+            else:
+                self.remote.close()
 
     def check_channel_request(self, kind, chanid):
         with self.lock:
@@ -325,8 +336,7 @@ def serve(client, host_key, config, slots):
         LOG.info("Client disconnected")
     finally:
         transport.close()
-        if session.remote:
-            session.remote.close()
+        session.close_remote()
         for worker in workers:
             worker.join(1)
         slots.release()
@@ -352,6 +362,10 @@ def main():
     parser.add_argument("--target-port", type=int, default=22)
     parser.add_argument("--listen-port", type=int, default=22229)
     parser.add_argument("--desktop-port", type=int, help="Enable experimental free RustDesk web viewer on a separate loopback port")
+    parser.add_argument("--desktop-shared-auth", action="store_true", help="Use the authenticated monitoring transport for the desktop; no extra SSH password")
+    parser.add_argument("--desktop-keychain", action="store_true", help="Remember the RustDesk password in macOS Keychain when using shared monitoring")
+    parser.add_argument("--wake-mac", help="Paired Windows NIC MAC; requires Wake-on-LAN to be enabled on that device")
+    parser.add_argument("--wake-broadcast", help="Connected LAN broadcast IPv4; private address ending in .255, fixed UDP 9")
     parser.add_argument("--rustdesk-port", type=int, default=21118, help="Windows loopback RustDesk direct-access port; used only with --desktop-port")
     parser.add_argument("--known-hosts", type=Path, default=Path.home() / ".ssh/known_hosts")
     parser.add_argument("--host-key", type=Path, default=Path.home() / ".gmssh-windows-bridge/host_key")
@@ -369,6 +383,11 @@ def main():
     parser.add_argument("--gmssh-terminal", action="store_true",
                         help="Adapt GMSSH 2.0.4 Linux preflight/bootstrap to a native Windows terminal; no elevation")
     config = parser.parse_args()
+    from .desktop_operations import wake_settings
+    try:
+        wake = wake_settings(config)
+    except ValueError as error:
+        parser.error(str(error))
     if config.gmssh_terminal:
         config.enable_terminal = True
     if not (1 <= config.target_port <= 65535 and 1 <= config.listen_port <= 65535 and 3 <= config.timeout <= 120):
@@ -376,6 +395,12 @@ def main():
     if config.desktop_port is not None and (not 1 <= config.desktop_port <= 65535 or
             not 1 <= config.rustdesk_port <= 65535 or config.desktop_port == config.listen_port):
         parser.error("desktop and SSH listen ports must be different valid ports")
+    if config.desktop_shared_auth and (config.desktop_port is None or config.background):
+        parser.error("shared desktop authentication requires a foreground desktop service or the native launcher")
+    if wake is not None and (config.desktop_port is None or config.background):
+        parser.error("Wake-on-LAN requires a foreground desktop service or the native launcher")
+    if config.desktop_keychain and (not config.desktop_shared_auth or sys.platform != 'darwin'):
+        parser.error("desktop Keychain requires shared monitoring on macOS")
     if not config.known_hosts.is_file():
         parser.error("known_hosts missing: verify the Windows SSH host key first")
     if config.background:
@@ -402,9 +427,25 @@ def main():
                     parser.error("desktop frontend assets are missing; build desktop-web first")
                 desktop_config = argparse.Namespace(**{**vars(config), 'listen_port': config.desktop_port,
                                                        'timeout': min(config.timeout, 60)})
+                if config.desktop_shared_auth:
+                    from .desktop import MonitorDesktopPool
+                    import secrets
+                    config.desktop_sessions = MonitorDesktopPool(config.rustdesk_port, min(config.timeout, 60))
+                    desktop_config.monitor_channel = config.desktop_sessions.connect
+                    desktop_config.monitor_pool = config.desktop_sessions
+                    desktop_config.access_token = secrets.token_urlsafe(32)
+                    if config.desktop_keychain:
+                        from .keychain import DesktopKeychain
+                        desktop_config.keychain_store = DesktopKeychain(
+                            f"ssh:{config.username.casefold()}@{config.target.casefold()}:{config.target_port}:{config.rustdesk_port}")
+                if wake is not None and not getattr(desktop_config, 'access_token', ''):
+                    import secrets
+                    desktop_config.access_token = secrets.token_urlsafe(32)
                 desktop = resources.enter_context(create_server(desktop_config))
                 threading.Thread(target=desktop.serve_forever, daemon=True).start()
-                print(f"RustDesk desktop preview: http://127.0.0.1:{config.desktop_port}/", flush=True)
+                token = getattr(desktop_config, 'access_token', '')
+                suffix = '#token=' + token if token else ''
+                print(f"RustDesk desktop preview: http://127.0.0.1:{config.desktop_port}/{suffix}", flush=True)
             except ImportError:
                 parser.error("install desktop support with: pip install '.[desktop]'")
             except OSError as error:

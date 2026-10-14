@@ -1,32 +1,21 @@
 <!doctype html>
 <html lang="zh-CN">
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Windows 桌面 · RustDesk</title>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GMSSH · Windows 桌面</title><link rel="icon" href="/brand/gmssh.png">
 <div id="app">
-  <header>
-    <h1>Windows 桌面 <span>RustDesk · 免费实验版</span></h1>
-    <p id="target">正在读取连接配置…</p>
-    <form id="login" autocomplete="off">
-      <label>Windows SSH 密码<input id="ssh-password" type="password" required autocomplete="off"></label>
-      <label>RustDesk 密码<input id="desktop-password" type="password" autocomplete="off" placeholder="留空时在 Windows 端确认"></label>
-      <button id="connect" type="submit" disabled>连接桌面</button>
-      <button id="disconnect" type="button" disabled>断开</button>
-      <button id="fullscreen" type="button" disabled>全屏</button>
-    </form>
-    <p id="status" role="status" aria-live="polite">未连接。</p>
-  </header>
-  <main id="viewport">
-    <div id="empty">
-      <h2>直接操作 Windows 桌面</h2>
-      <p>Windows 上需运行 RustDesk 并启用“直接 IP 访问”。</p>
-      <p>画面和输入通过现有 SSH 连接传送。两种密码分别验证，不保存到本地。</p>
-      <p>本实验版支持 VP9 画面、鼠标和基本键盘；暂不支持剪贴板、音频和多屏切换。</p>
-    </div>
-    <canvas id="screen" tabindex="0" aria-label="Windows 远程桌面，点击后可使用键盘" hidden></canvas>
-    <button id="leave-fullscreen" type="button">退出全屏</button>
-  </main>
-  <footer>开源协议组件：<a href="/third-party-licenses/kessoku-MIT.txt" target="_blank" rel="noopener">Kessoku MIT</a> · <a href="/third-party-licenses/protobuf.txt" target="_blank" rel="noopener">Protobuf 许可</a></footer>
-</div>
+<section class="workbench">
+<header class="toolbar"><div class="connection"><img class="gm-os-icon" src="/ui-icons/windows.svg" alt="Windows"><strong id="session-label">Windows 桌面</strong><small id="target">正在读取配置…</small><span id="connection-label">未连接</span></div><div class="tools">
+<label class="select-button"><img src="/ui-icons/monitor.svg" alt=""><select id="display" aria-label="显示器" disabled><option>显示器 1</option></select></label><label class="select-button"><select id="zoom" aria-label="缩放"><option value="fit">适应窗口</option><option value="100">100%</option></select></label><label class="select-button"><select id="quality" aria-label="画质" disabled><option value="balanced">均衡画质</option><option value="best">清晰画质</option><option value="low">流畅画质</option></select></label>
+<button id="keyboard" disabled><img src="/ui-icons/keyboard.svg" alt="">键盘</button><button id="clipboard" disabled><img src="/ui-icons/clipboard.svg" alt="">剪贴板</button><button id="files"><img src="/ui-icons/arrows-left-right.svg" alt="">文件互传</button><button id="power"><img src="/ui-icons/power.svg" alt="">电源</button><button id="fullscreen" disabled><img src="/ui-icons/desktop.svg" alt="">放大</button>
+</div><details id="desktop-menu" class="toolbar-menu"><summary aria-label="更多选项" title="更多选项"><img src="/ui-icons/dots-three.svg" alt=""></summary><div class="menu-panel"><button id="about"><img src="/ui-icons/gear.svg" alt="">关于与许可</button></div></details></header>
+<div id="login-wrap"><form id="login" autocomplete="off"><label id="ssh-label">Windows SSH 密码<input id="ssh-password" type="password" autocomplete="off" required></label><label>桌面连接密码<input id="desktop-password" type="password" autocomplete="off" placeholder="首次连接请输入安装时设置的密码"></label><label id="remember-label" hidden><input id="remember-password" type="checkbox" checked>记住密码（本机钥匙串）</label><button id="connect" type="submit" class="primary" disabled>连接桌面</button><button id="disconnect" type="button" disabled>断开</button></form><p id="credential-note"></p></div>
+<div class="workspace"><main id="viewport"><div id="empty"><img src="/brand/gmssh.png" alt=""><h2>连接 Windows 桌面</h2><p>连接后可直接操作这台电脑。常用控制位于上方工具栏。</p></div><canvas id="screen" tabindex="0" aria-label="Windows 远程桌面，点击后可使用键盘" hidden></canvas><button id="leave-fullscreen" type="button">恢复面板</button></main>
+<aside id="file-panel" hidden><div class="panel-head"><h2>文件互传</h2><button id="close-files" aria-label="关闭文件互传面板"><img src="/ui-icons/x.svg" alt=""></button></div><div class="panel-tabs"><strong>Windows 文件</strong><small>本机 ↔ Windows</small></div><form id="path-form"><button id="parent-folder" type="button" title="上一级"><img src="/ui-icons/arrow-up.svg" alt=""></button><input id="file-path" aria-label="Windows 路径" placeholder="选择磁盘或输入路径"><button type="submit" title="打开路径">打开</button></form><input id="upload-input" type="file" hidden><button id="upload" class="primary"><img src="/ui-icons/upload-simple.svg" alt="">上传到 Windows</button><p class="transfer-hint">上传本机文件，或点击文件旁的下载图标保存到本机。</p><p id="file-note" role="status">正在读取目录…</p><div id="file-list"></div><div id="transfer-box" hidden><strong id="transfer-name"></strong><progress id="transfer-progress" max="100" value="0"></progress><div class="transfer-line"><small id="transfer-status"></small><button id="cancel-transfer">取消</button></div></div></aside>
+</div><footer><span id="status" role="status" aria-live="polite">未连接。</span><span id="screen-size"></span><button id="reconnect" class="quiet">连接设置</button></footer>
+</section></div>
+<dialog id="keyboard-dialog"><div class="panel-head"><h2>键盘控制</h2><button data-close="keyboard-dialog" aria-label="关闭"><img src="/ui-icons/x.svg" alt=""></button></div><div class="shortcut-grid"><button data-shortcut="ctrl-alt-del">Ctrl + Alt + Delete</button><button data-shortcut="alt-tab">Alt + Tab</button><button data-shortcut="windows">Windows 键</button><button data-shortcut="lock">锁定电脑</button></div><label>文本输入（支持中文）<textarea id="input-text" rows="4" placeholder="输入要发送到 Windows 的文本"></textarea></label><button id="send-text" class="primary">发送到当前输入位置</button></dialog>
+<dialog id="clipboard-dialog"><div class="panel-head"><h2>文本剪贴板</h2><button data-close="clipboard-dialog" aria-label="关闭"><img src="/ui-icons/x.svg" alt=""></button></div><p>Windows 复制的文本会显示在这里。文件请使用文件面板传输。</p><textarea id="clipboard-text" rows="7" aria-label="剪贴板内容"></textarea><div class="dialog-actions"><button id="copy-local">复制到本机</button><button id="read-local">读取本机文本</button><button id="send-clipboard" class="primary">发送到 Windows</button></div><p id="clipboard-note" role="status"></p></dialog>
+<dialog id="power-dialog"><div class="panel-head"><h2>电源操作</h2><button data-close="power-dialog" aria-label="关闭"><img src="/ui-icons/x.svg" alt=""></button></div><p id="power-target"></p><p>关机或重启会中断连接。未保存的程序可能阻止 Windows 完成操作。</p><div class="dialog-actions"><button id="wake" disabled>局域网唤醒</button><button data-power="restart">重启</button><button data-power="shutdown" class="danger">关机</button><button data-power="cancel">取消 Windows 待执行请求</button></div><p>唤醒需配对网卡并启用硬件支持，同一局域网内才可使用。</p><p id="power-note" role="status"></p><button id="cancel-power" hidden>取消倒计时</button></dialog>
+<dialog id="about-dialog"><div class="panel-head"><h2>GMSSH Windows</h2><button data-close="about-dialog" aria-label="关闭"><img src="/ui-icons/x.svg" alt=""></button></div><p>局域网 Windows 监控、桌面与文件管理。</p><p id="transport-note">正在建立连接。</p><p>第三方组件许可：<a href="/third-party-licenses/kessoku-MIT.txt" target="_blank" rel="noopener">Kessoku</a> · <a href="/third-party-licenses/protobuf.txt" target="_blank" rel="noopener">Protobuf</a> · <a href="/third-party-licenses/phosphor-MIT.txt" target="_blank" rel="noopener">Phosphor</a> · <a href="/third-party-licenses/fzstd-MIT.txt" target="_blank" rel="noopener">fzstd</a></p></dialog>
 <script type="module" src="/src/main.ts"></script>
 </html>
