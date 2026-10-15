@@ -8,7 +8,6 @@ import json
 import os
 from pathlib import Path
 import plistlib
-import re
 import shutil
 import struct
 import subprocess
@@ -76,6 +75,23 @@ def monitor_options(config):
             "forwardTerminal": getattr(config, 'monitor_terminal', True)}
 
 
+def native_profile(config, source):
+    """The vendor's local servers live in user data, outside its signed app."""
+    with (source / 'MacOS/GMSSH').open('rb') as executable:
+        header = executable.read(8)
+    if len(header) != 8:
+        raise ValueError('invalid GMSSH executable')
+    magic, cpu = struct.unpack('<II', header)
+    architecture = {0x0100000C: 'arm64', 0x01000007: 'x64'}.get(cpu)
+    if magic != 0xFEEDFACF or architecture is None:
+        raise ValueError('unsupported GMSSH executable architecture')
+    profile = (config.profile or Path.home() / 'Library/Application Support/GMSSH').expanduser().absolute()
+    servers = [profile / f'serve/app/gs/bin/gs_main_mac_{architecture}', profile / f'serve/multi/gmb_multi_server_mac_{architecture}']
+    if any(not file.is_file() or file.stat().st_size == 0 for file in servers):
+        raise ValueError('GMSSH 本地服务资源尚未初始化。请先打开官方 GMSSH，确认设备首页可用后退出再安装；自定义 --profile 也必须包含已初始化的 serve 资源。')
+    return profile
+
+
 def _build_launcher(config, output):
     monitor = monitor_options(config)
     source = config.gmssh_app.resolve() / "Contents"
@@ -85,6 +101,7 @@ def _build_launcher(config, output):
     info = plistlib.loads((source / "Info.plist").read_bytes())
     if info["CFBundleIdentifier"] != "com.gmssh.com" or info["CFBundleShortVersionString"] != "2.0.4":
         raise ValueError("this preview launcher has only been checked against GMSSH 2.0.4")
+    profile = native_profile(config, source)
     subprocess.run([str(config.python), "-c", "import gmssh_windows_bridge.desktop, websockets"], check=True)
     if output.exists():
         raise ValueError("choose a new output path; an existing launcher is never overwritten")
@@ -107,7 +124,7 @@ def _build_launcher(config, output):
     payload = {"vendorAsar": str(source / "Resources/app.asar"), "python": str(config.python.absolute()),
                "target": config.target, "port": config.port,
                "label": config.label, "machineId": config.machine_id,
-               "profile": str(config.profile.absolute()) if config.profile else None}
+               "profile": str(profile)}
     payload["keychain"] = config.keychain
     payload["monitor"] = monitor
     payload["pairingOnly"] = getattr(config, 'pairing_only', False)
@@ -217,11 +234,8 @@ def main():
         elif not config.target:
             raise ValueError('use --pairing-only or specify --target')
         elif config.monitor_port is not None:
-            try:
-                ipaddress.ip_address(config.target)
-            except ValueError:
-                if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,252}", config.target):
-                    raise ValueError("use a Windows IP address or hostname") from None
+            from .address import ssh_target
+            config.target = ssh_target(config.target)
         elif not config.tailscale_name or ipaddress.ip_address(config.target) not in ipaddress.ip_network("100.64.0.0/10"):
             raise ValueError("LAN desktop requires the monitoring SSH settings; direct Tailscale is a legacy opt-in")
         print(build_launcher(config))

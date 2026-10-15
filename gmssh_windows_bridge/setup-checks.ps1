@@ -38,6 +38,26 @@ function Get-GMSSHConnectionInfo {
     $public
 }
 
+function Get-GMSSHStartupStatus {
+    param([string]$DataRoot = (Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'GMSSHWindowsBridge'))
+    $agent = Get-Content (Join-Path $DataRoot 'agent.json') -Raw | ConvertFrom-Json
+    $public = Get-GMSSHConnectionInfo -DataRoot $DataRoot
+    $ssh = Get-Service sshd -ErrorAction SilentlyContinue
+    $desktop = Get-Service RustDesk -ErrorAction SilentlyContinue
+    $boot = $null
+    try { $boot = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o') } catch { }
+    [ordered]@{schema=1;computer=[Environment]::MachineName;version=$agent.version;checkedAt=[DateTime]::UtcNow.ToString('o');
+        bootedAt=$boot;addresses=@($public.addresses);sshStatus=[string]$ssh.Status;sshStartup=[string]$ssh.StartType;
+        desktopStatus=[string]$desktop.Status;desktopStartup=[string]$desktop.StartType;
+        servicesReady=([bool]($ssh -and $desktop -and $ssh.Status -eq 'Running' -and $desktop.Status -eq 'Running' -and $ssh.StartType -eq 'Automatic' -and $desktop.StartType -eq 'Automatic'));
+        desktopAuth=$public.desktopAuth;scope='interactive-user-startup; full administrator check is separate'}
+}
+
+function ConvertTo-GMSSHUserSid([string]$User) {
+    if ($User -match '^S-1-[0-9]+(?:-[0-9]+){1,15}$') { return $User }
+    try { return (New-Object Security.Principal.NTAccount($User)).Translate([Security.Principal.SecurityIdentifier]).Value } catch { return '' }
+}
+
 function Get-GMSSHInstallPlan {
     param([string]$SetupRoot, [bool]$Dedicated, [bool]$MonitorOnly, [bool]$TrayOnly,
           [string]$DataRoot = (Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'GMSSHWindowsBridge'),
@@ -99,6 +119,12 @@ function Get-GMSSHInstallPlan {
             (Get-AuthenticodeSignature $file).Status -ne 'Valid') { throw ('离线组件缺失或校验失败：' + $item.filename) }
     }
     if (-not $MonitorOnly) {
+        if (Test-Path (Join-Path $SetupRoot 'setup-connect.ps1')) {
+            . (Join-Path $SetupRoot 'setup-connect.ps1')
+            [void](Get-GMSSHConnectHelper $SetupRoot)
+            if ($Dedicated -and ((Get-GMSSHConnectTask $ProgramRoot $DataRoot) -or (Get-GMSSHConnectRule $ProgramRoot) -or
+                (Get-NetTCPConnection -State Listen -LocalPort 22257 -ErrorAction SilentlyContinue))) { throw '一键接入任务、规则或端口已被占用，本次尚未创建账号。' }
+        }
         $payload = Get-Content (Join-Path $SetupRoot 'desktop-payload.json') -Raw | ConvertFrom-Json
         if ($payload.filename -cne 'desktop-engine.zip' -or $payload.sourceSha256 -cne $manifest.rustdesk.sha256 -or
             (Get-FileHash (Join-Path $SetupRoot 'desktop-engine.zip') -Algorithm SHA256).Hash.ToLowerInvariant() -cne $payload.sha256) { throw '离线桌面组件校验失败。' }
@@ -165,6 +191,10 @@ function Get-GMSSHReadiness {
         $arguments = '-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + (Join-Path $ProgramRoot 'gmssh-agent.ps1') + '"'
         Add-Check '托盘自启' ([bool]($task -and @($task.Actions).Count -eq 1 -and $task.Actions[0].Execute -ieq $powerShell -and
             $task.Actions[0].Arguments -ceq $arguments -and $task.State -ne 'Disabled')) '登录任务指向本程序'
+        $traySid = [string]$agent.trayUserSid
+        $principalMatches = $task -and $traySid -match '^S-1-[0-9]+(?:-[0-9]+){1,15}$' -and (ConvertTo-GMSSHUserSid $task.Principal.UserId) -ceq $traySid
+        $logon = @($task.Triggers | Where-Object { $_.CimClass.CimClassName -eq 'MSFT_TaskLogonTrigger' -and $_.Enabled -and (ConvertTo-GMSSHUserSid $_.UserId) -ceq $traySid })
+        Add-Check '托盘登录用户' ([bool]($principalMatches -and $logon.Count -gt 0 -and $task.Principal.LogonType -eq 'Interactive')) '原用户登录时启动，不依赖安装窗口'
     }
     $addresses = @(Get-GMSSHAddresses)
     Add-Check '网络地址' ($addresses.Count -gt 0) '当前可用 IPv4 地址'

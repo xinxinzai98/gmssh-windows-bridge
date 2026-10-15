@@ -1,8 +1,53 @@
 """Optional macOS password storage, limited to this viewer's fixed target."""
 
 import ctypes as c
+import hashlib
+
+import paramiko
+
+from .address import normalize_address, ssh_endpoint
 
 SERVICE = b"gmssh-windows-bridge.desktop"
+
+
+def monitor_keychain(config, factory=None):
+    """Bind managed viewers to their pinned SSH identity, with verified old aliases."""
+    factory = factory or DesktopKeychain
+    old = f'ssh:{config.username.casefold()}@{config.target.casefold()}:{config.target_port}:{config.rustdesk_port}'
+    hosts = paramiko.HostKeys(str(config.known_hosts))
+    entry = hosts.lookup(ssh_endpoint(config.target, config.target_port))
+    key = entry.get('ssh-ed25519') if entry else None
+    if key is None:
+        return factory(old)  # Preserve CLI profiles using other SSH host-key types.
+    identifier = hashlib.sha256(key.asbytes() + b'\0' + config.username.lower().encode() + config.target_port.to_bytes(2, 'big')).hexdigest()[:32]
+    accounts = [old]
+    for target in getattr(config, 'desktop_credential_alias', ()):
+        target = normalize_address(target)
+        alias = hosts.lookup(ssh_endpoint(target, config.target_port))
+        # An unverified endpoint must never select another machine's saved password.
+        if alias and alias.get('ssh-ed25519') == key:
+            accounts.append(f'ssh:{config.username.casefold()}@{target.casefold()}:{config.target_port}:{config.rustdesk_port}')
+    primary = factory(f'ssh-device:{identifier}:{config.rustdesk_port}')
+    return DeviceKeychain(primary, [factory(account) for account in dict.fromkeys(accounts)])
+
+
+class DeviceKeychain:
+    def __init__(self, primary, previous):
+        self.primary, self.previous = primary, previous
+
+    def exists(self):
+        return any(store.exists() for store in [self.primary, *self.previous])
+
+    def get(self):
+        for store in [self.primary, *self.previous]:
+            password = store.get()
+            if password:
+                return password
+        return None
+
+    def save(self, password):
+        # Called only by the existing successful desktop-authentication flow.
+        self.primary.save(password)
 
 
 class DesktopKeychain:

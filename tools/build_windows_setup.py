@@ -9,7 +9,8 @@ import zipfile
 
 
 def build(output, installer=None, controller="LocalSubnet", openssh=None, engine=None, monitor_only=False,
-          vcredist=None, preserve_desktop=False, expected_computer=None, runtime_source='bundled', public_release=False):
+          vcredist=None, preserve_desktop=False, expected_computer=None, runtime_source='bundled', public_release=False,
+          connect_helper=None):
     if runtime_source not in ('bundled', 'microsoft'):
         raise ValueError('choose bundled or microsoft runtime source')
     if public_release and (controller != 'LocalSubnet' or preserve_desktop or expected_computer or monitor_only or runtime_source != 'microsoft'):
@@ -26,7 +27,21 @@ def build(output, installer=None, controller="LocalSubnet", openssh=None, engine
     if runtime_source == 'bundled' and (vcredist is None or hashlib.sha256(vcredist.read_bytes()).hexdigest() != manifest['vcredist']['sha256']):
         raise ValueError('include the pinned official Microsoft runtime')
     payload = None
+    connect_files = {}
     if not monitor_only:
+        if connect_helper is None:
+            raise ValueError('include the verified connection-code helper')
+        if __package__:
+            from .build_windows_connect import source_digest
+        else:
+            from build_windows_connect import source_digest
+        connect_manifest = json.loads((connect_helper / 'connect-payload.json').read_text())
+        helper = (connect_helper / 'gmssh-connect.exe').read_bytes()
+        if (connect_manifest.get('filename') != 'gmssh-connect.exe' or connect_manifest.get('protocol') != 1
+                or connect_manifest.get('sourceSha256') != source_digest()
+                or connect_manifest.get('sha256') != hashlib.sha256(helper).hexdigest() or not helper.startswith(b'MZ')):
+            raise ValueError('connection-code helper differs from the checked public source')
+        connect_files = {'gmssh-connect.exe': helper, 'connect-payload.json': (connect_helper / 'connect-payload.json').read_bytes()}
         if installer is None or hashlib.sha256(installer.read_bytes()).hexdigest() != manifest['rustdesk']['sha256']:
             raise ValueError('verify the original official RustDesk portable release')
         if engine is None:
@@ -51,7 +66,7 @@ def build(output, installer=None, controller="LocalSubnet", openssh=None, engine
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as bundle:
         names = ['setup-windows.cmd', 'setup-windows.ps1', 'setup-checks.ps1', 'setup-progress.ps1', 'setup-monitor.ps1', 'install-vc-runtime.ps1', 'windows-installers.json', 'credential-dialog.ps1']
         if not monitor_only:
-            names += ['setup-desktop.ps1', 'install-desktop-engine.ps1', 'gmssh-agent.ps1']
+            names += ['setup-desktop.ps1', 'install-desktop-engine.ps1', 'gmssh-agent.ps1', 'setup-maintenance.ps1', 'setup-connect.ps1']
         for name in names:
             content = (source / name).read_bytes()
             if name.endswith(".ps1"):
@@ -62,6 +77,8 @@ def build(output, installer=None, controller="LocalSubnet", openssh=None, engine
         for file in sorted((source / 'brand').glob('*')):
             if file.is_file():
                 bundle.write(file, 'brand/' + file.name)
+        for name, content in connect_files.items():
+            bundle.writestr(name, content)
         version = re.search(r'__version__\s*=\s*[\'"]([^\'"]+)', (source / '__init__.py').read_text()).group(1)
         bundle.writestr("setup-config.json", json.dumps({"version": version, "controllerAddress": controller, "monitorOnly": monitor_only,
                                                       "preserveDesktop": preserve_desktop,
@@ -90,6 +107,7 @@ if __name__ == "__main__":
     parser.add_argument("--rustdesk-installer", type=Path)
     parser.add_argument('--openssh-installer', type=Path, required=True)
     parser.add_argument('--desktop-engine', type=Path)
+    parser.add_argument('--connect-helper', type=Path, help='Output directory of build_windows_connect.py')
     parser.add_argument('--monitor-only', action='store_true')
     parser.add_argument('--preserve-desktop', action='store_true')
     parser.add_argument('--vc-runtime', type=Path)
@@ -100,4 +118,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
     print(build(args.output, args.rustdesk_installer, args.controller_address,
                 args.openssh_installer, args.desktop_engine, args.monitor_only, args.vc_runtime,
-                args.preserve_desktop, args.expected_computer, args.runtime_source, args.public_release))
+                args.preserve_desktop, args.expected_computer, args.runtime_source, args.public_release, args.connect_helper))

@@ -151,6 +151,7 @@ window.installWindowsDesktopEntry = function ({ machineId, viewerUrl, label = "W
     if (active) { document.documentElement.removeAttribute("data-windows-desktop-active"); document.querySelector(".tab-chip--home")?.click(); }
   }
   function open() {
+    const existing = !!panel;
     if (managed) for (const controller of window.gmsshWindowsControllers?.values() || []) controller.hide();
     if (!panel) {
       panel = document.createElement("section");
@@ -202,6 +203,7 @@ window.installWindowsDesktopEntry = function ({ machineId, viewerUrl, label = "W
     tab.querySelector('[role="tab"]').setAttribute("aria-selected", "true");
     document.documentElement.setAttribute("data-windows-desktop-active", "");
     mountTab();
+    if (existing && autoConnect) panel.querySelector('iframe').contentWindow?.postMessage({type:'gmssh-desktop-tool',tool:'reconnect'},url.origin);
   }
   function click(event) {
     const target = event.target instanceof Element ? event.target : undefined;

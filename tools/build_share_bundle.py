@@ -12,7 +12,8 @@ import zipfile
 ROOT_FILES = {'README.md', 'CHANGELOG.md', 'CONTRIBUTING.md', 'LICENSE', 'SECURITY.md', 'pyproject.toml', '.gitignore'}
 SOURCE_DIRS = ('gmssh_windows_bridge', 'desktop-web', 'tools', 'tests', 'docs', 'examples', 'install', '.github')
 SKIP_DIRS = {'.git', 'node_modules', '__pycache__', '.venv', 'venv', 'build', 'dist', 'work', 'outputs', '.pytest_cache'}
-PRIVATE_NAMES = {'.ds_store', 'catalog.json', 'connection.json', 'agent.json', 'readiness.json', 'launcher-config.json', 'installation-status.txt'}
+PRIVATE_NAMES = {'.ds_store', 'catalog.json', 'connection.json', 'agent.json', 'readiness.json', 'launcher-config.json', 'installation-status.txt', 'startup-status.json',
+                 'connect-meta.dat', 'connect-password.dat', 'connect-identity.dat'}
 PRIVATE_SUFFIXES = {'.key', '.pem', '.db', '.sqlite', '.sqlite3', '.log', '.pyc', '.exe', '.msi', '.dmg', '.whl', '.zip'}
 
 
@@ -20,6 +21,7 @@ def private_path(name):
     parts = Path(name).parts
     base = Path(name).name.lower()
     return (any(p in SKIP_DIRS or p.endswith(('.app', '.egg-info')) for p in parts)
+            or name.startswith('gmssh_windows_bridge/desktop_web/') and re.search(r' \d+\.[^./]+$', base) is not None
             or base in PRIVATE_NAMES or base.startswith(('._', '.env', 'gmssh-connection', 'gmssh-readiness'))
             or 'host_key' in base or 'known_hosts' in base or Path(base).suffix in PRIVATE_SUFFIXES)
 
@@ -90,6 +92,16 @@ def check_windows(bundle, executable, version, deny_values=()):
             raise ValueError('Windows package has device-specific or unsupported settings')
         if 'installers/VC_redist.x64.exe' in archive.namelist():
             raise ValueError('Public package must obtain Microsoft runtime from Microsoft')
+        if tuple(map(int, re.match(r'(\d+)\.(\d+)\.(\d+)a?(\d*)', version).groups(default='0'))) >= (0, 4, 0, 10):
+            if __package__:
+                from .build_windows_connect import source_digest
+            else:
+                from build_windows_connect import source_digest
+            metadata = json.loads(archive.read('connect-payload.json'))
+            if (metadata.get('filename') != 'gmssh-connect.exe' or metadata.get('protocol') != 1
+                    or metadata.get('sourceSha256') != source_digest()
+                    or metadata.get('sha256') != hashlib.sha256(archive.read('gmssh-connect.exe')).hexdigest()):
+                raise ValueError('Connection-code helper source or payload mismatch')
         for name in archive.namelist():
             if Path(name).is_absolute() or '..' in Path(name).parts or Path(name).name.lower() in PRIVATE_NAMES:
                 raise ValueError('Windows bundle contains a private or unsafe path')

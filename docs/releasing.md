@@ -13,9 +13,11 @@
 
 ```bash
 python tools/build_share_bundle.py --check-only
+python tools/build_windows_connect.py --output /path/to/new-connect-helper
 python tools/build_windows_setup.py --public-release --runtime-source microsoft \
   --openssh-installer /path/to/verified-openssh.msi \
   --rustdesk-installer /path/to/verified-rustdesk.exe --desktop-engine /path/to/verified-engine \
+  --connect-helper /path/to/new-connect-helper \
   --output /path/to/new-public-windows.zip
 python tools/build_share_bundle.py --wheel /path/to/current-wheel.whl \
   --windows-bundle /path/to/new-public-windows.zip --windows-setup /path/to/current-setup.exe \
@@ -23,6 +25,8 @@ python tools/build_share_bundle.py --wheel /path/to/current-wheel.whl \
 ```
 
 构建 wheel 应使用干净临时源码目录，避免旧 `build/lib` 资源残留。公共清单只记录版本、相对文件名和校验值；设备验收的截图、真实连接文件与本机路径留在仓库外。
+
+0.4.0a10 的接入组件由 `tools/windows_connect/` 的标准库 Go 源码编译，构建时核对可执行文件与源码摘要。公开包不得携带 `connect-meta.dat`、`connect-password.dat`、`connect-identity.dat` 或真实连接码。升级只替换程序文件，保留私有状态；先停止本程序的接入任务，失败时回退程序、任务和新增防火墙规则。连接码实机验收与此前的 0.4.0a9 验收分开记录。
 
 ## 两端交付
 

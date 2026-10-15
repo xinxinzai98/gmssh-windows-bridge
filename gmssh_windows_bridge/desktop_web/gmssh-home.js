@@ -59,7 +59,7 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
   for(const device of connections){const url=new URL(device.viewerUrl);if(url.protocol!=='http:'||!['localhost','127.0.0.1'].includes(url.hostname)||url.username||url.password||url.hash||url.search)throw Error('Local device required');}
   const byId=new Map(connections.filter(device=>device.machineId).map(device=>[device.machineId,device]));
   const style = document.createElement('style'); style.textContent = css; document.head.append(style);
-  let root, host, selected, fingerprint = '', timer, noticeTimer, disposed = false, infoBusy = false, infoFrame, infoReady, infoOrigin, infoRequestId = 0, cancelInfo, filesTimer;
+  let root, host, selected, fingerprint = '', timer, noticeTimer, disposed = false, infoBusy = false, infoFrame, infoReady, infoOrigin, infoRequestId = 0, cancelInfo, filesTimer, contextMenu;
   const metadata = new Map(), systemInfo = new Map(), scrollPositions = {list:{top:0,left:0},card:{top:0,left:0}};
   const fitWorkspace = () => { if (root?.getClientRects().length) root.style.height = Math.max(0, window.innerHeight - Math.max(0, root.getBoundingClientRect().top)) + 'px'; };
   const make = (tag, className, text) => { const node = document.createElement(tag); node.className = className || ''; if (text !== undefined) node.textContent = text; return node; };
@@ -201,7 +201,16 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
     row.dataset.gmsshRow=record.id;row.tabIndex=0;row.classList.toggle('selected',record.id===selected);
     const select=()=>{selected=record.id;fingerprint='';render();if(!systemInfo.has(record.id))void refreshSystemInfo();};row.onclick=select;
     const context=event=>{event.preventDefault();event.stopPropagation?.();selected=record.id;fingerprint='';render();
-      record.node.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,button:2,clientX:event.clientX,clientY:event.clientY}));};
+      const nativeMenu=()=>record.node.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,button:2,clientX:event.clientX,clientY:event.clientY}));
+      if(!record.windows||!window.gmsshPairingController?.edit){nativeMenu();return;}
+      contextMenu?.remove();contextMenu=make('div','gm-device-context');contextMenu.setAttribute('popover','auto');
+      contextMenu.style.cssText='position:fixed;inset:auto;margin:0;padding:6px;background:#252528;color:#eee;border:1px solid #ffffff24;border-radius:8px;box-shadow:0 8px 32px #0008;';
+      const item=(text,iconName,callback)=>action(text,iconName,()=>{contextMenu.hidePopover();callback();});
+      contextMenu.append(item('编辑连接地址','gear',()=>window.gmsshPairingController.edit(record.id)),item('机器设置和其他操作','dots-three',nativeMenu));
+      for(const button of contextMenu.children)button.style.cssText='display:flex;width:100%;margin:2px 0;justify-content:flex-start;';
+      document.body.append(contextMenu);contextMenu.showPopover();
+      contextMenu.style.left=Math.max(8,Math.min(event.clientX,innerWidth-contextMenu.offsetWidth-8))+'px';
+      contextMenu.style.top=Math.max(8,Math.min(event.clientY,innerHeight-contextMenu.offsetHeight-8))+'px';};
     row.oncontextmenu=context;
     row.onkeydown=event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();select();}
       else if(event.key==='ContextMenu'||event.key==='F10'&&event.shiftKey){const box=row.getBoundingClientRect();context({preventDefault:()=>event.preventDefault(),clientX:box.left+20,clientY:box.top+20});}};
@@ -234,12 +243,12 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
         const table=make('table','gm-device-table'),head=make('thead'),header=make('tr');
         for(const [text,name] of [['设备'],['地址'],['CPU','cpu'],['内存','memory'],['磁盘','hard-drive'],['操作']]){const cell=make('th');cell.append(name?labelled('span',text,name):text);header.append(cell);}
         head.append(header);table.append(head);const body=make('tbody');
-        for(const record of records){const row=make('tr');selectRecord(row,record);const cell=make('td');cell.append(identity(record));row.append(cell,make('td','gm-address',record.address));
+        for(const record of records){const row=make('tr');selectRecord(row,record);const cell=make('td');cell.append(identity(record));const address=make('td','gm-address',record.address);address.title=record.address;row.append(cell,address);
           for(let i=0;i<3;i++){const cell=make('td');cell.append(meter(record.metrics[i],i));row.append(cell);}const actions=make('td','gm-row-actions');actions.append(controls(record));row.append(actions);body.append(row);}
         table.append(body);list.replaceChildren(table);
       }else{
         const grid=make('div','gm-device-grid');
-        for(const record of records){const card=make('article','gm-device-card');selectRecord(card,record);card.append(identity(record),make('p','gm-address',record.address));
+        for(const record of records){const card=make('article','gm-device-card');selectRecord(card,record);const address=make('p','gm-address',record.address);address.title=record.address;card.append(identity(record),address);
           const metrics=make('div','gm-card-metrics');['CPU','内存','磁盘'].forEach((name,index)=>{const cell=make('div');cell.append(labelled('small',name,['cpu','memory','hard-drive'][index]),meter(record.metrics[index],index));metrics.append(cell);});card.append(metrics,controls(record));grid.append(card);}
         list.replaceChildren(grid);
       }
@@ -247,7 +256,7 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
       const record=records.find(record=>record.id===selected),pane=make('aside','gm-device-details');
       const logo=make('img','gm-brand');logo.src=new URL(record.windows?'ui-icons/windows.svg':'brand/gmssh.png',base).href;logo.alt=record.windows?'Windows':'GMSSH';pane.append(logo);
       const title=make('h2','');title.append(status(record),make('span','',record.name));title.title=configuration(record);pane.append(title);
-      const address=action(record.address,'copy',()=>void copyAddress(record.address),false,record.address==='—'||/[＊*]/.test(record.address));address.classList.add('gm-copy-address');address.title='点击复制 IP 地址';address.setAttribute('aria-label','复制 IP 地址 '+record.address);pane.append(address);
+      const address=action(record.address,'copy',()=>void copyAddress(record.address),false,record.address==='—'||/[＊*]/.test(record.address));address.classList.add('gm-copy-address');address.title=record.address+' · 点击复制 IP 地址';address.setAttribute('aria-label','复制 IP 地址 '+record.address);pane.append(address);
       pane.append(action('打开桌面','monitor',()=>invoke(record,'desktop'),true,!record.desktop||record.desktop.disabled));
       const pair=make('div','gm-detail-actions');pair.append(action('终端','terminal-window',()=>invoke(record,'terminal'),false,!record.terminal||record.terminal.disabled),action('文件互传','arrows-left-right',()=>invoke(record,'files'),false,!record.desktop||record.desktop.disabled));pane.append(pair);
       if(record.windows)pane.append(action('电源','power',()=>invoke(record,'power'),false,!record.desktop||record.desktop.disabled));
@@ -317,6 +326,6 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
   observer.observe(document.body,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['hidden','class','disabled','src']});render();
   window.addEventListener('resize',fitWorkspace);void loadNativeMetadata();void refreshSystemInfo();
   const infoInterval=setInterval(refreshSystemInfo,30000);
-  window.removeGMSSHHome=()=>{disposed=true;observer.disconnect();clearTimeout(timer);clearTimeout(noticeTimer);clearTimeout(filesTimer);clearInterval(infoInterval);cancelInfo?.();infoFrame?.remove();window.removeEventListener('resize',fitWorkspace);root?.remove();host?.classList.remove('gm-native-source');style.remove();};
+  window.removeGMSSHHome=()=>{disposed=true;observer.disconnect();clearTimeout(timer);clearTimeout(noticeTimer);clearTimeout(filesTimer);clearInterval(infoInterval);cancelInfo?.();infoFrame?.remove();contextMenu?.remove();window.removeEventListener('resize',fitWorkspace);root?.remove();host?.classList.remove('gm-native-source');style.remove();};
   return {refresh:render,select(id){selected=id;fingerprint='';render();},remove:window.removeGMSSHHome};
 };

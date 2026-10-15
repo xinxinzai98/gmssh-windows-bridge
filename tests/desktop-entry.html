@@ -37,7 +37,7 @@ document.querySelector('#run').onclick = async () => {
     const extra = Array.from({length:14}, (_,index)=>addNative('synthetic-linux-' + (index+3)));
     await settle();
     assert(windows.querySelector('img').src.endsWith('/ui-icons/windows.svg') && linux.querySelector('img').alt === 'Linux', '仅已绑定的 Windows 原生卡片使用 Windows 图标，Linux 图标保留');
-    const css = await fetch('../desktop-web/public/gmssh-theme.css').then(response=>response.text());
+    const css = await fetch('../desktop-web/public/gmssh-theme.css',{cache:'no-store'}).then(response=>response.text());
     const home = installGMSSHHome({ machineId:'synthetic-windows', viewerUrl, css });
     assert(document.querySelector('.machine-body').classList.contains('gm-native-source') && !document.querySelector('.machine-body').contains(document.querySelector('#gmssh-machine-workspace')),'替换整个原生列表区域，增强表格放在原生表头与滚动容器之外');
     assert(document.querySelector('[data-gmssh-row="synthetic-windows"] .gm-os-icon').alt === 'Windows' && document.querySelector('[data-gmssh-row="synthetic-linux"] .gm-os-icon').src === linux.querySelector('img').src, '首页设备列表区分 Windows 与 Linux 系统图标');
@@ -86,6 +86,14 @@ document.querySelector('#run').onclick = async () => {
     linux.addEventListener('contextmenu',event=>{context={target:event.target.dataset.machineId,x:event.clientX,y:event.clientY};event.preventDefault();});
     document.querySelector('[data-gmssh-row="synthetic-linux"]').dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,clientX:40,clientY:60}));
     assert(context?.target==='synthetic-linux'&&context.x===40&&context.y===60&&backgroundMenu===0,'右键只转交原机器的编辑菜单，避免被背景菜单覆盖');document.body.removeEventListener('contextmenu',background);
+    let editedId;window.gmsshPairingController={edit:id=>editedId=id};
+    document.querySelector('[data-gmssh-row="synthetic-windows"]').dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,clientX:innerWidth-5,clientY:innerHeight-5}));
+    const contextMenu=document.querySelector('.gm-device-context');
+    assert(contextMenu.matches(':popover-open')&&contextMenu.getBoundingClientRect().right<=innerWidth,'Windows 右键编辑菜单在窗口边缘仍完整可见');
+    contextMenu.querySelector('button').click();assert(editedId==='synthetic-windows','Windows 编辑地址进入已核验设备向导');delete window.gmsshPairingController;
+    linux.querySelector('.machine-ip').textContent='2001:db8:1234:5678:9abc:def0:1234:5678';home.refresh();home.select('synthetic-linux');
+    const fullAddress=linux.querySelector('.machine-ip').textContent;
+    assert(document.querySelector('[data-gmssh-row="synthetic-linux"] .gm-address').title===fullAddress&&document.querySelector('.gm-copy-address').title.startsWith(fullAddress)&&document.querySelector('.gm-copy-address').scrollWidth<=document.querySelector('.gm-copy-address').clientWidth+1,'长 IPv6 地址可悬浮查看完整值，复制入口保留完整文本且不溢出');
     const nativeView=document.createElement('webview');nativeView.className='home-container-view';nativeView.setAttribute('src',location.origin+'/newweb/#/home?machineId=synthetic-linux');let fileCalls=0;
     nativeView.executeJavaScript=async code=>{assert(code.includes('window.$gm.openFolder("/")')&&!code.includes('token'),'Linux 文件入口只调用固定的内置文件 SDK');fileCalls++;return true;};document.body.append(nativeView);
     document.querySelector('[data-gmssh-row="synthetic-linux"] button[title="文件互传"]').click();await settle();
@@ -131,7 +139,7 @@ document.querySelector('#run').onclick = async () => {
     search.value='';
     const first=addNative('first-windows'),second=addNative('second-windows');
     first.querySelector('.machine-ip').textContent=second.querySelector('.machine-ip').textContent='127.0.0.1';
-    const entries=[{machineId:'first-windows',viewerUrl,label:'First PC'},{machineId:'second-windows',viewerUrl:new URL('other/',viewerUrl).href,label:'Second PC'}];
+    const entries=[{machineId:'first-windows',viewerUrl,label:'First PC'},{machineId:'second-windows',viewerUrl:new URL('other/',viewerUrl).href,label:'Second PC',autoConnect:true}];
     installWindowsDesktopEntries(entries);first.querySelector('i').click();
     const firstPanel=document.querySelector('[data-windows-machine="first-windows"]'),firstFrame=firstPanel.querySelector('iframe');
     second.querySelector('i').click();
@@ -146,6 +154,8 @@ document.querySelector('#run').onclick = async () => {
     assert(document.querySelectorAll('.gm-device-identity .gm-os-icon[alt="Windows"]').length===2&&document.querySelector('.gm-copy-address').textContent==='192.0.2.11'&&document.querySelector('.gm-device-details').textContent.includes('2222'),'多台 Windows 独立显示系统图标、真实地址和 SSH 端口');
     await settle();let tool;
     secondFrame.contentWindow.postMessage=(message,origin)=>{tool={message,origin};};
+    window.gmsshWindowsControllers.get('second-windows').open();
+    assert(tool?.message.tool==='reconnect'&&tool.origin===new URL(entries[1].viewerUrl).origin&&document.querySelector('[data-windows-machine="second-windows"] iframe')===secondFrame,'再次打开卡片仅向原查看器请求恢复已保存的连接，不重建标签');
     document.querySelector('[data-gmssh-row="second-windows"] button[title="文件互传"]').click();
     assert(tool?.message.tool==='files'&&tool.origin===new URL(entries[1].viewerUrl).origin,'多台设备的文件工具投递到被选中的桌面');
     multi.remove();window.removeWindowsDesktopEntry();first.remove();second.remove();

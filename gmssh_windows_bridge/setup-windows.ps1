@@ -47,6 +47,7 @@ $desktopNew = $false
 $createdAccount = $null
 $installationCommitted = $false
 $connectionPassword = $null
+$connectWarning = ''
 $dedicated = -not $MonitorOnly -and -not $TrayOnly -and -not $PreserveDesktop
 Add-Type -AssemblyName System.Windows.Forms
 . (Join-Path $PSScriptRoot 'setup-checks.ps1')
@@ -67,20 +68,33 @@ $exportHint = '连接文件和自检报告保存在 %ProgramData%\GMSSHWindowsBr
 try {
     $plan = Get-GMSSHInstallPlan -SetupRoot $PSScriptRoot -Dedicated $dedicated -MonitorOnly ([bool]$MonitorOnly) -TrayOnly ([bool]$TrayOnly)
     if ($plan -eq 'Existing') {
-        $readiness = Get-GMSSHReadiness
+        $updated = $null
+        if (-not $MonitorOnly) {
+            if (-not $settings.version) { throw '更新包缺少版本，请完整解压后运行安装程序。' }
+            $state = Get-Content (Join-Path $reportDirectory 'agent.json') -Raw | ConvertFrom-Json
+            $description = "检测到已安装版本 $($state.version)。将备份并更新到 $($settings.version)，修复本程序的登录自启与自动服务。`r`n保留现有账号、连接密码、SSH 主机密钥和桌面引擎。`r`n托盘窗口会重新启动，远端已运行的程序继续运行。"
+            if ($state.unifiedPassword -and (Test-Path (Join-Path $PSScriptRoot 'setup-connect.ps1'))) { $description += "`r`n新增长效连接码的开机接入任务，局域网可访问 TCP 22257。首次复制时需验证现有密码；验证后密码以 Windows 保护的密文保存在本机。" }
+            if ([Windows.Forms.MessageBox]::Show($description, 'GMSSH Windows · 升级 / 修复', 'OKCancel') -ne 'OK') { return }
+            . (Join-Path $PSScriptRoot 'setup-maintenance.ps1')
+            $updated = Update-GMSSHInstallation -SetupRoot $PSScriptRoot -ProgramRoot $root -DataRoot $reportDirectory -Version $settings.version
+        }
+        $readiness = if ($updated) { $updated.readiness } else { Get-GMSSHReadiness -MonitorOnly ([bool]$MonitorOnly) }
         $desktopSaved = Save-ConnectionResult $readiness
         if ($desktopSaved) { $exportHint = '桌面上的 GMSSH-connection.json 和 GMSSH-readiness.json 已更新。也可从系统托盘复制连接信息。' }
-        [void][Windows.Forms.MessageBox]::Show(("检测到已有 GMSSH 安装，账号与密码已保留。`r`n`r`n" + (Format-GMSSHReadiness $readiness) + "`r`n`r`n" + $exportHint), 'GMSSH Windows · 已安装')
+        $updateHint = if ($updated) { "升级 / 修复完成。账号与密码已保留。`r`n程序备份：$($updated.backup)" } else { '检测到已有 GMSSH 安装，账号与密码已保留。' }
+        [void][Windows.Forms.MessageBox]::Show(($updateHint + "`r`n`r`n" + (Format-GMSSHReadiness $readiness) + "`r`n`r`n" + $exportHint), 'GMSSH Windows · 安装状态')
         return
     }
 } catch {
-    [void][Windows.Forms.MessageBox]::Show(('安装前检查未通过：' + $_.Exception.Message + "`r`n本次未创建账号或安装组件。"), 'GMSSH Windows')
+    $failureTitle = if ($plan -eq 'Existing') { '升级 / 修复未完成：' } else { '安装前检查未通过：' }
+    [void][Windows.Forms.MessageBox]::Show(($failureTitle + $_.Exception.Message + "`r`n本次未重设现有账号密码。"), 'GMSSH Windows')
     exit 1
 }
 $description = "将安装局域网 SSH 和桌面后台服务，设置开机启动及 GMSSH 托盘。`r`n同一子网可访问本机 SSH 22 端口，登录账号为 $WindowsUser。`r`nWindows 账号密码不会更改。"
 if ($MonitorOnly) { $description = "只补装局域网 SSH，允许同一子网访问 22 端口，登录账号为 $WindowsUser。`r`n保留现有桌面密码和设置。" }
 elseif ($PreserveDesktop -or $TrayOnly) { $description += "`r`n本次复用已有桌面引擎，保留其密码和访问设置。" }
 if ($dedicated) { $description = "将创建本地管理员账号 gmssh，用于远程管理文件、运行终端和修改系统设置，密码不自动过期。`r`n系统保护目录和其他用户的加密文件仍受 Windows 权限限制。`r`n安装桌面后台引擎、开机服务和 GMSSH 托盘。`r`n你只设置一次 GMSSH 连接密码，同时用于 SSH 和桌面；原 Windows 账号密码不会改变。" }
+if ($dedicated) { $description += "`r`n启用长效连接码：局域网 TCP 22257 和开机接入任务；连接密码以 Windows 保护的密文保存。连接码不含明文密码，但持有码即可接入，请按密码保管。" }
 if ($settings -and $settings.runtimeSource -ceq 'microsoft') { $description += "`r`n缺少所需 VC++ 运行库时，将联网从微软官方获取并校验后安装。" }
 if ([Windows.Forms.MessageBox]::Show($description, 'GMSSH Windows · 开始安装', 'OKCancel') -ne 'OK') { return }
 $progressFile = Join-Path $PSScriptRoot 'installation-status.txt'
@@ -126,7 +140,7 @@ try {
         }
         New-Item -ItemType Directory -Path $root -Force | Out-Null
         '正在配置 GMSSH 托盘…' | Set-Content $progressFile -Encoding UTF8
-        foreach ($name in @('gmssh-agent.ps1','setup-desktop.ps1','credential-dialog.ps1','setup-checks.ps1')) {
+        foreach ($name in @('gmssh-agent.ps1','setup-desktop.ps1','credential-dialog.ps1','setup-checks.ps1','setup-maintenance.ps1','setup-connect.ps1','gmssh-connect.exe','connect-payload.json')) {
             Copy-Item (Join-Path $PSScriptRoot $name) (Join-Path $root $name)
         }
         if (Test-Path (Join-Path $PSScriptRoot 'brand')) {
@@ -138,14 +152,17 @@ try {
                     accountRole=if ($createdAccount) { 'Administrator' } else { 'Existing' };
                     unifiedPassword=$dedicated; trayUserSid=$TrayUserSid; version=$settings.version } |
             ConvertTo-Json | Set-Content (Join-Path $reportDirectory 'agent.json') -Encoding UTF8
-        $arguments = '-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + (Join-Path $root 'gmssh-agent.ps1') + '"'
-        $action = New-ScheduledTaskAction -Execute (Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe') -Argument $arguments
-        $trigger = New-ScheduledTaskTrigger -AtLogOn -User $TrayUserSid
-        $principal = New-ScheduledTaskPrincipal -UserId $TrayUserSid -LogonType Interactive -RunLevel Limited
-        $taskSettings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-        Register-ScheduledTask -TaskName 'GMSSH Windows Tray' -Action $action -Trigger $trigger `
-            -Principal $principal -Settings $taskSettings -Description 'GMSSH Windows local management panel' | Out-Null
-        Start-ScheduledTask -TaskName 'GMSSH Windows Tray'
+        # Commit the usable SSH/desktop installation before the optional code
+        # component. A code failure must not delete its now-working account.
+        $installationCommitted = $true
+        if ($dedicated) {
+            '正在启用长效连接码…' | Set-Content $progressFile -Encoding UTF8
+            . (Join-Path $root 'setup-connect.ps1')
+            try { Set-GMSSHConnectPassword $root $reportDirectory $connectionPassword }
+            catch { $connectWarning = "`r`n连接码尚未启用：" + $_.Exception.Message + ' 可先手动添加，再从托盘验证当前密码启用。' }
+        }
+        . (Join-Path $PSScriptRoot 'setup-maintenance.ps1')
+        Register-GMSSHTrayTask -ProgramRoot $root -TrayUserSid $TrayUserSid
     }
     $installationCommitted = $true
     '正在执行接入自检…' | Set-Content $progressFile -Encoding UTF8
@@ -154,9 +171,9 @@ try {
     if ($desktopSaved) { $exportHint = '桌面上已生成 GMSSH-connection.json 和 GMSSH-readiness.json。也可从系统托盘复制连接信息。' }
     Remove-Item $progressFile
     Add-Type -AssemblyName System.Windows.Forms
-    $credentialNote = if ($dedicated) { '账号：gmssh（管理员）。使用刚设置的 GMSSH 连接密码添加机器。' } else { '使用现有 Windows 账号密码添加机器。' }
+    $credentialNote = if ($dedicated) { '账号：gmssh（管理员）。打开 GMSSH 托盘，点「复制连接码」；在 Mac 的「接入 Windows」中点「粘贴连接码」并添加。也可手动填写。连接码不自动过期，请按密码保管。' } else { '使用现有 Windows 账号密码添加机器。' }
     $resultTitle = if ($readiness.readyToPair) { '安装完成 · 本机自检通过' } else { '组件已安装 · 有项目需要检查' }
-    [void][Windows.Forms.MessageBox]::Show(("$credentialNote`r`n`r`n" + (Format-GMSSHReadiness $readiness) + "`r`n`r`n" + $exportHint + "`r`n连接文件交给控制端管理员完成首次添加；这两个文件不含密码。"), ('GMSSH Windows · ' + $resultTitle))
+    [void][Windows.Forms.MessageBox]::Show(("$credentialNote$connectWarning`r`n`r`n" + (Format-GMSSHReadiness $readiness) + "`r`n`r`n" + $exportHint + "`r`n连接文件交给控制端管理员完成首次添加；这两个文件不含密码。"), ('GMSSH Windows · ' + $resultTitle))
 } catch {
     if (-not $installationCommitted) {
         if ($desktopNew) { Stop-Service RustDesk -ErrorAction SilentlyContinue }

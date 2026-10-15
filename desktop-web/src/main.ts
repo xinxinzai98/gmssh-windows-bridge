@@ -22,6 +22,7 @@ let frames = 0;
 let peer = "";
 let transport = "ssh";
 let keychain = false;
+let savedPasswordAvailable = false;
 let initialAuth: {password:string;remember:boolean}|undefined;
 let accessToken = new URLSearchParams(location.hash.slice(1)).get("token") || "";
 const operations=new Operations(()=>accessToken);
@@ -43,9 +44,9 @@ const keys = new Map<string, KeyboardEvent>();
 const buttons = new Map<number, PointerEvent>();
 const client = new DirectClient(canvas, {
   status,
-  credential(saved) { get("credential-note").textContent = saved ? "已保存至本机钥匙串，后续启动自动连接此设备。" : "钥匙串操作未完成，可使用 RustDesk 密码或 Windows 端确认连接。"; },
+  credential(saved) { savedPasswordAvailable = saved; get("credential-note").textContent = saved ? "已保存至本机钥匙串，后续启动自动连接此设备。" : "钥匙串操作未完成，可使用 RustDesk 密码或 Windows 端确认连接。"; },
   peer(name) { peer = name;get('session-label').textContent=name; status(`${name} 已批准连接，等待画面…`); },
-  frame() { frames++; canvas.hidden = false; empty.hidden = true; fullscreen.disabled = false;get('login-wrap').hidden=true;get('connection-label').textContent='已连接';get('connection-label').classList.add('online');get<HTMLButtonElement>('keyboard').disabled=get<HTMLButtonElement>('clipboard').disabled=get<HTMLSelectElement>('quality').disabled=false;get('screen-size').textContent=`${canvas.width} × ${canvas.height}`; if(frames===1)status(`${peer} · 桌面连接正常`); },
+  frame() { frames++; canvas.hidden = false; empty.hidden = true; fullscreen.disabled = false;get('connection-label').textContent='已连接';get('connection-label').classList.add('online');get<HTMLButtonElement>('keyboard').disabled=get<HTMLButtonElement>('clipboard').disabled=get<HTMLSelectElement>('quality').disabled=false;get('screen-size').textContent=`${canvas.width} × ${canvas.height}`; if(frames===1){get('login-wrap').hidden=true;status(`${peer} · 桌面连接正常`);} },
   stopped() { keys.clear(); buttons.clear(); frames = 0; viewport.classList.remove("expanded"); canvas.hidden = true; empty.hidden = false;get('login-wrap').hidden=false;get('connection-label').textContent='未连接';get('connection-label').classList.remove('online');get<HTMLButtonElement>('keyboard').disabled=get<HTMLButtonElement>('clipboard').disabled=get<HTMLSelectElement>('quality').disabled=true; connect.disabled = false; disconnect.disabled = fullscreen.disabled = true; },
   clipboard(text){get<HTMLTextAreaElement>('clipboard-text').value=text;get('clipboard-note').textContent='已收到 Windows 复制的文本。';},
   displays(items,current){const select=get<HTMLSelectElement>('display');select.replaceChildren(...items.map((item,index)=>{const option=document.createElement('option');option.value=String(index);option.textContent=`显示器 ${index+1}`;return option;}));select.value=String(current);select.disabled=items.length<2;},
@@ -57,6 +58,7 @@ fetch("/config.json").then(response => {
 }).then(async config => {
   transport = config.transport;
   keychain = config.keychain === true;
+  savedPasswordAvailable = config.has_saved_password === true;
   filesAvailable=config.capabilities?.files===true;powerAvailable=config.capabilities?.power===true;
   wakeAvailable=config.capabilities?.wake===true;
   get<HTMLButtonElement>('wake').disabled=!wakeAvailable;
@@ -112,25 +114,20 @@ function position(event: PointerEvent): { x: number; y: number } {
 }
 const buttonCode = (button: number): number => button === 0 ? 1 : button === 2 ? 2 : button === 1 ? 4 : 0;
 const modifiers = (event: MouseEvent): ReturnType<typeof keyboardModifiers> => keyboardModifiers(event as unknown as KeyboardEvent);
-// ponytail: one pointer-move per animation frame; add relative-pointer support only if required by a real task.
-let move: PointerEvent | undefined;
-let moveFrame = 0;
 canvas.addEventListener("pointermove", event => {
-  move = event;
-  if (!moveFrame) moveFrame = requestAnimationFrame(() => {
-    moveFrame = 0;
-    if (move) client.mouse({ mask: move.buttons << 3, ...position(move), modifiers: modifiers(move) });
-    move = undefined;
-  });
+  client.mouse({ mask: event.buttons << 3, ...position(event), modifiers: modifiers(event) });
 });
 canvas.addEventListener("pointerdown", event => {
   canvas.focus(); canvas.setPointerCapture(event.pointerId);
   const button = buttonCode(event.button);
+  // Synchronize the remote pointer before the button, including immediate clicks.
+  client.mouse({ mask: 0, ...position(event), modifiers: modifiers(event) });
   if (button) { buttons.set(button, event); client.mouse({ mask: (button << 3) | 1, ...position(event), modifiers: modifiers(event) }); }
   event.preventDefault();
 });
 canvas.addEventListener("pointerup", event => {
   const button = buttonCode(event.button);
+  client.mouse({ mask: 0, ...position(event), modifiers: modifiers(event) });
   if (button) { buttons.delete(button); client.mouse({ mask: (button << 3) | 2, ...position(event), modifiers: modifiers(event) }); }
   event.preventDefault();
 });
@@ -198,7 +195,15 @@ async function refreshFiles(path=currentPath):Promise<void>{
 }
 function openFiles():void{get('file-panel').hidden=false;releaseInputs();void refreshFiles();}
 get('files').onclick=openFiles;get('close-files').onclick=()=>{get('file-panel').hidden=true;};
-window.addEventListener('message',event=>{if(event.source!==window.parent||event.data?.type!=='gmssh-desktop-tool')return;if(event.data.tool==='files')openFiles();else if(event.data.tool==='power')get('power').click();});
+window.addEventListener('message',event=>{
+  if(event.source!==window.parent||event.data?.type!=='gmssh-desktop-tool')return;
+  if(event.data.tool==='files')openFiles();
+  else if(event.data.tool==='power')get('power').click();
+  else if(event.data.tool==='reconnect'&&!client.connected&&!connect.disabled&&keychain&&savedPasswordAvailable&&!password.value&&!ssh.value&&(transport==='monitor'||transport==='tailscale')){
+    client.connect('','',transport,{saved:true,remember:false,token:accessToken});
+    connect.disabled=true;disconnect.disabled=false;
+  }
+});
 get<HTMLFormElement>('path-form').onsubmit=event=>{event.preventDefault();void refreshFiles(get<HTMLInputElement>('file-path').value);};
 get('parent-folder').onclick=()=>{const parts=currentPath.replace(/\/$/,'').split('/');parts.pop();void refreshFiles(parts.length>1?parts.join('/')+'/':'/');};
 get('upload').onclick=()=>get<HTMLInputElement>('upload-input').click();

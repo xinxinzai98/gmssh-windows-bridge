@@ -6,10 +6,29 @@ import tempfile
 import unittest
 from types import SimpleNamespace
 
-from gmssh_windows_bridge.macos_launcher import monitor_options, refresh_executable_uuid, write_asar
+from gmssh_windows_bridge.macos_launcher import monitor_options, native_profile, refresh_executable_uuid, write_asar
 
 
 class LauncherArchiveTest(unittest.TestCase):
+    def test_profile_requires_initialized_servers_for_the_vendor_architecture(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'Contents'
+            (source / 'MacOS').mkdir(parents=True)
+            (source / 'MacOS/GMSSH').write_bytes(struct.pack('<II', 0xFEEDFACF, 0x0100000C))
+            profile = root / 'profile'
+            cfg = SimpleNamespace(profile=profile)
+            with self.assertRaisesRegex(ValueError, '官方 GMSSH'):
+                native_profile(cfg, source)
+            for relative in ('serve/app/gs/bin/gs_main_mac_arm64', 'serve/multi/gmb_multi_server_mac_arm64'):
+                server = profile / relative
+                server.parent.mkdir(parents=True, exist_ok=True)
+                server.write_bytes(b'synthetic-server')
+            self.assertEqual(native_profile(cfg, source), profile)
+            (source / 'MacOS/GMSSH').write_bytes(struct.pack('<II', 0xFEEDFACF, 0x01000007))
+            with self.assertRaisesRegex(ValueError, 'serve'):
+                native_profile(cfg, source)
+
     def test_copied_executable_has_an_independent_uuid_without_other_byte_changes(self):
         header = struct.pack('<8I', 0xFEEDFACF, 0, 0, 2, 1, 24, 0, 0)
         original = header + struct.pack('<II', 0x1B, 24) + b's' * 16 + b'unchanged code'

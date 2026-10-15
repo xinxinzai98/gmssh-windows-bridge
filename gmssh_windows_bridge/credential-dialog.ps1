@@ -22,7 +22,7 @@ public static class GMSSHNativeWindow {
         })
     } catch { }
 }
-function Read-GMSSHPassword([string]$Title, [string]$Description) {
+function Read-GMSSHPassword([string]$Title, [string]$Description, [bool]$Confirm=$true) {
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
     [Windows.Forms.Application]::EnableVisualStyles()
@@ -48,7 +48,7 @@ function Read-GMSSHPassword([string]$Title, [string]$Description) {
     $note.Text = $Description; $note.ForeColor = $muted
     $note.SetBounds(24, 59, 452, 50); $form.Controls.Add($note)
     $boxes = @()
-    for ($i = 0; $i -lt 2; $i++) {
+    for ($i = 0; $i -lt $(if ($Confirm) { 2 } else { 1 }); $i++) {
         $label = New-Object Windows.Forms.Label
         $label.Text = if ($i -eq 0) { '连接密码（至少 8 个字符）' } else { '再次输入密码' }
         $label.SetBounds(24, (119 + 69 * $i), 452, 24); $form.Controls.Add($label)
@@ -58,7 +58,7 @@ function Read-GMSSHPassword([string]$Title, [string]$Description) {
         $form.Controls.Add($box); $boxes += $box
     }
     $privacy = New-Object Windows.Forms.Label
-    $privacy.Text = '密码由你输入，不写入文件或日志。'; $privacy.ForeColor = $muted
+    $privacy.Text = '明文密码不写入文件或日志。'; $privacy.ForeColor = $muted
     $privacy.SetBounds(24, 259, 452, 22); $form.Controls.Add($privacy)
     $save = New-Object Windows.Forms.Button
     $save.Text = '保存'; $save.DialogResult = 'OK'; $save.SetBounds(344, 296, 132, 36)
@@ -70,12 +70,16 @@ function Read-GMSSHPassword([string]$Title, [string]$Description) {
     $cancel.FlatStyle = 'Flat'; $cancel.FlatAppearance.BorderColor = [Drawing.ColorTranslator]::FromHtml('#36363e')
     $cancel.UseVisualStyleBackColor = $false
     $form.Controls.AddRange(@($save,$cancel)); $form.AcceptButton = $save; $form.CancelButton = $cancel
+    if (-not $Confirm) {
+        $form.ClientSize = New-Object Drawing.Size(500,279)
+        $privacy.Top = 190; $save.Top = $cancel.Top = 227; $save.Text = '验证并启用'
+    }
     try {
         do {
             if ($form.ShowDialog() -ne 'OK') { throw '已取消密码设置。' }
-            $valid = $boxes[0].Text.Length -ge 8 -and $boxes[0].Text -ceq $boxes[1].Text -and
-                [Text.Encoding]::UTF8.GetByteCount($boxes[0].Text) -le 4096 -and $boxes[0].Text -notmatch '[\x00-\x1f]'
-            if (-not $valid) { [void][Windows.Forms.MessageBox]::Show('密码至少 8 个字符，两次输入须一致。', 'GMSSH Windows') }
+            $valid = $boxes[0].Text.Length -ge 8 -and (-not $Confirm -or $boxes[0].Text -ceq $boxes[1].Text) -and
+                [Text.Encoding]::UTF8.GetByteCount($boxes[0].Text) -le 1024 -and $boxes[0].Text -notmatch '[\x00-\x1f]'
+            if (-not $valid) { [void][Windows.Forms.MessageBox]::Show($(if ($Confirm) { '密码至少 8 个字符，两次输入须一致，且不超过 1024 字节。' } else { '请输入当前连接密码，至少 8 个字符，且不超过 1024 字节。' }), 'GMSSH Windows') }
         } while (-not $valid)
         $secret = New-Object Security.SecureString
         foreach ($character in $boxes[0].Text.ToCharArray()) { $secret.AppendChar($character) }

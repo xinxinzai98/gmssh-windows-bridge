@@ -34,10 +34,23 @@ autoUpdater.checkForUpdates = () => {};
 autoUpdater.quitAndInstall = () => {};
 const handle = ipcMain.handle.bind(ipcMain);
 ipcMain.handle = (channel, listener) => handle(channel, channel === 'render-to-main' ? async (event, request, ...args) => {
-  if (['gmssh-pair-file','gmssh-pair-connect','gmssh-pair-desktop-auth'].includes(request?.type)) {
+  if (['gmssh-pair-file','gmssh-pair-paste','gmssh-pair-manual','gmssh-pair-edit','gmssh-pair-clear','gmssh-pair-connect','gmssh-pair-desktop-auth'].includes(request?.type)) {
     if (event.sender?.getURL().split('#')[0] !== indexUrl || !pairingAvailable) return {status:'error',message:'接入向导暂不可用，请检查本地连接配置。'};
     try {
       if(request.type==='gmssh-pair-desktop-auth')return {status:'ok',data:typeof request.data?.machineId==='string'?pairing.takeDesktopAuth(request.data.machineId):null};
+      if(request.type==='gmssh-pair-clear'){pairing.clearPreview();return {status:'ok'};}
+      if(request.type==='gmssh-pair-manual'){
+        if(!request.data||typeof request.data!=='object'||Array.isArray(request.data))throw Error('请填写连接地址、端口和账号。');
+        const {target,port,computer,username,sharedPassword}=request.data;
+        return {status:'ok',data:await pairing.manual({target,port,computer,username,sharedPassword})};
+      }
+      if(request.type==='gmssh-pair-edit')return {status:'ok',data:await pairing.edit(request.data?.machineId)};
+      if(request.type==='gmssh-pair-paste'){
+        if(pairing.busy)throw Error('正在接入，请等待当前操作完成。');
+        const text=clipboard.readText();
+        if(!text||Buffer.byteLength(text)>65536)throw Error('剪贴板中没有有效的 GMSSH 连接码或连接信息。');
+        return {status:'ok',data:await pairing.inspect(text)};
+      }
       if (request.type==='gmssh-pair-file') {
         if(pairing.busy)throw Error('正在接入，请等待当前操作完成。');
         const result=await dialog.showOpenDialog({title:'导入 Windows 连接文件',properties:['openFile'],filters:[{name:'GMSSH 连接文件',extensions:['json']}]});
@@ -90,7 +103,7 @@ app.on('browser-window-created', (_event, window) => {
 });
 
 async function inject(contents) {
-  const bindings=[...legacyBindings,...(pairing?.bindings()||[])];
+  const bindings=[...legacyBindings.filter(value=>!pairing?.records.some(record=>record.machineId===value.machineId)),...(pairing?.bindings()||[])];
   const entries=bindings.map(value=>({machineId:value.machineId??undefined,viewerUrl:value.viewerUrl,label:value.label,
     card:value.machineId?undefined:{host:value.target,name:value.tailscaleName||value.target},autoConnect:true,accessToken:value.accessToken}));
   const devices=bindings.map(value=>({machineId:value.machineId,viewerUrl:value.viewerUrl,target:value.target,targetPort:value.monitor?.targetPort,accessToken:value.accessToken}));
@@ -114,8 +127,6 @@ async function startService(args, label, isReady, target=config.target) {
   const upstreamErrors = {
     PermissionError: '系统拒绝了后台服务的访问，请检查本机应用权限。',
     BadHostKeyException: 'Windows 主机密钥与已核验的身份不一致，请先核对目标电脑。',
-    NoValidConnectionsError: '无法到达 Windows SSH 服务，请检查地址、端口和服务状态。',
-    TimeoutError: '连接 Windows SSH 超时，请检查网络和服务状态。',
     FileNotFoundError: '已核验的 Windows 主机密钥文件不存在，请检查本机连接配置。',
   };
   child.stderr.on('data', data => {
@@ -171,6 +182,7 @@ async function startDevice(device) {
     if (m.forwardTerminal) args.push('--gmssh-terminal', '--shell', 'powershell');
     if (device.wake) args.push('--wake-mac', device.wake.mac, '--wake-broadcast', device.wake.broadcast);
     if (device.keychain) args.push('--desktop-keychain');
+    for(const target of device.credentialAliases||[])args.push('--desktop-credential-alias',target);
     let monitorStarted = false, desktopStarted = false;
     await startService(args, '本地监控与桌面服务', line => {
       if (line.trim() === `Monitoring bridge ready: 127.0.0.1:${m.port}`) monitorStarted = true;
@@ -185,8 +197,18 @@ async function startDevice(device) {
     if (device.wake) args.push('--wake-mac', device.wake.mac, '--wake-broadcast', device.wake.broadcast);
     await startService(args, '本地桌面服务', desktopReady,device.target);
   }
-  }catch(error){for(const child of backends.slice(firstChild))child.kill('SIGTERM');throw error;}
-  return {...device,viewerUrl,accessToken};
+  }catch(error){await stopChildren(backends.slice(firstChild));throw error;}
+  const children=backends.slice(firstChild);
+  return {...device,viewerUrl,accessToken,stop:()=>stopChildren(children)};
+}
+
+async function stopChildren(children) {
+  await Promise.all(children.map(child=>new Promise((resolve,reject)=>{
+    if(child.exitCode!=null||child.signalCode!=null){resolve();return;}
+    const timer=setTimeout(()=>reject(Error('原本机连接进程尚未退出，请重开客户端。')),5000);
+    child.once('exit',()=>{clearTimeout(timer);resolve();});
+    child.kill('SIGTERM');
+  })));
 }
 
 async function start() {
@@ -199,11 +221,11 @@ async function start() {
   if(config.pairingOnly){
     await startService(['-m','gmssh_windows_bridge.pairing','--serve-assets','--port',String(config.port)],'本地界面服务',line=>line.trim()==='GMSSH local assets: '+viewerUrl);
   }else{
-    const binding=await startDevice(config);
+    const binding={...config};
     if(config.monitor){
       try{const endpoint=config.monitor.targetPort===22?config.target:`[${config.target}]:${config.monitor.targetPort}`;
         const key=fs.readFileSync(config.monitor.knownHosts,'utf8').split('\n').map(line=>line.trim().split(/\s+/)).find(parts=>parts[0]?.split(',').includes(endpoint)&&parts[1]==='ssh-ed25519');
-        if(key)binding.fingerprint='SHA256:'+createHash('sha256').update(Buffer.from(key[2],'base64')).digest('base64').replace(/=+$/,'');
+        if(key){binding.fingerprint='SHA256:'+createHash('sha256').update(Buffer.from(key[2],'base64')).digest('base64').replace(/=+$/,'');binding.sshHostPublicKey='ssh-ed25519 '+key[2];}
       }catch{}
     }
     legacyBindings.push(binding);
@@ -213,7 +235,10 @@ async function start() {
   try{
     const warnings=await pairing.restore();pairingAvailable=true;
     if(warnings.length)app.whenReady().then(()=>dialog.showMessageBox({type:'warning',message:'部分 Windows 连接未启动',detail:warnings.join('\n')}));
-  }catch{app.whenReady().then(()=>dialog.showMessageBox({type:'error',message:'无法读取已保存的 Windows 接入信息',detail:'新增接入暂不可用，现有配置已保留。请检查本机 windows-devices 目录。'}));}
+  }catch{pairing.records=[];app.whenReady().then(()=>dialog.showMessageBox({type:'error',message:'无法读取已保存的 Windows 接入信息',detail:'新增接入暂不可用，现有配置已保留。请检查本机 windows-devices 目录。'}));}
+  if(!config.pairingOnly&&!pairing.records.some(record=>record.legacyMachineId===config.machineId)){
+    Object.assign(legacyBindings[0],await startDevice(config));
+  }
   await import(pathToFileURL(path.join(config.vendorAsar, 'dist-electron/main.js')).href);
 }
 start().catch(async error => {

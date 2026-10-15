@@ -8,22 +8,23 @@ const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../gmssh_windows_bridge/launcher.cjs'), 'utf8')
   .replace('start().catch(', 'globalThis.completion = start().catch(');
 
-async function launch({ monitoring = true, failure, terminal = false, keychain = true, wake = false, pairingOnly = false } = {}) {
+async function launch({ monitoring = true, failure, terminal = false, keychain = true, wake = false, pairingOnly = false, clipboardText = '', adopted = false } = {}) {
   const children = [], dialogs = [], copies = [], pickers = [];
   const app = new EventEmitter();
   const handlers = new Map();
   const ipcMain = {handle:(channel,listener)=>handlers.set(channel,listener)};
   let nativeInstallCalls = 0;
   const autoUpdater = {checkForUpdates:()=>nativeInstallCalls++,quitAndInstall:()=>nativeInstallCalls++};
-  let imported = false, exitCode;
+  let imported = false, exitCode, clipboardReads = 0;
   Object.assign(app, { requestSingleInstanceLock: () => true, whenReady: async () => {}, getPath:()=>'/synthetic/user-data', exit: value => { exitCode = value; } });
   const config = { python: '/synthetic/python', vendorAsar: '/synthetic/app.asar', target: '100.64.0.7',
     tailscaleName: 'synthetic-peer', tailscaleCli: '/synthetic/tailscale', port: 22256, keychain, pairingOnly,
     wake: wake ? { mac:'02:00:00:00:00:01', broadcast:'192.168.1.255' } : null,
     monitor: monitoring ? { port: 22255, targetPort: 22, username: 'synthetic-user', knownHosts: '/synthetic/known_hosts', hostKey: '/synthetic/host_key', forwardTerminal: terminal } : null };
+  if(adopted)config.machineId='1'.repeat(32);
   const spawn = (program, args, options) => {
     const child = new EventEmitter(); child.stdout = new EventEmitter(); child.stderr = new EventEmitter();
-    Object.assign(child, { program, args, options, killed: false, kill: () => { child.killed = true; } }); children.push(child);
+    Object.assign(child, { program, args, options, killed: false, kill: () => { child.killed = true;child.signalCode='SIGTERM';child.emit('exit',null,'SIGTERM'); } }); children.push(child);
     setImmediate(() => {
       const monitor = args[1] === 'gmssh_windows_bridge';
       const desktopLine = 'RustDesk desktop preview: http://127.0.0.1:22256/#token=' + (failure === 'token' ? 'bad' : 's'.repeat(43)) + '\n';
@@ -36,18 +37,28 @@ async function launch({ monitoring = true, failure, terminal = false, keychain =
     return child;
   };
   const context = { __dirname: '/synthetic', process: { env: { PYTHONPATH: '/must-not-inherit', PYTHONHOME: '/must-not-inherit' } },
-    setTimeout, clearTimeout, URL, URLSearchParams,
+    setTimeout, clearTimeout, URL, URLSearchParams, Buffer,
     require: name => {
-      if (name === 'electron') return { app, ipcMain, autoUpdater, clipboard:{writeText:value=>copies.push(value)}, dialog: { showMessageBox: async value => dialogs.push(value),showOpenDialog:async value=>{pickers.push(value);return {canceled:true,filePaths:[]};} } };
+      if (name === 'electron') return { app, ipcMain, autoUpdater, clipboard:{writeText:value=>copies.push(value),readText:()=>{clipboardReads++;return clipboardText;}}, dialog: { showMessageBox: async value => dialogs.push(value),showOpenDialog:async value=>{pickers.push(value);return {canceled:true,filePaths:[]};} } };
       if (name === 'node:child_process') return { spawn };
       if (name === 'node:fs') return { readFileSync: () => '/* synthetic page entry */' };
       if (name === './launcher-config.json') return config;
-      if (name === './pairing.cjs') return require('../gmssh_windows_bridge/pairing.cjs');
+      if (name === './pairing.cjs') {
+        const module=require('../gmssh_windows_bridge/pairing.cjs');
+        if(!adopted)return module;
+        return {...module,PairingManager:class extends module.PairingManager{
+          async restore(){
+            this.records=[{id:'a'.repeat(32),machineId:config.machineId,legacyMachineId:config.machineId}];
+            this.running.set(this.records[0].id,await this.startDevice({...this.legacy[0],target:'2001:db8::42'}));
+            return [];
+          }
+        }};
+      }
       return require(name);
     } };
   vm.runInNewContext(source, context, { importModuleDynamically: async () => { imported = true; return import('node:assert/strict'); } });
   await context.completion;
-  return { children, app, dialogs, copies, pickers, imported, exitCode, ipcMain, autoUpdater, handlers, nativeInstallCalls:()=>nativeInstallCalls };
+  return { children, app, dialogs, copies, pickers, imported, exitCode, ipcMain, autoUpdater, handlers, nativeInstallCalls:()=>nativeInstallCalls, clipboardReads:()=>clipboardReads };
 }
 
 test('starts one shared SSH bridge, waits for both listeners and keeps monitoring read-only', async () => {
@@ -63,6 +74,15 @@ test('starts one shared SSH bridge, waits for both listeners and keeps monitorin
     assert.equal(child.options.shell, undefined);
   }
   result.app.emit('will-quit'); assert.ok(result.children.every(child => child.killed));
+});
+test('reopening an adopted fixed-device configuration starts only the replacement IPv6 bridge',async()=>{
+  const result=await launch({adopted:true});
+  assert.equal(result.imported,true);assert.equal(result.children.length,1);
+  const args=Array.from(result.children[0].args);
+  assert.equal(args[args.indexOf('--target')+1],'2001:db8::42');
+  assert.equal(args[args.indexOf('--listen-port')+1],'22255');
+  assert.equal(args[args.indexOf('--host-key')+1],'/synthetic/host_key');
+  result.app.emit('will-quit');
 });
 test('preserves desktop-only startup and rejects failed services or an invalid desktop capability', async () => {
   const legacy = await launch({ monitoring: false });
@@ -107,6 +127,14 @@ test('reports upstream access failures without displaying arbitrary stderr or re
   assert.doesNotMatch(result.dialogs[0].detail, /untrusted diagnostic/);
   result.app.emit('will-quit');
 });
+test('ordinary offline retries stay non-modal while a host identity failure is still reported',async()=>{
+  const result=await launch(),child=result.children[0];
+  child.stderr.emit('data',Buffer.from('WARNING Upstream connection failed (TimeoutError)\nWARNING Upstream connection failed (NoValidConnectionsError)\n'));
+  await new Promise(resolve=>setImmediate(resolve));assert.equal(result.dialogs.length,0);
+  child.stderr.emit('data',Buffer.from('WARNING Upstream connection failed (BadHostKeyException)\n'));
+  await new Promise(resolve=>setImmediate(resolve));assert.equal(result.dialogs.length,1);assert.match(result.dialogs[0].detail,/主机密钥/);
+  assert.equal(child.killed,false);result.app.emit('will-quit');
+});
 test('blocks vendor bundle replacement while preserving ordinary IPC and metadata notices', async () => {
   const result = await launch(); let delegated = 0;
   result.ipcMain.handle('render-to-main', async (_event, request) => {delegated++; return request.type;});
@@ -147,4 +175,22 @@ test('starts an empty controller without a remote target, and restricts enrollme
   assert.equal(result.pickers.length,0);
   assert.equal((await handler({sender:{getURL:()=> 'file:///synthetic/app.asar/dist/index.html#/home'}},{type:'gmssh-pair-file'})).status,'cancelled');
   assert.equal(result.pickers.length,1);result.app.emit('will-quit');
+});
+
+test('untrusted pages cannot read enrollment clipboard, and invalid clipboard contents never enter replies',async()=>{
+  const secret='synthetic-clipboard-credential'.repeat(3000);
+  const result=await launch({monitoring:false,pairingOnly:true,clipboardText:secret});
+  result.ipcMain.handle('render-to-main',async()=>({multiPort:5000}));
+  const handler=result.handlers.get('render-to-main');
+  for(const url of ['https://untrusted.invalid/','http://127.0.0.1:22256/']) {
+    assert.equal((await handler({sender:{getURL:()=>url}},{type:'gmssh-pair-paste'})).status,'error');
+    for(const type of ['gmssh-pair-manual','gmssh-pair-edit'])assert.equal((await handler({sender:{getURL:()=>url}},{type,data:{target:'2001:db8::42',machineId:'1'.repeat(32)}})).status,'error');
+  }
+  assert.equal(result.clipboardReads(),0);
+  const event={sender:{getURL:()=> 'file:///synthetic/app.asar/dist/index.html#/home'}};
+  const reply=await handler(event,{type:'gmssh-pair-paste'});
+  assert.equal(reply.status,'error');assert.equal(result.clipboardReads(),1);
+  assert.ok(!JSON.stringify(reply).includes('synthetic-clipboard-credential'));
+  assert.equal((await handler(event,{type:'gmssh-pair-clear'})).status,'ok');
+  result.app.emit('will-quit');
 });

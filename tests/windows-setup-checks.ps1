@@ -13,6 +13,7 @@ $script:accountPresent = $true
 $script:ports = @(22,21118)
 $script:rulePresent = $true
 $script:taskValid = $true
+$script:taskUserValid = $true
 $script:desktopPresent = $true
 $script:mutations = 0
 function Get-LocalUser { param($Name,$ErrorAction); if ($script:accountPresent) { [pscustomobject]@{Enabled=$true;SID=[pscustomobject]@{Value=$script:sid}} } }
@@ -28,7 +29,7 @@ function Get-NetFirewallPortFilter { param([Parameter(ValueFromPipeline=$true)]$
 function Get-NetFirewallProfile { param($PolicyStore); [pscustomobject]@{Enabled='True'} }
 function Get-AuthenticodeSignature { param($FilePath); [pscustomobject]@{Status='Valid'} }
 function Get-ScheduledTask { param($TaskName,$TaskPath,$ErrorAction)
-    [pscustomobject]@{State='Running';Actions=@([pscustomobject]@{Execute=(Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe');
+    [pscustomobject]@{State='Running';Principal=[pscustomobject]@{UserId=$(if($script:taskUserValid){$script:sid}else{'S-1-5-21-1-2-3-9999'});LogonType='Interactive'};Triggers=@([pscustomobject]@{CimClass=[pscustomobject]@{CimClassName='MSFT_TaskLogonTrigger'};UserId=$script:sid;Enabled=$true});Actions=@([pscustomobject]@{Execute=(Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe');
         Arguments=if ($script:taskValid) { '-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + (Join-Path $script:program 'gmssh-agent.ps1') + '"' } else { 'wrong-script' }})}
 }
 function New-LocalUser { $script:mutations++; throw 'Mutation forbidden' }
@@ -48,7 +49,7 @@ try {
     try { $fingerprint = 'SHA256:' + [Convert]::ToBase64String($hash.ComputeHash([Convert]::FromBase64String($public.Split(' ')[1]))).TrimEnd('=') } finally { $hash.Dispose() }
     $connection = @{computer=[Environment]::MachineName;username='gmssh';controller='LocalSubnet';addresses=@('10.10.10.1');sshStatus='old';sshStartup='old';sshHostPublicKey=$public;sshHostFingerprint=$fingerprint}
     $connection | ConvertTo-Json | Set-Content (Join-Path $data 'connection.json') -Encoding UTF8
-    @{computer=[Environment]::MachineName;username='gmssh';managedAccountSid=$script:sid;accountRole='Administrator'} | ConvertTo-Json | Set-Content (Join-Path $data 'agent.json') -Encoding UTF8
+    @{computer=[Environment]::MachineName;username='gmssh';managedAccountSid=$script:sid;accountRole='Administrator';trayUserSid=$script:sid;version='fixture-version'} | ConvertTo-Json | Set-Content (Join-Path $data 'agent.json') -Encoding UTF8
     'fixture' | Set-Content (Join-Path $script:program 'gmssh-agent.ps1')
     $public | Set-Content (Join-Path $ssh 'ssh_host_ed25519_key.pub')
     'Subsystem sftp sftp-server.exe' | Set-Content (Join-Path $ssh 'sshd_config')
@@ -65,6 +66,10 @@ try {
     $script:taskValid = $false
     Assert (-not (Get-GMSSHReadiness -DataRoot $data -ProgramRoot $script:program -SSHRoot $ssh).readyToPair) 'Wrong tray target was accepted'
     $script:taskValid = $true
+    $script:taskUserValid=$false
+    Assert (-not (Get-GMSSHReadiness -DataRoot $data -ProgramRoot $script:program -SSHRoot $ssh).readyToPair) 'Wrong tray principal was accepted'
+    $script:taskUserValid=$true
+    Assert ((Get-GMSSHStartupStatus -DataRoot $data).servicesReady) 'Healthy startup service snapshot was rejected'
     'Subsystem sftp other-server.exe' | Set-Content (Join-Path $ssh 'sshd_config')
     Assert (-not (Get-GMSSHReadiness -DataRoot $data -ProgramRoot $script:program -SSHRoot $ssh).readyToPair) 'Missing SFTP was accepted'
     Assert ((Get-GMSSHInstallPlan -SetupRoot $package -Dedicated $true -DataRoot $data -ProgramRoot $script:program -SSHRoot $ssh) -eq 'Existing') 'Existing installation was not preserved'

@@ -37,3 +37,7 @@ catalog.json
 connection.json
 agent.json
 installation-status.txt
+startup-status.json
+connect-meta.dat
+connect-password.dat
+connect-identity.dat

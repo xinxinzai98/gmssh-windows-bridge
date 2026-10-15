@@ -35,3 +35,18 @@ jobs:
         working-directory: desktop-web
       - run: node --experimental-vm-modules --test tests/*.cjs
       - run: git diff --exit-code -- gmssh_windows_bridge/desktop_web
+  connect:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.2'
+          cache: false
+      - run: go test -v
+        working-directory: tools/windows_connect
+        env:
+          GO111MODULE: 'off'

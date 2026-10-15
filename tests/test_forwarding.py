@@ -153,6 +153,7 @@ def bridge(terminal=True, sftp=True, gmssh=False, shell='default'):
     us, uc = socket.socketpair()
     server = paramiko.Transport(us)
     server.add_server_key(key)
+    upstream.disconnect = server.close
     with tempfile.TemporaryDirectory() as root:
         server.set_subsystem_handler('sftp', paramiko.SFTPServer, Files, root=root)
         def upstream_loop():
@@ -199,6 +200,13 @@ def bridge(terminal=True, sftp=True, gmssh=False, shell='default'):
 
 
 class ForwardingTests(unittest.TestCase):
+    def test_upstream_disconnect_closes_the_native_client_transport(self):
+        with bridge() as (client, upstream):
+            self.assertTrue(client.is_active())
+            upstream.disconnect()
+            client.join(3)
+            self.assertFalse(client.is_active(), 'Native client retained a dead Windows connection')
+
     def test_shell_selection_forwards_fixed_command_without_changing_exec(self):
         import base64
         for shell in ('cmd', 'powershell'):

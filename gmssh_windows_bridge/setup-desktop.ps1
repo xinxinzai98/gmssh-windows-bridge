@@ -116,6 +116,13 @@ try {
         $state = Get-Content $statePath -Raw | ConvertFrom-Json
         $account = Get-LocalUser -Name gmssh
         if ($state.managedAccountSid -cne $account.SID.Value) { throw '本地账号身份与安装记录不一致。' }
+        $connectRoot = $PSScriptRoot
+        $connectData = Split-Path $statePath
+        if (Test-Path (Join-Path $connectData 'private\connect-meta.dat')) {
+            . (Join-Path $connectRoot 'setup-connect.ps1')
+            Stop-GMSSHConnectTask $connectRoot $connectData
+            if ((Invoke-GMSSHConnectHelper -ProgramRoot $connectRoot -DataRoot $connectData -Operation revoke) -cne 'ok') { throw '旧连接码未确认停用，本次未修改密码。' }
+        }
         Set-LocalUser -Name gmssh -Password $secret
     }
     try {
@@ -127,9 +134,17 @@ try {
         throw
     }
     $password = $null
+    $connectHint = ''
+    if ($ManagedAccount -and (Test-Path (Join-Path $PSScriptRoot 'gmssh-connect.exe'))) {
+        try {
+            . (Join-Path $PSScriptRoot 'setup-connect.ps1')
+            Set-GMSSHConnectPassword $PSScriptRoot (Split-Path $statePath) $secret
+            $connectHint = "`r`n旧连接码已失效，可从托盘复制新的长效连接码。"
+        } catch { $connectHint = "`r`n连接密码已修改，但一键接入尚未启用；请运行升级 / 修复，或重新验证当前密码启用连接码。" }
+    }
     if ($ChangePasswordOnly) {
         $message = if ($ManagedAccount) { 'SSH 与桌面连接密码已修改。控制端下次连接请更新记住的密码。' } else { '桌面密码已修改。控制端下次连接请更新记住的密码。' }
-        [void][Windows.Forms.MessageBox]::Show($message, 'GMSSH Windows')
+        [void][Windows.Forms.MessageBox]::Show(($message+$connectHint), 'GMSSH Windows')
         return
     }
     $options = [ordered]@{

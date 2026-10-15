@@ -20,6 +20,14 @@ vendor_app='/Applications/极目Linux桌面.app'
 vendor_version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$vendor_app/Contents/Info.plist")
 [[ "$vendor_version" == 2.0.4 ]] || fail "当前原版版本为 $vendor_version，本 Alpha 预览版只验收了 2.0.4。"
 /usr/bin/codesign --verify --deep --strict "$vendor_app"
+native_profile="$HOME/Library/Application Support/GMSSH"
+vendor_header="$(/usr/bin/od -An -tx1 -N8 "$vendor_app/Contents/MacOS/GMSSH" | /usr/bin/tr -d '[:space:]')"
+case "$vendor_header" in
+  cffaedfe0c000001) vendor_arch=arm64 ;;
+  cffaedfe07000001) vendor_arch=x64 ;;
+  *) fail '原版 GMSSH 的程序架构不受支持。' ;;
+esac
+[[ -s "$native_profile/serve/multi/gmb_multi_server_mac_$vendor_arch" && -s "$native_profile/serve/app/gs/bin/gs_main_mac_$vendor_arch" ]] || fail '请先打开官方 GMSSH 2.0.4，确认设备首页可用后退出，再运行此安装器。原版本地服务资源需要先完成初始化。'
 wheels=("$setup_dir"/gmssh_windows_bridge-*.whl)
 [[ ${#wheels[@]} -eq 1 && -f "${wheels[0]}" ]] || fail '安装包中的 wheel 缺失或不唯一，请完整解压后重试。'
 if [[ "${1:-}" == --check ]]; then printf '前置检查通过；未安装或修改任何应用。\n'; exit 0; fi
@@ -64,5 +72,6 @@ fi
   --constraint "$setup_dir/requirements-macos.txt" "${wheels[0]}[desktop]"
 "$runtime/bin/python" -I -m gmssh_windows_bridge.macos_launcher \
   --pairing-only --keychain --gmssh-app "$vendor_app" \
-  --profile "$HOME/Library/Application Support/gmssh-windows-bridge/controller" --output "$app_output"
+  --output "$app_output"
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$app_output"
 printf '\n安装完成。请退出其他 GMSSH 实例后打开：%s\n首次使用请正常允许系统的局域网访问。\n' "$app_output"

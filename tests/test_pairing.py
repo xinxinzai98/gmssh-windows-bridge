@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import paramiko
 
-from gmssh_windows_bridge.pairing import AssetHandler, inspect_connection, probe_identity
+from gmssh_windows_bridge.pairing import AssetHandler, inspect_connection, inspect_manual, probe_identity, test_credentials
 
 
 def exported():
@@ -25,6 +25,31 @@ def exported():
 
 
 class PairingTests(unittest.TestCase):
+    def test_manual_ipv6_reads_only_the_public_key_before_password_authentication(self):
+        connection=inspect_connection(json.dumps(exported()))
+        key=paramiko.Ed25519Key(data=base64.b64decode(connection['sshHostPublicKey'].split()[1]))
+        transport=MagicMock();transport.get_remote_server_key.return_value=key
+        with patch('gmssh_windows_bridge.pairing.socket.create_connection') as connect, patch('gmssh_windows_bridge.pairing.paramiko.Transport',return_value=transport):
+            result=inspect_manual({'computer':'LAB-PC','username':'gmssh','target':'[2001:0db8::42]:2222','port':22})
+            connect.assert_called_once_with(('2001:db8::42',2222),timeout=5)
+            transport.auth_password.assert_not_called();self.assertEqual(result['desktopAuth'],'manual')
+            self.assertEqual(result['sshHostPublicKey'],connection['sshHostPublicKey'])
+        with patch('gmssh_windows_bridge.pairing.paramiko.SSHClient') as factory:
+            self.assertTrue(test_credentials(result,'2001:db8::42','synthetic-password')['verified'])
+            client=factory.return_value;client.get_host_keys.return_value.add.assert_called_once_with('[2001:db8::42]:2222','ssh-ed25519',key)
+            self.assertFalse(client.connect.call_args.kwargs['allow_agent']);self.assertFalse(client.connect.call_args.kwargs['look_for_keys'])
+            client.close.assert_called_once()
+            client.connect.side_effect=paramiko.AuthenticationException()
+            with self.assertRaisesRegex(ValueError,'原设备配置已保留'): test_credentials(result,'2001:db8::42','incorrect')
+
+    def test_ipv6_export_keeps_identity_and_ipv4_wake_metadata(self):
+        data=exported();before=inspect_connection(json.dumps(data))
+        data['addresses']=['2001:0DB8:0:0::10','192.0.2.42','2001:db8::10']
+        result=inspect_connection(json.dumps(data))
+        self.assertEqual(result['id'],before['id'])
+        self.assertEqual(result['addresses'],['192.0.2.42','2001:db8::10'])
+        self.assertEqual(result['adapters'],before['adapters'])
+
     def test_public_export_normalizes_identity_addresses_and_physical_adapter(self):
         data = exported()
         result = inspect_connection('\ufeff' + json.dumps(data))

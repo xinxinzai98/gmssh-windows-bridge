@@ -15,6 +15,8 @@ import mimetypes
 
 import paramiko
 
+from .address import normalize_address, parse_endpoint, ssh_endpoint
+
 MAX_EXPORT = 65536
 
 
@@ -28,10 +30,7 @@ def _object(pairs):
 
 
 def _address(value):
-    address = ipaddress.IPv4Address(value)
-    if address.is_loopback or address.is_multicast or address.is_unspecified or address.is_link_local or int(address) == 0xFFFFFFFF:
-        raise ValueError("连接地址应为这台 Windows 电脑的可用 IPv4 地址。")
-    return str(address)
+    return normalize_address(value)
 
 
 def inspect_connection(text):
@@ -64,7 +63,7 @@ def inspect_connection(text):
     try:
         addresses = list(dict.fromkeys(_address(value) for value in values))
     except (ValueError, ipaddress.AddressValueError):
-        raise ValueError("连接文件包含无效的网络地址，请从 Windows 托盘重新导出。") from None
+        raise ValueError("连接文件包含无效的 IPv4 或 IPv6 地址。") from None
     public = data.get("sshHostPublicKey")
     if not isinstance(public, str) or not re.fullmatch(r"ssh-ed25519 [A-Za-z0-9+/=]+(?: [^\r\n]{0,200})?", public):
         raise ValueError("连接文件缺少有效的 Ed25519 SSH 主机公钥。")
@@ -91,7 +90,8 @@ def inspect_connection(text):
         if not isinstance(value, dict) or value.get("address") not in addresses:
             continue
         mac, prefix = value.get("mac", ""), value.get("prefixLength")
-        if not isinstance(mac, str) or not re.fullmatch(r"(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}", mac) or type(prefix) is not int or not 1 <= prefix <= 30:
+        if (ipaddress.ip_address(value['address']).version != 4 or not isinstance(mac, str) or
+                not re.fullmatch(r"(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}", mac) or type(prefix) is not int or not 1 <= prefix <= 30):
             continue
         if int(mac[:2], 16) & 1 or mac.replace(":", "") == "000000000000":
             continue
@@ -104,8 +104,9 @@ def inspect_connection(text):
 
 
 def probe_identity(connection, target):
-    if target not in connection["addresses"]:
-        raise ValueError("请选择连接文件中的 Windows 地址。")
+    target = normalize_address(target)
+    if target not in connection['addresses']:
+        raise ValueError('请选择已核对连接信息中的地址。')
     sock = socket.create_connection((target, connection["sshPort"]), timeout=5)
     transport = paramiko.Transport(sock)
     try:
@@ -117,6 +118,48 @@ def probe_identity(connection, target):
         return {"target": target, "fingerprint": connection["sshHostFingerprint"], "verified": True}
     finally:
         transport.close()
+
+
+def inspect_manual(data):
+    endpoint = parse_endpoint(data.get('target'), data.get('port', 22))
+    public = {'schema': 1, 'computer': data.get('computer'), 'username': data.get('username'),
+              'sshPort': endpoint['port'], 'addresses': [endpoint['target']],
+              'desktopAuth': 'shared-ssh' if data.get('sharedPassword') is True else 'manual'}
+    # Validate user fields before making even an unauthenticated SSH connection.
+    if (not isinstance(public['computer'], str) or not re.fullmatch(r'[\w .-]{1,63}', public['computer']) or
+            not isinstance(public['username'], str) or not re.fullmatch(r'[\w .@\\-]{1,64}', public['username'])):
+        raise ValueError('请填写有效的电脑名称和 SSH 账号。')
+    sock = socket.create_connection((endpoint['target'], endpoint['port']), timeout=5)
+    transport = paramiko.Transport(sock)
+    try:
+        transport.get_security_options().key_types = ['ssh-ed25519']
+        transport.start_client(timeout=5)
+        key = transport.get_remote_server_key()
+        if key.get_name() != 'ssh-ed25519':
+            raise ValueError('此入口需要 Ed25519 SSH 主机身份。')
+        public['sshHostPublicKey'] = 'ssh-ed25519 ' + key.get_base64()
+        public['sshHostFingerprint'] = 'SHA256:' + base64.b64encode(hashlib.sha256(key.asbytes()).digest()).decode().rstrip('=')
+    finally:
+        transport.close()
+    text = json.dumps(public, ensure_ascii=False)
+    return {**inspect_connection(text), 'connectionText': text}
+
+
+def test_credentials(connection, target, password):
+    target = normalize_address(target)
+    if not isinstance(password, str) or not password or len(password.encode()) > 1024:
+        raise ValueError('请输入当前连接密码。')
+    key = paramiko.Ed25519Key(data=base64.b64decode(connection['sshHostPublicKey'].split()[1]))
+    client = paramiko.SSHClient()
+    client.get_host_keys().add(ssh_endpoint(target, connection['sshPort']), 'ssh-ed25519', key)
+    try:
+        client.connect(target, port=connection['sshPort'], username=connection['username'], password=password,
+                       allow_agent=False, look_for_keys=False, timeout=5, auth_timeout=5, banner_timeout=5)
+        return {'verified': True}
+    except paramiko.AuthenticationException:
+        raise ValueError('连接密码认证未通过，原设备配置已保留。') from None
+    finally:
+        client.close()
 
 
 class AssetHandler(BaseHTTPRequestHandler):
@@ -162,16 +205,30 @@ def main():
         if len(raw) > MAX_EXPORT * 2:
             raise ValueError("请求过大。")
         request = json.loads(raw, object_pairs_hook=_object)
-        if not isinstance(request, dict) or request.get("operation") not in ("inspect", "probe"):
+        if not isinstance(request, dict) or request.get("operation") not in ("inspect", "probe", "redeem-code", "endpoint", "manual", "test-login"):
             raise ValueError("无效的接入操作。")
-        connection = inspect_connection(request.get("connection"))
-        result = connection if request["operation"] == "inspect" else probe_identity(connection, request.get("target"))
+        text = request.get('connection')
+        from .connection_code import PREFIX, inspect_code, redeem_code
+        if request['operation'] == 'endpoint':
+            result = parse_endpoint(request.get('target'), request.get('port', 22))
+        elif request['operation'] == 'manual':
+            result = inspect_manual(request)
+        elif request['operation'] == 'test-login':
+            result = test_credentials(inspect_connection(text), request.get('target'), request.get('password'))
+        elif request['operation'] == 'redeem-code':
+            result = redeem_code(text, request.get('target'))
+        elif request['operation'] == 'inspect' and isinstance(text, str) and text.strip().startswith(PREFIX):
+            code = inspect_code(text)
+            result = {**code['public'], 'connectionText': code['connectionText'], 'fromCode': True}
+        else:
+            connection = inspect_connection(text)
+            result = connection if request["operation"] == "inspect" else probe_identity(connection, request.get("target"))
         print(json.dumps({"ok": True, "data": result}, ensure_ascii=False))
     except ValueError as error:
         print(json.dumps({"ok": False, "message": str(error)}, ensure_ascii=False))
         return 1
     except (OSError, paramiko.SSHException):
-        print(json.dumps({"ok": False, "message": "无法核对 Windows SSH，请检查地址、端口及局域网连接。"}, ensure_ascii=False))
+        print(json.dumps({"ok": False, "message": "无法核对 Windows SSH，请检查地址、端口和网络可达性。"}, ensure_ascii=False))
         return 1
     return 0
 

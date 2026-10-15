@@ -1,39 +1,115 @@
 <!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>Windows 接入向导回归</title>
-<style>*{margin:0;padding:0}body{background:#171719;color:#eee;font:14px system-ui;padding:28px}button{padding:10px;color:#eee;background:#34343a;border:1px solid #555;border-radius:6px;cursor:pointer}.sub-nav{display:flex;padding:14px;background:#232326;margin:20px 0}pre{white-space:pre-wrap;line-height:1.8}</style>
+<style>*{margin:0;padding:0}body{background:#171719;color:#eee;font:14px system-ui;padding:28px}button{padding:10px;color:#eee;background:#34343a;border:1px solid #555;border-radius:6px;cursor:pointer}.sub-nav{display:flex;padding:14px;background:#232326;margin:20px 0}pre{white-space:pre-wrap;line-height:1.8}.n-dialog{position:fixed;inset:0;margin:auto;width:min(550px,calc(100vw - 32px));max-height:calc(100vh - 40px);box-sizing:border-box;padding:24px;background:#202023;color:#eee;border:1px solid #ffffff24;border-radius:12px;font:14px system-ui}.n-dialog::backdrop{background:#0008}.n-dialog__title{position:relative;font-size:20px;font-weight:600;margin-bottom:20px}.n-dialog__close{position:absolute;right:0;top:-4px}.n-dialog .modal-content label{display:flex;gap:12px;align-items:center;margin:18px 0}.n-dialog .modal-content input{background:#141416;color:#eee;padding:9px;border:1px solid #555;border-radius:6px}.n-dialog__action{margin-top:20px}.modal-footer{display:flex;gap:8px;justify-content:flex-end}</style>
 <h1>Windows 接入向导回归</h1><p>本页使用本机模拟设备和模拟接口，不连接 Windows，不保存真实密码。</p><button id="run">运行检查</button> <button id="preview">查看向导预览</button><pre id="result">待运行</pre>
-<div class="machine-manage"><div class="sub-nav">全部分组</div><div class="action-btn"><i class="icon-shuaxin"></i></div><div data-machine-id="11111111111111111111111111111111">模拟电脑</div></div>
-<script src="../desktop-web/public/gmssh-pairing.js?v=alpha7-native-centered"></script><script>
+<div class="machine-manage"><div class="sub-nav">全部分组 <button class="btn add" aria-label="添加机器">＋</button></div><div class="action-btn"><i class="icon-shuaxin"></i></div><div data-machine-id="11111111111111111111111111111111">模拟电脑</div></div>
+<script src="../desktop-web/public/gmssh-pairing.js?v=alpha12-unified-add"></script><script>
+let nativeTests=0,nativeAdds=0;
+function nativeAdd(title='添加机器'){
+ const modal=document.createElement('dialog');modal.className='n-dialog jm-default-modal jm-fix-scroll-modal';
+ modal.innerHTML='<div class="n-dialog__title"><div class="modal-header"></div><button class="n-dialog__close" aria-label="关闭添加机器">×</button></div><div class="n-dialog__content"><div class="modal-content"><p>原生基本设置 / 高级选项</p><label>机器名称<input data-native="name" placeholder="请输入机器名称"></label><label>Host 地址<input placeholder="Host地址"></label></div></div><div class="n-dialog__action"><div class="modal-footer"><button data-native="test">测试连接</button><button data-native="cancel">取消</button><button data-native="add">添加</button></div></div>';
+ modal.querySelector('.modal-header').textContent=title;
+ const close=()=>{modal.close();modal.remove();};
+ modal.querySelector('.n-dialog__close').onclick=close;modal.querySelector('[data-native=cancel]').onclick=close;
+ modal.querySelector('[data-native=test]').onclick=()=>nativeTests++;
+ modal.querySelector('[data-native=add]').onclick=()=>{nativeAdds++;close();};
+ modal.addEventListener('cancel',event=>{event.preventDefault();close();});document.body.append(modal);modal.showModal();return modal;
+}
+document.querySelector('.btn.add').onclick=()=>nativeAdd();
 document.getElementById('run').onclick=async()=>{
  const result=document.getElementById('result'),checks=[];const assert=(value,text)=>{if(!value)throw Error(text);checks.push('PASS '+text);};const settle=()=>new Promise(resolve=>setTimeout(resolve,30));
- let mode='cancel',last,opens=0,refreshes=0;
+ let mode='cancel',pendingFile,last,opens=0,closes=0,refreshes=0,cleared=0;
  const data={id:'a'.repeat(32),computer:'LAB-PC',username:'gmssh',sshPort:22,addresses:['192.0.2.42','192.0.2.43'],sshHostFingerprint:'SHA256:synthetic-public-identity',desktopAuth:'shared-ssh',canRememberDesktop:true};
  const nativeId='1'.repeat(32);
  window.electronAPI={invoke:async(_channel,request)=>{
+  if(request.type==='gmssh-pair-clear'){cleared++;return {status:'ok'};}
+  if(request.type==='gmssh-pair-paste')return {status:'ok',data:{...data,fromCode:true,existing:mode==='existing-code'?{machineId:nativeId,target:'192.0.2.42'}:null}};
+  if(request.type==='gmssh-pair-file'&&mode==='pending')return new Promise(resolve=>pendingFile=resolve);
   if(request.type==='gmssh-pair-file')return mode==='cancel'?{status:'cancelled'}:mode==='bad'?{status:'error',message:'连接文件未通过身份检查'}:{status:'ok',data:{...data,existing:mode==='existing'?{machineId:nativeId,target:'192.0.2.42'}:null}};
-  last=structuredClone(request.data);return mode==='auth-failed'?{status:'error',message:'连接认证未通过'}:{status:'ok',data:{machineId:nativeId,existing:mode==='existing'}};
+  if(request.type==='gmssh-pair-edit')return {status:'ok',data:{...data,existing:{machineId:nativeId,target:'192.0.2.42'}}};
+  if(request.type==='gmssh-pair-manual'){last=structuredClone(request.data);return {status:'ok',data:{...data,sshPort:2222,addresses:['2001:db8::42'],fromManual:true,existing:null}};}
+  last=structuredClone(request.data);return mode==='auth-failed'?{status:'error',message:'连接认证未通过'}:{status:'ok',data:{machineId:nativeId,existing:mode==='existing',credentialsUpdated:request.data.refreshPassword===true||request.data.target.includes(':')}};
  }};
- window.gmsshWindowsControllers=new Map([[nativeId,{open:()=>opens++}]]);window.gmsshHomeController={select:id=>{assert(id===nativeId,'定位原生机器 ID，不使用名称模糊匹配');}};
+ window.gmsshWindowsControllers=new Map([[nativeId,{open:()=>opens++,close:()=>closes++}]]);window.gmsshHomeController={select:id=>{assert(id===nativeId,'定位原生机器 ID，不使用名称模糊匹配');}};
  document.querySelector('.action-btn').onclick=()=>refreshes++;
  try{
-  window.gmsshPairingController?.remove();installGMSSHPairing();
-  assert(document.querySelector('.sub-nav .gm-pair-open'),'零设备时也提供首页接入入口');document.querySelector('.gm-pair-open').click();
-  const dialog=document.querySelector('.gm-pair-dialog'),field=name=>dialog.querySelector('[data-pair="'+name+'"]');
-  const centered=()=>{const r=dialog.getBoundingClientRect();return Math.abs(r.x+r.width/2-innerWidth/2)<2&&Math.abs(r.y+r.height/2-innerHeight/2)<2;};
+  window.gmsshPairingController?.remove();nativeTests=nativeAdds=0;installGMSSHPairing();
+  assert(!document.querySelector('.gm-pair-open'),'首页没有独立 Windows 按钮，仅保留原生加号');
+  const panel=document.querySelector('.gm-pair-panel'),field=name=>panel.querySelector('[data-pair="'+name+'"]');
+  const isOpen=()=>!!panel.closest('dialog[open]');
+  const centered=()=>{const r=panel.closest('dialog[open]').getBoundingClientRect();return Math.abs(r.x+r.width/2-innerWidth/2)<2&&Math.abs(r.y+r.height/2-innerHeight/2)<2;};
+  const openWindows=async()=>{document.querySelector('.btn.add').click();await settle();document.querySelector('[data-platform=windows]').click();};
+  document.querySelector('.btn.add').click();await settle();
+  let native=document.querySelector('.n-dialog');
+  assert(native.querySelector('[data-platform=linux][aria-selected=true]')&&getComputedStyle(native.querySelector('.modal-content')).display!=='none','加号打开原生添加机器，默认保留 Linux 表单');
+  const toggle=native.querySelector('.gm-add-platform'),title=native.querySelector('.modal-header'),closeButton=native.querySelector('.n-dialog__close');
+  assert(title.contains(toggle)&&!native.querySelector('.n-dialog__content .gm-add-platform')&&toggle.getBoundingClientRect().right<=closeButton.getBoundingClientRect().left-8,'系统切换与标题同一行，紧凑排列且不遮挡关闭按钮');
+  native.querySelector('[data-native=name]').value='draft-linux';native.querySelector('[data-native=test]').click();
+  native.querySelector('[data-platform=windows]').click();
+  assert(panel.parentElement===native.querySelector('.n-dialog__content')&&document.querySelectorAll('dialog[open]').length===1&&getComputedStyle(native.querySelector('.n-dialog__action')).display==='none','Windows 内容嵌入同一个添加窗口，不叠加第二个对话框或 Linux 提交按钮');
+  assert(!field('intro').hidden&&field('lookup').hidden&&field('connect').hidden&&field('paste').getAttribute('aria-pressed')==='true','首次进入突出连接码说明，未填写时不展示无效提交按钮');
+  const sourceButtons=['paste','file','manual'].map(name=>field(name).getBoundingClientRect());
+  assert(sourceButtons.every(r=>Math.abs(r.top-sourceButtons[0].top)<1&&Math.abs(r.width-sourceButtons[0].width)<1),'三种接入方式等宽排列，保持同一行');
+  mode='new';field('file').click();await settle();field('password').value='synthetic-draft';
+  native.querySelector('[data-platform=linux]').click();await settle();
+  assert(!field('password').value&&field('preview').hidden&&native.querySelector('[data-native=name]').value==='draft-linux','切回 Linux 清除 Windows 临时凭据，保留原 Linux 草稿');
+  native.querySelector('[data-native=add]').click();await settle();assert(nativeTests===1&&nativeAdds===1,'Linux 测试和添加仍使用原来的处理函数');
+  mode='pending';await openWindows();field('file').click();await settle();
+  native=document.querySelector('.n-dialog');native.querySelector('.n-dialog__close').click();
+  const escapeBusy=new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true});document.dispatchEvent(escapeBusy);
+  assert(isOpen()&&native.querySelector('[data-platform=linux]').disabled&&escapeBusy.defaultPrevented,'检查进行中禁用系统切换并阻止窗口关闭和 Escape');
+  pendingFile({status:'cancelled'});await settle();mode='cancel';
   assert(centered(),'原生样式重置后，接入对话框仍在窗口中心');
-  field('file').click();await settle();assert(dialog.open&&field('connect').disabled,'取消文件选择保持当前向导且不创建连接');
+  field('file').click();await settle();assert(isOpen()&&field('connect').disabled,'取消文件选择保持当前向导且不创建连接');
   mode='bad';field('file').click();await settle();assert(field('status').textContent.includes('身份检查')&&field('preview').hidden,'无效连接文件显示错误，不进入认证');
-  mode='new';field('file').click();await settle();assert(field('computer').textContent==='LAB-PC'&&field('fingerprint').textContent===data.sshHostFingerprint&&field('target').options.length===2,'展示确切电脑、主机指纹与可选地址');
-  const r=dialog.getBoundingClientRect();assert(centered()&&r.x>=0&&r.y>=0&&r.right<=innerWidth&&r.bottom<=innerHeight,'完整接入表单保持居中并在窗口内滚动');
+  mode='new';field('file').click();await settle();assert(field('computer').textContent==='LAB-PC'&&field('fingerprint').textContent===data.sshHostFingerprint&&field('targets').options.length===2,'展示确切电脑、主机指纹与可选地址');
+  const r=panel.closest('dialog[open]').getBoundingClientRect();assert(centered()&&r.x>=0&&r.y>=0&&r.right<=innerWidth&&r.bottom<=innerHeight,'完整接入表单保持居中并在窗口内滚动');
   assert(!field('remember-label').hidden&&field('remember').checked,'仅声明共享认证的安装包提供桌面记住选项');
   mode='auth-failed';field('password').value='synthetic-secret';field('password').dispatchEvent(new Event('input'));field('connect').click();await settle();
-  assert(dialog.open&&!field('password').value&&field('status').textContent.includes('认证未通过'),'认证失败保留向导并清除密码，不显示成功');
+  assert(isOpen()&&!field('password').value&&field('status').textContent.includes('认证未通过'),'认证失败保留向导并清除密码，不显示成功');
   mode='new';field('password').value='synthetic-secret';field('password').dispatchEvent(new Event('input'));field('connect').click();await settle();
-  assert(!dialog.open&&opens===1&&refreshes===1&&!field('password').value,'成功后刷新原生列表、打开对应桌面并清除密码');
+  assert(!isOpen()&&opens===1&&refreshes===1&&!field('password').value,'成功后刷新原生列表、打开对应桌面并清除密码');
   assert(last.id===data.id&&last.target==='192.0.2.42'&&last.password==='synthetic-secret'&&last.rememberDesktop===true,'连接参数只使用所选电脑，记住选项显式传递');
-  document.querySelector('.gm-pair-open').click();mode='existing';field('file').click();await settle();
+  await openWindows();mode='existing';field('file').click();await settle();
   assert(field('password-label').hidden&&!field('connect').disabled&&field('connect').textContent==='打开已有设备','重复导入识别已有设备，无需再次输入密码');
   field('connect').click();await settle();assert(opens===2&&last.password==='','已有设备沿同一入口打开，不索取新密码');
-  window.gmsshPairingController.remove();assert(!document.querySelector('.gm-pair-open')&&!document.querySelector('.gm-pair-dialog'),'卸载清理接入按钮、对话框和观察器');
+  await openWindows();field('file').click();await settle();
+  field('refresh').checked=true;field('refresh').dispatchEvent(new Event('change'));
+  assert(!field('password-label').hidden&&!field('remember-label').hidden&&field('connect').disabled&&field('connect').textContent==='更新密码并重连','已有设备改密时显式索取新密码，空密码不能提交');
+  field('password').value='synthetic-rotated-secret';field('password').dispatchEvent(new Event('input'));field('connect').click();await settle();
+  assert(last.refreshPassword===true&&last.password==='synthetic-rotated-secret'&&closes===1&&opens===3&&!isOpen()&&!field('password').value,'改密成功仅重建原设备桌面，清除输入并保持同一入口');
+  await openWindows();mode='code';field('paste').click();await settle();
+  assert(field('password-label').hidden&&!field('connect').disabled&&field('computer').textContent==='LAB-PC','粘贴连接码自动填写电脑，无需再次输入密码');
+  field('connect').click();await settle();assert(last.password===''&&opens===4&&!isOpen(),'连接码接入不经过网页密码字段');
+  await openWindows();mode='existing-code';field('paste').click();await settle();
+  assert(field('password-label').hidden&&field('refresh-label').hidden&&!field('connect').disabled,'同设备长效码自动更新原卡片，保留免输入流程');
+  field('connect').click();await settle();assert(last.refreshPassword&&last.password===''&&closes===2&&opens===5,'旧设备粘贴新码后沿原入口重连');
+  window.gmsshPairingController.edit(nativeId);await settle();
+  assert(field('target').value==='192.0.2.42'&&field('password-label').hidden,'右键编辑载入同一设备的原连接地址');
+  field('target').value='[2001:0db8::42]:22';field('target').dispatchEvent(new Event('input'));
+  assert(!field('password-label').hidden&&field('connect').disabled&&field('connect').textContent==='更新地址并重连','填写新的 IPv6 地址会先索取当前密码并标明重连');
+  field('password').value='synthetic-secret';field('password').dispatchEvent(new Event('input'));field('connect').click();await settle();
+  assert(last.target==='[2001:0db8::42]:22'&&last.id===data.id&&closes===3&&opens===6,'IPv6 地址切换仍更新原卡片并重建对应桌面');
+  await openWindows();field('manual').click();
+  assert(!field('manual-fields').hidden&&field('preview').hidden&&field('connect').disabled,'手动接入先填写地址和账号，不提前收集密码');
+  assert(field('intro').hidden&&!field('lookup').hidden&&field('connect').hidden&&field('manual').getAttribute('aria-pressed')==='true'&&document.activeElement===field('manual-target'),'手动填写突出当前方式，聚焦地址并以核对主机作为下一步');
+  const address=field('manual-target').getBoundingClientRect(),port=field('manual-port').getBoundingClientRect(),lookup=field('lookup').getBoundingClientRect(),cancel=field('cancel').getBoundingClientRect();
+  assert(Math.abs(address.top-port.top)<1&&Math.abs(address.height-port.height)<1&&port.left>address.right,'地址与 SSH 端口同行，输入框等高且不重叠');
+  assert(field('lookup').closest('.gm-pair-footer')&&!field('lookup').closest('.gm-pair-body')&&Math.abs(lookup.top-cancel.top)<1&&lookup.bottom<=innerHeight&&document.elementFromPoint(lookup.x+lookup.width/2,lookup.y+lookup.height/2)===field('lookup'),'核对与取消固定在内容区外，始终可见且不被表单覆盖');
+  field('manual-target').value='[2001:db8::42]:2222';field('lookup').click();await settle();
+  assert(last.target==='[2001:db8::42]:2222'&&last.password===undefined,'手动核对主机时只传公开字段');
+  assert(field('target').value==='2001:db8::42'&&field('port').value==='2222'&&field('status').textContent.includes('指纹核对'),'IPv6 主机公钥与独立 SSH 端口显示在认证前');
+  field('cancel').click();await settle();assert(!isOpen()&&!field('password').value,'取消手动接入清空临时凭据');
+  assert(cleared>=5,'关闭和成功接入后清除主进程中的连接码预览');
+  mode='new';await openWindows();field('file').click();await settle();field('password').value='synthetic-dismissed';
+  document.querySelector('.n-dialog__close').click();await settle();assert(!isOpen()&&!field('password').value,'原生关闭按钮同时清除 Windows 临时密码');
+  await openWindows();field('file').click();await settle();field('password').value='synthetic-escaped';
+  document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));await settle();
+  assert(!isOpen()&&!field('password').value,'Escape 关闭统一窗口并清除 Windows 临时密码');
+  assert(nativeTests===1&&nativeAdds===1,'所有 Windows 接入分支均未触发 Linux 测试或添加');
+  native=nativeAdd('编辑机器');await settle();assert(!native.querySelector('.gm-add-platform'),'原生编辑机器窗口不插入新增系统选择');native.querySelector('.n-dialog__close').click();await settle();
+  await openWindows();native=document.querySelector('.n-dialog');
+  window.gmsshPairingController.remove();
+  assert(!document.querySelector('.gm-add-platform')&&!document.querySelector('.gm-pair-dialog')&&getComputedStyle(native.querySelector('.modal-content')).display!=='none','移除增强入口后恢复原生 Linux 添加窗口和原加号');native.querySelector('.n-dialog__close').click();
   result.textContent=checks.join('\n')+'\n全部通过';
  }catch(error){result.textContent=checks.join('\n')+'\nFAIL '+error.message;}
 };

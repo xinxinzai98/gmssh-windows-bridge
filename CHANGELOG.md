@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- Align Windows enrollment fields, keep address and SSH port on one row, group the three input methods with icons, and keep the current step's action outside the scrolling form.
+- Put Linux and Windows enrollment inside the native plus-button Add Machine dialog; remove the separate Windows toolbar button and preserve the original Linux form, tests and advanced settings.
+- Clear temporary Windows credentials when changing platforms or closing the native dialog; keep a single modal and block dismissal while an enrollment operation is pending.
+- Accept supplied IPv6 targets in manual enrollment, public connection files and long-lived codes, with unambiguous bracketed endpoint parsing and separate SSH ports.
+- Edit an existing Windows device's address from its context menu; verify its pinned SSH identity and password before replacing the connection, retain its card and local ports, and restore the old connection if replacement fails.
+- Use the verified SSH device identity for desktop Keychain accounts, retaining access to previously saved address-based entries only for the same pinned key.
+- Listen for connection-code HTTPS on both address families, retaining default subnet firewall rules and requiring an explicit source policy for additional public IPv6 clients.
+- Preserve full IPv6 values in address tooltips and copy actions; exclude generated conflict copies from clean public exports while retaining local files.
+- Add reusable, long-lived LAN connection codes: copy from the Windows tray, paste into the Mac controller, and retain manual enrollment.
+- Exchange credentials only after SSH identity and a pinned device TLS certificate are verified; keep passwords out of the code and codes out of the device catalog, URLs and logs.
+- Protect the Windows credential store with DPAPI and restricted ACLs; invalidate old codes on password changes or an explicit reset, and retain existing cards on re-enrollment.
+- Add a Windows upgrade/repair path with owned-file backups and rollback, retaining existing accounts, credentials, SSH identity and desktop engine.
+- Check the original tray logon principal and export a limited startup status report after sign-in.
+- Refresh credentials on the exact existing device record and reopen its desktop using a one-use in-memory credential.
+- Require initialized native GMSSH server resources on Mac, register the installed launcher, and send pointer positions before fast mouse clicks.
+- Close the local SSH transport when its Windows upstream disconnects, so clients can discard stale sessions after a restart.
+- Reopen a disconnected desktop from its original device button using available saved authentication, without submitting typed credentials or duplicating sessions.
+- Keep ordinary offline connection retries non-modal while retaining dialogs for access and host-identity failures.
+- Keep desktop connection settings open during live frame updates so disconnect remains usable.
 - Reorganize the project homepage, installation and CLI documentation, and contributor entry points.
 - Standardize public release terminology as Alpha preview; existing 0.4.0a8 artifacts remain unchanged.
 

@@ -319,6 +319,10 @@ def serve(client, host_key, config, slots):
         while transport.is_active():
             if not transport.is_authenticated() and time.monotonic() > deadline:
                 break
+            if session.remote is not None:
+                upstream = session.remote.get_transport()
+                if upstream is None or not upstream.is_active():
+                    break  # Let the native client reconnect after Windows restarts.
             channel = transport.accept(0.1)
             if channel is not None:
                 with session.lock:
@@ -357,13 +361,14 @@ def main():
     from contextlib import ExitStack
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", action="version", version=__version__)
-    parser.add_argument("--target", required=True, help="Windows SSH host or Tailscale IP")
+    parser.add_argument("--target", required=True, help="Windows SSH IPv4, IPv6 address or hostname; port is separate")
     parser.add_argument("--username", required=True, help="Existing Windows SSH user")
     parser.add_argument("--target-port", type=int, default=22)
     parser.add_argument("--listen-port", type=int, default=22229)
     parser.add_argument("--desktop-port", type=int, help="Enable experimental free RustDesk web viewer on a separate loopback port")
     parser.add_argument("--desktop-shared-auth", action="store_true", help="Use the authenticated monitoring transport for the desktop; no extra SSH password")
     parser.add_argument("--desktop-keychain", action="store_true", help="Remember the RustDesk password in macOS Keychain when using shared monitoring")
+    parser.add_argument('--desktop-credential-alias', action='append', default=[], help='Previously verified address for desktop credential compatibility')
     parser.add_argument("--wake-mac", help="Paired Windows NIC MAC; requires Wake-on-LAN to be enabled on that device")
     parser.add_argument("--wake-broadcast", help="Connected LAN broadcast IPv4; private address ending in .255, fixed UDP 9")
     parser.add_argument("--rustdesk-port", type=int, default=21118, help="Windows loopback RustDesk direct-access port; used only with --desktop-port")
@@ -383,6 +388,11 @@ def main():
     parser.add_argument("--gmssh-terminal", action="store_true",
                         help="Adapt GMSSH 2.0.4 Linux preflight/bootstrap to a native Windows terminal; no elevation")
     config = parser.parse_args()
+    from .address import ssh_target
+    try:
+        config.target = ssh_target(config.target)
+    except ValueError as error:
+        parser.error(str(error))
     from .desktop_operations import wake_settings
     try:
         wake = wake_settings(config)
@@ -435,9 +445,8 @@ def main():
                     desktop_config.monitor_pool = config.desktop_sessions
                     desktop_config.access_token = secrets.token_urlsafe(32)
                     if config.desktop_keychain:
-                        from .keychain import DesktopKeychain
-                        desktop_config.keychain_store = DesktopKeychain(
-                            f"ssh:{config.username.casefold()}@{config.target.casefold()}:{config.target_port}:{config.rustdesk_port}")
+                        from .keychain import monitor_keychain
+                        desktop_config.keychain_store = monitor_keychain(config)
                 if wake is not None and not getattr(desktop_config, 'access_token', ''):
                     import secrets
                     desktop_config.access_token = secrets.token_urlsafe(32)
