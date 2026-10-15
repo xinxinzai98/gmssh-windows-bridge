@@ -66,7 +66,7 @@ def build(output, installer=None, controller="LocalSubnet", openssh=None, engine
         bundle.writestr("setup-config.json", json.dumps({"version": version, "controllerAddress": controller, "monitorOnly": monitor_only,
                                                       "preserveDesktop": preserve_desktop,
                                                       "expectedComputer": expected_computer, "runtimeSource": runtime_source}, indent=2))
-        guide = 'friends-quickstart.md' if public_release else 'windows-first-run.md'
+        guide = 'getting-started.md' if public_release else 'windows-first-run.md'
         bundle.writestr("README.txt", (root / 'docs' / guide).read_text().encode("utf-8-sig"))
         bundle.write(openssh, 'installers/' + manifest['openssh']['filename'])
         if runtime_source == 'bundled':

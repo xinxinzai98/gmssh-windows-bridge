@@ -1,15 +1,15 @@
 # 发布检查
 
-## 0.4.0a8 通用分享包
+## 0.4.0a8 Alpha 发布包
 
-普通使用者入口见[给朋友的安装说明](friends-quickstart.md)。源码留在 Git；可执行安装包、源码 ZIP、wheel 与 SHA-256 清单放到 GitHub 的友测版 Release。发布范围只包含项目源码目录和新构建的通用附件，保留开发者现有环境。
+普通使用者入口见[安装与接入](getting-started.md)。源码留在 Git；可执行安装包、源码 ZIP、wheel 与 SHA-256 清单放到 GitHub 的Alpha 预发布 Release。发布范围只包含项目源码目录和新构建的通用附件，保留开发者现有环境。
 
 - `tools/build_share_bundle.py` 从允许的源码目录创建导出包，排除用户配置、密钥、数据库、日志、应用副本和构建缓存。它检查开发者绝对路径、私钥格式和访问令牌格式；可用仓库外的私有字符串清单进一步检查已知设备信息。检查不代替人工审查。
 - Mac ZIP 只包含本项目 wheel、安装命令、依赖版本和说明。使用者本机生成的 `.app` 包含其自身路径，属于安装结果，不得再拿来作为通用 Release 附件。
 - 公共 Windows 包使用 `--public-release --runtime-source microsoft`，强制 `LocalSubnet`、无指定电脑、无保留模式，且不捆绑 VC++ 安装文件。已满足要求的运行库直接复用；否则从固定微软 HTTPS 地址获取并核对 SHA-256 和签名。
 - 未取得对应许可时不发布完整原版 GMSSH Mac 程序。RustDesk 1.5.0 引擎保持原文件，旁边提供 [AGPL-3.0](https://github.com/rustdesk/rustdesk/blob/1.5.0/LICENCE) 与[对应源码和构建说明](https://github.com/rustdesk/rustdesk/tree/1.5.0)，包括引用的子模块。微软运行库的[再分发限制](https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files)是公共包改用官方获取的原因。
 
-源码检查与分享包导出：
+源码检查与发布包导出：
 
 ```bash
 python tools/build_share_bundle.py --check-only
@@ -46,12 +46,12 @@ Windows 内部引擎保留 RustDesk 1.5.0 的原始二进制，不声称自己�
 
 ## 本地验收与公开发布
 
-1. 确认只发布当前独立目录，**不要把它的父目录设备维护推到 GitHub**。
+1. 仅从仓库根目录构建和发布，不提交仓库外的设备资料、工作文件和运行环境。
 2. 运行单元测试和构建；检查 wheel 包含 `collector.ps1`、`login.ps1`、`powershell.ps1`、`relay.py` 和 `background.py`。0.4 还须包含 `desktop.py`、当前 Web 静态资源及第三方许可。使用干净构建目录，核对 wheel 的哈希资源与当前静态目录一致，避免 `build/lib` 留下旧 JavaScript。安装 wheel 后在独立目录执行 CLI，避免从源码目录导入而掩盖缺失文件。
 3. 检查 `git status` 和待提交文件：不得包含账号密码、内网/公网真实资产地址、host_key、known_hosts、现场日志、虚拟环境、GMSSH 二进制或提取材料。
 4. README 中区分实机验证与模拟测试。兼容客户端版本变化需要重新实测，不凭测试用假数据宣称兼容。
 5. 创建仓库时使用名称 `gmssh-windows-bridge` 或自行选择；添加 MIT 许可证及非官方说明。不要声称获得 GMSSH 官方支持。
-6. 开启 GitHub 私密漏洞报告功能，填写维护者信息。0.3 仍是实验版本；发布说明必须说明 sudo 标志是终端协议适配、仅验证 GMSSH 2.0.4，以及 SFTP 写权限范围。后台运行不等于开机自启动。
+6. 开启 GitHub 私密漏洞报告功能，填写维护者信息。当前仍为 Alpha 版本；发布说明必须说明 sudo 标志是终端协议适配、仅验证 GMSSH 2.0.4，以及 SFTP 写权限范围。后台运行不等于开机自启动。
 
 本地验证与构建：
 

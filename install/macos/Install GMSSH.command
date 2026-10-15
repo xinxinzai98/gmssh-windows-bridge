@@ -18,7 +18,7 @@ done
 vendor_app='/Applications/极目Linux桌面.app'
 [[ -d "$vendor_app" ]] || fail '请先在 /Applications 安装原版 GMSSH 2.0.4：https://www.gmssh.com/'
 vendor_version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$vendor_app/Contents/Info.plist")
-[[ "$vendor_version" == 2.0.4 ]] || fail "当前原版版本为 $vendor_version，本友测版只验收了 2.0.4。"
+[[ "$vendor_version" == 2.0.4 ]] || fail "当前原版版本为 $vendor_version，本 Alpha 预览版只验收了 2.0.4。"
 /usr/bin/codesign --verify --deep --strict "$vendor_app"
 wheels=("$setup_dir"/gmssh_windows_bridge-*.whl)
 [[ ${#wheels[@]} -eq 1 && -f "${wheels[0]}" ]] || fail '安装包中的 wheel 缺失或不唯一，请完整解压后重试。'

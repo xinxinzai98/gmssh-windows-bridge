@@ -1,6 +1,11 @@
 # Changelog
 
-## 0.4.0a8 — 2026-10-15 (friend-test candidate)
+## Unreleased
+
+- Reorganize the project homepage, installation and CLI documentation, and contributor entry points.
+- Standardize public release terminology as Alpha preview; existing 0.4.0a8 artifacts remain unchanged.
+
+## 0.4.0a8 — 2026-10-15 (Alpha preview)
 
 - Export source and Mac setup packages from a public file allowlist with checksums; exclude profiles, device catalogs, keys, logs, databases and developer paths.
 - Add a generic Mac setup command that builds against the user's installed GMSSH 2.0.4, with no preset Windows target.

@@ -1,4 +1,4 @@
-"""Export friend-test packages from source, never from a running GMSSH profile."""
+"""Export public release packages from source, never from a running GMSSH profile."""
 import argparse
 import hashlib
 import io
@@ -9,7 +9,7 @@ import shutil
 import stat
 import zipfile
 
-ROOT_FILES = {'README.md', 'CHANGELOG.md', 'LICENSE', 'SECURITY.md', 'pyproject.toml', '.gitignore'}
+ROOT_FILES = {'README.md', 'CHANGELOG.md', 'CONTRIBUTING.md', 'LICENSE', 'SECURITY.md', 'pyproject.toml', '.gitignore'}
 SOURCE_DIRS = ('gmssh_windows_bridge', 'desktop-web', 'tools', 'tests', 'docs', 'examples', 'install', '.github')
 SKIP_DIRS = {'.git', 'node_modules', '__pycache__', '.venv', 'venv', 'build', 'dist', 'work', 'outputs', '.pytest_cache'}
 PRIVATE_NAMES = {'.ds_store', 'catalog.json', 'connection.json', 'agent.json', 'readiness.json', 'launcher-config.json', 'installation-status.txt'}
@@ -131,13 +131,13 @@ def build(root, output, wheel, windows_bundle=None, windows_setup=None, deny_val
     mac = {'Install GMSSH.command': files['install/macos/Install GMSSH.command'],
            'requirements-macos.txt': files['install/macos/requirements-macos.txt'],
            'python-runtime.plist': files['install/macos/python-runtime.plist'],
-           'README.txt': files['docs/friends-quickstart.md'], 'LICENSE': files['LICENSE'], wheel.name: wheel.read_bytes()}
+           'README.txt': files['docs/getting-started.md'], 'LICENSE': files['LICENSE'], wheel.name: wheel.read_bytes()}
     mac['SHA256SUMS'] = checksums(mac)
     write_zip(output / f'GMSSH-Mac-Setup-{version}.zip', mac)
     shutil.copy2(wheel, output / wheel.name)
     if windows_setup:
         shutil.copyfile(windows_setup, output / f'GMSSH-Windows-Setup-{version}.exe')
-    (output / 'README.txt').write_bytes(files['docs/friends-quickstart.md'])
+    (output / 'README.txt').write_bytes(files['docs/getting-started.md'])
     (output / 'SHA256SUMS').write_bytes(checksums({p.name: p.read_bytes() for p in output.iterdir() if p.is_file()}))
     return {'version': version, 'sourceFiles': len(files), 'files': sorted(p.name for p in output.iterdir())}
 
