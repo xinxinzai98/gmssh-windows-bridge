@@ -1,4 +1,21 @@
 :root{--gm-bg:#141414;--gm-surface:#202020;--gm-line:#ffffff12;--gm-blue:#5667ff;--gm-text:#eee;--gm-muted:#a1a1aa}
+.machine-manage{--gm-group-width:84px;display:grid;grid-template-columns:var(--gm-group-width) minmax(0,1fr) 34px;column-gap:12px;padding:24px 24px 0!important}
+.machine-manage:has(.machine-group .group-item:nth-child(2)){--gm-group-width:160px}
+.machine-manage>.machine-group{grid-area:1/1/2/-1;display:grid!important;grid-template-columns:var(--gm-group-width) minmax(0,1fr) 34px;column-gap:12px;align-items:center;height:34px!important;padding:0!important;overflow:visible!important}
+.machine-manage>.machine-group .group-list{grid-column:1;min-width:0;flex-wrap:nowrap!important;overflow-x:auto;scrollbar-width:thin}
+.machine-manage>.machine-group .group-item{flex:none;margin:0 6px 0 0!important}
+.machine-manage>.machine-group .group-opr{grid-column:3;width:34px!important}
+.machine-manage>.machine-group .group-opr .shouqi-btn{display:none}
+.machine-manage>.machine-group .group-opr .edit-bit{margin:0!important}
+.machine-manage>.machine-content{display:contents!important}
+.machine-manage .machine-content .machine-head{grid-area:1/2/2/3;gap:16px;min-width:0;padding:0!important}
+.machine-manage .machine-content .machine-head .head-left{flex:1;min-width:0}
+.machine-manage .machine-content .machine-head .head-left .btn{flex:none;margin-right:8px!important}
+.machine-manage .machine-content .machine-head .head-left .search-box{flex:1;min-width:120px;width:220px!important;max-width:300px}
+.machine-manage .machine-content .machine-head .head-right{flex:none;gap:8px!important}
+.machine-manage .machine-content .machine-head .gm-pair-open{height:32px;min-height:32px!important;padding:0 12px!important;border:0;border-radius:0 3px 3px 0}
+.machine-manage #gmssh-machine-workspace{grid-column:1/-1;padding:0 0 20px}
+@media(max-width:1240px){.machine-manage{grid-template-columns:minmax(0,1fr) 34px;padding:20px 16px 0!important}.machine-manage>.machine-group{grid-template-columns:minmax(0,1fr) 34px}.machine-manage>.machine-group .group-opr{grid-column:2}.machine-manage .machine-content .machine-head{grid-area:2/1/3/-1;flex-wrap:wrap;gap:10px;margin-top:16px}.machine-manage .machine-content .machine-head .head-left{flex:1 1 430px}.machine-manage .machine-content .machine-head .head-right{margin-left:auto}.machine-manage>.machine-group .group-list{max-width:100%;padding-bottom:0}}
 .gm-native-source{position:absolute!important;visibility:hidden!important;pointer-events:none!important;left:-100000px!important}
 #gmssh-machine-workspace,#gmssh-machine-workspace *{box-sizing:border-box}
 #gmssh-machine-workspace{position:relative;display:grid;grid-template-columns:minmax(0,1fr) 292px;grid-template-rows:minmax(0,1fr);gap:12px;margin-top:20px;padding:0 24px 20px;color:var(--gm-text);font:14px -apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei UI',sans-serif;min-height:0;overflow:hidden}
