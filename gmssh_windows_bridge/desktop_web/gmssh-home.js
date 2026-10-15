@@ -83,9 +83,30 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
   };
   const capacity = value => value?.split('/').pop()?.trim() || '—';
   const nativeCards = () => [...document.querySelectorAll('.machine-card-scroll [data-machine-id], .list-item-group[data-machine-id], [data-windows-desktop-card]')].filter(node => !node.closest('#gmssh-machine-workspace') && !node.hidden);
-  const publicFields = ['osName','cpuCores','memoryTotal','diskTotal','publicIp','port'];
-  const publicInfo = value => Object.fromEntries(publicFields.filter(key => typeof value?.[key] === 'string' || Number.isFinite(value?.[key])).map(key => [key,value[key]]));
-  const details = node => {
+  const publicFields = ['osName','cpuCores','memoryTotal','diskTotal','publicIp','port','runTime','processNum','activeProcessNum','lastUpdateTime'];
+  const publicInfo = value => {
+    const info=Object.fromEntries(publicFields.filter(key => typeof value?.[key] === 'string' || Number.isFinite(value?.[key])).map(key => [key,value[key]]));
+    const bytes=value=>typeof value==='number'?value:typeof value==='string'&&/^\d+(?:\.\d+)?$/.test(value)?Number(value):NaN;
+    if(Array.isArray(value?.disks))info.disks=value.disks.slice(0,128).filter(disk=>typeof disk?.device==='string')
+      .map(disk=>({name:disk.device.slice(0,512),total:bytes(disk.total),used:bytes(disk.used)}))
+      .filter(disk=>Number.isFinite(disk.total)&&disk.total>=0&&Number.isFinite(disk.used)&&disk.used>=0&&disk.used<=disk.total);
+    return info;
+  };
+  function nativeModels(cards) {
+    const wanted=new Set(cards.map(node=>node.dataset.machineId)),models=new Map(),seen=new Set(),pending=[document.getElementById('app')?._vnode];
+    // Production Vue keeps the root vnode, but omits DOM __vueParentComponent links.
+    // ponytail: pinned GMSSH/Vue tree; replace with a public snapshot API when available.
+    for(let count=0;pending.length&&count<20000;count++){
+      const node=pending.pop();if(!node||typeof node!=='object'||seen.has(node))continue;seen.add(node);
+      const component=node.component;
+      for(const value of [component?.props?.item,component?.props?.record,node.props?.item,node.props?.record])if(typeof value?.id==='string'&&wanted.has(value.id))models.set(value.id,{...models.get(value.id),...publicInfo(value)});
+      if(component?.subTree)pending.push(component.subTree);
+      if(node.suspense?.activeBranch)pending.push(node.suspense.activeBranch);
+      if(Array.isArray(node.children))pending.push(...node.children.slice(0,1000));
+    }
+    return models;
+  }
+  const details = (node,models) => {
     const get = selector => node.querySelector(selector)?.textContent.trim() || '';
     const id = node.dataset.machineId, binding=byId.get(id)||(node.hasAttribute('data-windows-desktop-card')?connections[0]:undefined), windows=!!binding;
     const name = get('.machine-name .name-txt') || get('.windows-card-name') || get('.machine-name') || id;
@@ -98,12 +119,7 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
     const latency = get('[class~="h-[22px]"][class~="rounded-full"]') || get('.machine-latency-badge') || get('.windows-card-badge');
     const desktop = node.querySelector('[data-machine-action="desktop"]'), terminal = node.querySelector('[data-machine-action="terminal"]');
     // Read only public configuration fields; never copy native connection credentials.
-    let model = {};
-    for (let component = node.__vueParentComponent, depth = 0; component && depth < 3; component = component.parent, depth++) {
-      const value = component.props?.item || component.props?.record;
-      if (value?.id === id) { model = publicInfo(value); break; }
-    }
-    const info = {...metadata.get(id), ...model, ...systemInfo.get(id)};
+    const info = {...metadata.get(id), ...models.get(id), ...systemInfo.get(id)};
     return { node, id, windows, binding, name, address, metrics, latency, desktop, terminal, info, cores:info.cores || info.cpuCores || cores,
       image: node.querySelector('.machine-icon-img')?.getAttribute('src'), note: get('.machine-note') || get('.windows-card-note') };
   };
@@ -197,7 +213,7 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
     if(nativeLogo && !nativeLogo.hasAttribute('data-gmssh-brand')){nativeLogo.src=new URL('brand/gmssh.png',base).href;nativeLogo.setAttribute('data-gmssh-brand','');}
     const cards=nativeCards(), source=document.querySelector('.machine-body') || document.querySelector('.machine-card-scroll') || cards.find(node=>node.classList.contains('list-item-group'))?.parentElement?.parentElement;
     if(!source||!cards.length){root?.remove();host?.classList.remove('gm-native-source');root=host=undefined;return;}
-    const records=cards.map(details), mode=localStorage.getItem('GmsshMachineView')==='card'?'card':'list';
+    const models=nativeModels(cards),records=cards.map(node=>details(node,models)),mode=localStorage.getItem('GmsshMachineView')==='card'?'card':'list';
     const next=JSON.stringify([mode,records.map(({id,windows,image,name,address,metrics,latency,note,desktop,terminal,info,cores})=>[id,windows,image,name,address,metrics,latency,note,desktop?.disabled,terminal?.disabled,info,cores]),selected]);
     if(next===fingerprint&&root?.isConnected)return;
     observer.disconnect();
@@ -245,14 +261,20 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
       if(info.os||info.osName)item('系统',info.os||info.osName);
       if(info.cpu||record.cores)item('处理器',info.cpu||record.cores+' 逻辑核');
       if(Number.isFinite(info.uptime))item('运行时间',Math.floor(info.uptime/86400)+' 天 '+Math.floor(info.uptime%86400/3600)+' 小时');
+      else if(info.runTime&&info.runTime!=='-')item('运行时间',info.runTime);
       if(Number.isFinite(info.processes))item('进程',info.processes);
+      else if(Number.isFinite(info.processNum))item(Number.isFinite(info.activeProcessNum)?'活动 / 总进程':'进程',Number.isFinite(info.activeProcessNum)?info.activeProcessNum+' / '+info.processNum:info.processNum);
       for(const network of Array.isArray(info.network)?info.network:[]){const box=make('div','gm-network');box.append(make('strong','',network.name),make('small','gm-muted',(network.addresses||[]).join(' · ')),make('small','gm-muted','链路 '+(Number(network.speed)>0?(network.speed/1e9>=1?(network.speed/1e9).toFixed(1)+' Gbps':Math.round(network.speed/1e6)+' Mbps'):'—')));
         const previous=info.previous?.network?.find(value=>value.name===network.name),seconds=(info.sampledAt-(info.previous?.sampledAt||info.sampledAt))/1000;
         const rate=previous&&seconds>0&&network.received>=previous.received&&network.sent>=previous.sent;
         const traffic=make('small','',rate?'↓ '+size((network.received-previous.received)/seconds)+'/s  ↑ '+size((network.sent-previous.sent)/seconds)+'/s':'已接收 '+size(network.received)+' · 已发送 '+size(network.sent));traffic.title=rate?'最近 '+Math.round(seconds)+' 秒的平均速率':'网卡启动以来的累计流量';box.append(traffic);pane.append(box);}
       if(record.windows&&!info.network)pane.append(make('p','gm-muted',info.unavailable?'配置与网络信息暂不可用，会自动重试。':'正在读取配置与网络信息…'));
       if(info.sampledAt)pane.append(make('small','gm-muted',(info.unavailable?'本次采集失败，上次更新 ':'更新于 ')+new Date(info.sampledAt).toLocaleTimeString()));
-      if(Array.isArray(info.disks)&&info.disks.length>1)for(const disk of info.disks)item(disk.name+' '+disk.filesystem,size(disk.total-disk.free)+' / '+size(disk.total));
+      else if(Number.isFinite(info.lastUpdateTime)&&info.lastUpdateTime>0)pane.append(make('small','gm-muted','更新于 '+new Date(info.lastUpdateTime*1000).toLocaleTimeString()));
+      if(Array.isArray(info.disks)&&info.disks.length&&(!record.windows||info.disks.length>1)){
+        pane.append(make('h3','','磁盘分区'));
+        for(const disk of info.disks)item(disk.name+(disk.filesystem?' '+disk.filesystem:''),size(Number.isFinite(disk.used)?disk.used:disk.total-disk.free)+' / '+size(disk.total));
+      }
       if(previousPane)previousPane.replaceWith(pane);else root.append(pane);
       fitWorkspace();list.scrollTop=scrollPositions[mode].top;list.scrollLeft=scrollPositions[mode].left;pane.scrollTop=paneScroll;
     } finally {observer.observe(document.body,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['hidden','class','disabled','src']});}

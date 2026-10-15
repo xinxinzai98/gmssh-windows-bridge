@@ -81,6 +81,7 @@ $description = "将安装局域网 SSH 和桌面后台服务，设置开机启�
 if ($MonitorOnly) { $description = "只补装局域网 SSH，允许同一子网访问 22 端口，登录账号为 $WindowsUser。`r`n保留现有桌面密码和设置。" }
 elseif ($PreserveDesktop -or $TrayOnly) { $description += "`r`n本次复用已有桌面引擎，保留其密码和访问设置。" }
 if ($dedicated) { $description = "将创建本地管理员账号 gmssh，用于远程管理文件、运行终端和修改系统设置，密码不自动过期。`r`n系统保护目录和其他用户的加密文件仍受 Windows 权限限制。`r`n安装桌面后台引擎、开机服务和 GMSSH 托盘。`r`n你只设置一次 GMSSH 连接密码，同时用于 SSH 和桌面；原 Windows 账号密码不会改变。" }
+if ($settings -and $settings.runtimeSource -ceq 'microsoft') { $description += "`r`n缺少所需 VC++ 运行库时，将联网从微软官方获取并校验后安装。" }
 if ([Windows.Forms.MessageBox]::Show($description, 'GMSSH Windows · 开始安装', 'OKCancel') -ne 'OK') { return }
 $progressFile = Join-Path $PSScriptRoot 'installation-status.txt'
 '正在准备运行环境…' | Set-Content $progressFile -Encoding UTF8

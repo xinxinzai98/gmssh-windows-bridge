@@ -1,5 +1,29 @@
 # 发布检查
 
+## 0.4.0a8 通用分享包
+
+普通使用者入口见[给朋友的安装说明](friends-quickstart.md)。源码留在 Git；可执行安装包、源码 ZIP、wheel 与 SHA-256 清单放到 GitHub 的友测版 Release。发布范围只包含项目源码目录和新构建的通用附件，保留开发者现有环境。
+
+- `tools/build_share_bundle.py` 从允许的源码目录创建导出包，排除用户配置、密钥、数据库、日志、应用副本和构建缓存。它检查开发者绝对路径、私钥格式和访问令牌格式；可用仓库外的私有字符串清单进一步检查已知设备信息。检查不代替人工审查。
+- Mac ZIP 只包含本项目 wheel、安装命令、依赖版本和说明。使用者本机生成的 `.app` 包含其自身路径，属于安装结果，不得再拿来作为通用 Release 附件。
+- 公共 Windows 包使用 `--public-release --runtime-source microsoft`，强制 `LocalSubnet`、无指定电脑、无保留模式，且不捆绑 VC++ 安装文件。已满足要求的运行库直接复用；否则从固定微软 HTTPS 地址获取并核对 SHA-256 和签名。
+- 未取得对应许可时不发布完整原版 GMSSH Mac 程序。RustDesk 1.5.0 引擎保持原文件，旁边提供 [AGPL-3.0](https://github.com/rustdesk/rustdesk/blob/1.5.0/LICENCE) 与[对应源码和构建说明](https://github.com/rustdesk/rustdesk/tree/1.5.0)，包括引用的子模块。微软运行库的[再分发限制](https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files)是公共包改用官方获取的原因。
+
+源码检查与分享包导出：
+
+```bash
+python tools/build_share_bundle.py --check-only
+python tools/build_windows_setup.py --public-release --runtime-source microsoft \
+  --openssh-installer /path/to/verified-openssh.msi \
+  --rustdesk-installer /path/to/verified-rustdesk.exe --desktop-engine /path/to/verified-engine \
+  --output /path/to/new-public-windows.zip
+python tools/build_share_bundle.py --wheel /path/to/current-wheel.whl \
+  --windows-bundle /path/to/new-public-windows.zip --windows-setup /path/to/current-setup.exe \
+  --output /path/to/new-share-folder
+```
+
+构建 wheel 应使用干净临时源码目录，避免旧 `build/lib` 资源残留。公共清单只记录版本、相对文件名和校验值；设备验收的截图、真实连接文件与本机路径留在仓库外。
+
 ## 两端交付
 
 GitHub 应同时提供 Windows 服务端和 Mac 增强控制端。只发 Windows 安装包，原版 GMSSH 用户无法获得新增的首页、桌面标签和文件工具栏。
@@ -18,7 +42,7 @@ Mac 开发预览使用本地 ad-hoc 签名。更新后须在真实应用中验�
 
 预览构建与应用安装分开处理；同一标识的旧预览版不应一直保持系统注册。2026-10-14 的一次更新在权限已允许时出现应用内 errno 65，按明确授权撤销 5 个旧预览版注册、刷新当前版后恢复，并完成真实界面文件往返验收。回退文件仍可保留；重新打开旧副本会再次注册它，不能把清理注册当作一次性的永久修复。
 
-Windows 内部引擎保留 RustDesk 1.5.0 的原始二进制，不声称自己实现或获得 RustDesk 全部能力。公开捆绑版本时，应提供实际使用版本的开源源码获取方式、许可与版权通知，并核对 OpenSSH、微软 VC++ 运行库等再分发要求。本项目自己的 MIT 许可不替代第三方许可。当前候选包尚未作为公开 Release 发布。
+Windows 内部引擎保留 RustDesk 1.5.0 的原始二进制，不声称自己实现或获得 RustDesk 全部能力。公开捆绑版本时，须保留实际版本的源码获取方式、许可与版权通知。本项目自己的 MIT 许可不替代第三方许可；开发者自用的旧离线 VC++ 包不得因文件可下载就视为获得再分发许可。
 
 ## 本地验收与公开发布
 
@@ -34,7 +58,7 @@ Windows 内部引擎保留 RustDesk 1.5.0 的原始二进制，不声称自己�
 ```bash
 python -m unittest discover -s tests -v
 python -m pip wheel . --no-deps --wheel-dir dist
-python -m pip install --force-reinstall --no-deps dist/gmssh_windows_bridge-0.4.0a5-py3-none-any.whl
+python -m pip install --force-reinstall --no-deps dist/gmssh_windows_bridge-0.4.0a8-py3-none-any.whl
 python -I -m gmssh_windows_bridge --help
 python -I -m gmssh_windows_bridge --version
 ```

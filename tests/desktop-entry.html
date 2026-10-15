@@ -45,6 +45,17 @@ document.querySelector('#run').onclick = async () => {
     assert([...document.querySelectorAll('[data-gmssh-row] button[title="文件互传"] img')].every(image=>image.src.endsWith('/arrows-left-right.svg')), 'Windows 和 Linux 统一使用双向箭头与文件互传名称');
     assert(document.querySelector('.gm-device-details h3:nth-of-type(2)').textContent==='资源使用' && !document.querySelector('.gm-identity-text small').textContent.includes('Windows'), '资源使用去掉当前，设备名称旁不重复标注 Windows');
     assert(document.querySelector('[data-gmssh-row="synthetic-linux"] .gm-status-dot.good').title==='80ms' && document.querySelector('[data-gmssh-row="synthetic-linux"] .gm-device-identity').title.includes('8 逻辑核'), '延迟读取原生徽标，设备悬浮提示包含处理器和配置容量');
+    const linuxInfo={id:'synthetic-linux',osName:'Ubuntu 24.04',runTime:'11 天 2 小时',processNum:124,activeProcessNum:0,lastUpdateTime:1700000000,
+      authValue:'must-not-render-native-credential',disks:[{device:'/dev/vda1',total:String(256*1024**3),used:String(80*1024**3),authValue:'must-not-render-disk-credential'},{device:'/dev/invalid',total:100,used:120}]};
+    const productionRoot=document.createElement('div');productionRoot.id='app';document.body.append(productionRoot);
+    productionRoot._vnode={component:{subTree:{children:[{component:{props:{record:linuxInfo}}}]}}};home.select('synthetic-linux');
+    let linuxDetails=document.querySelector('.gm-device-details').textContent;
+    assert(!linux.__vueParentComponent&&linuxDetails.includes('11 天 2 小时')&&linuxDetails.includes('活动 / 总进程0 / 124'),'生产版没有 DOM 调试字段时，Linux 详情仍显示原生运行时间和进程零值');
+    assert(linuxDetails.includes('磁盘分区')&&linuxDetails.includes('/dev/vda1')&&linuxDetails.includes('80.0 GB / 256.0 GB')&&!linuxDetails.includes('/dev/invalid'),'Linux 磁盘明细使用原生已用/总量并拒绝无效数值');
+    assert(linuxDetails.includes('更新于')&&!document.querySelector('#gmssh-machine-workspace').textContent.includes('must-not-render'),'Linux 公共信息映射不展示原生或分区凭据');
+    linuxInfo.runTime='12 天';linuxInfo.processNum=125;home.refresh();
+    assert(document.querySelector('.gm-device-details').textContent.includes('12 天')&&document.querySelector('.gm-device-details').textContent.includes('0 / 125'),'原生监控刷新后，Linux 详情同步更新');
+    home.select('synthetic-windows');productionRoot.remove();
     const savedAPI=window.electronAPI;let copied;
     window.electronAPI={invoke:async(_channel,request)=>{copied=request.data;return {status:'ok'};}};
     document.querySelector('.gm-copy-address').click();await settle();

@@ -9,7 +9,11 @@ import zipfile
 
 
 def build(output, installer=None, controller="LocalSubnet", openssh=None, engine=None, monitor_only=False,
-          vcredist=None, preserve_desktop=False, expected_computer=None):
+          vcredist=None, preserve_desktop=False, expected_computer=None, runtime_source='bundled', public_release=False):
+    if runtime_source not in ('bundled', 'microsoft'):
+        raise ValueError('choose bundled or microsoft runtime source')
+    if public_release and (controller != 'LocalSubnet' or preserve_desktop or expected_computer or monitor_only or runtime_source != 'microsoft'):
+        raise ValueError('public packages require generic LAN settings and Microsoft runtime download')
     if controller != "LocalSubnet" and ipaddress.ip_address(controller).version != 4:
         raise ValueError("use LocalSubnet or one controller IPv4 address")
     if output.exists():
@@ -19,7 +23,7 @@ def build(output, installer=None, controller="LocalSubnet", openssh=None, engine
     manifest = json.loads((source / "windows-installers.json").read_text())
     if openssh is None or hashlib.sha256(openssh.read_bytes()).hexdigest() != manifest['openssh']['sha256']:
         raise ValueError('include the pinned official offline OpenSSH MSI')
-    if vcredist is None or hashlib.sha256(vcredist.read_bytes()).hexdigest() != manifest['vcredist']['sha256']:
+    if runtime_source == 'bundled' and (vcredist is None or hashlib.sha256(vcredist.read_bytes()).hexdigest() != manifest['vcredist']['sha256']):
         raise ValueError('include the pinned official Microsoft runtime')
     payload = None
     if not monitor_only:
@@ -61,10 +65,12 @@ def build(output, installer=None, controller="LocalSubnet", openssh=None, engine
         version = re.search(r'__version__\s*=\s*[\'"]([^\'"]+)', (source / '__init__.py').read_text()).group(1)
         bundle.writestr("setup-config.json", json.dumps({"version": version, "controllerAddress": controller, "monitorOnly": monitor_only,
                                                       "preserveDesktop": preserve_desktop,
-                                                      "expectedComputer": expected_computer}, indent=2))
-        bundle.writestr("README.txt", (root / "docs/windows-first-run.md").read_text().encode("utf-8-sig"))
+                                                      "expectedComputer": expected_computer, "runtimeSource": runtime_source}, indent=2))
+        guide = 'friends-quickstart.md' if public_release else 'windows-first-run.md'
+        bundle.writestr("README.txt", (root / 'docs' / guide).read_text().encode("utf-8-sig"))
         bundle.write(openssh, 'installers/' + manifest['openssh']['filename'])
-        bundle.write(vcredist, 'installers/' + manifest['vcredist']['filename'])
+        if runtime_source == 'bundled':
+            bundle.write(vcredist, 'installers/' + manifest['vcredist']['filename'])
         if payload is not None:
             bundle.writestr('desktop-engine.zip', payload, compress_type=zipfile.ZIP_STORED)
             bundle.writestr('desktop-payload.json', json.dumps({'filename':'desktop-engine.zip',
@@ -86,10 +92,12 @@ if __name__ == "__main__":
     parser.add_argument('--desktop-engine', type=Path)
     parser.add_argument('--monitor-only', action='store_true')
     parser.add_argument('--preserve-desktop', action='store_true')
-    parser.add_argument('--vc-runtime', type=Path, required=True)
+    parser.add_argument('--vc-runtime', type=Path)
+    parser.add_argument('--runtime-source', choices=['bundled','microsoft'], default='bundled')
+    parser.add_argument('--public-release', action='store_true', help='Refuse device-specific settings and bundled Microsoft runtime')
     parser.add_argument('--expected-computer')
     parser.add_argument("--controller-address", default="LocalSubnet")
     args = parser.parse_args()
     print(build(args.output, args.rustdesk_installer, args.controller_address,
                 args.openssh_installer, args.desktop_engine, args.monitor_only, args.vc_runtime,
-                args.preserve_desktop, args.expected_computer))
+                args.preserve_desktop, args.expected_computer, args.runtime_source, args.public_release))

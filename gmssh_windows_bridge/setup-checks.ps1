@@ -76,10 +76,25 @@ function Get-GMSSHInstallPlan {
     }
     if ($Dedicated -and (Get-Service RustDesk -ErrorAction SilentlyContinue)) { throw '发现独立的桌面服务，本次不会重设其密码。已有桌面请使用保留模式。' }
     $manifest = Get-Content (Join-Path $SetupRoot 'windows-installers.json') -Raw | ConvertFrom-Json
+    $runtimeSource = 'bundled'
+    $setupConfig = Join-Path $SetupRoot 'setup-config.json'
+    if (Test-Path $setupConfig) {
+        $settings = Get-Content $setupConfig -Raw | ConvertFrom-Json
+        if ($settings.runtimeSource) { $runtimeSource = $settings.runtimeSource }
+    }
+    if ($runtimeSource -notin @('bundled','microsoft')) { throw '运行库来源配置无效。' }
     foreach ($name in @('openssh','vcredist')) {
         $item = $manifest.$name
         if ($item.filename -notmatch '^[a-zA-Z0-9_.-]+$' -or $item.sha256 -notmatch '^[a-f0-9]{64}$') { throw '离线组件清单无效。' }
         $file = Join-Path $SetupRoot ('installers\' + $item.filename)
+        if ($name -eq 'vcredist' -and $runtimeSource -ceq 'microsoft' -and -not (Test-Path $file)) {
+            $uri = [uri]$item.url
+            $required = $null
+            if ($item.filename -cne 'VC_redist.x64.exe' -or $uri.Scheme -cne 'https' -or
+                $uri.Host -cne 'download.visualstudio.microsoft.com' -or
+                -not [version]::TryParse([string]$item.version, [ref]$required)) { throw '微软运行库下载清单无效。' }
+            continue
+        }
         if (-not (Test-Path $file) -or (Get-FileHash $file -Algorithm SHA256).Hash.ToLowerInvariant() -cne $item.sha256 -or
             (Get-AuthenticodeSignature $file).Status -ne 'Valid') { throw ('离线组件缺失或校验失败：' + $item.filename) }
     }
@@ -89,6 +104,18 @@ function Get-GMSSHInstallPlan {
             (Get-FileHash (Join-Path $SetupRoot 'desktop-engine.zip') -Algorithm SHA256).Hash.ToLowerInvariant() -cne $payload.sha256) { throw '离线桌面组件校验失败。' }
     }
     return 'New'
+}
+
+function Test-GMSSHRuntimeInstalled {
+    param([version]$Required)
+    $installed = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64' -ErrorAction SilentlyContinue
+    $current = $null
+    if (-not $installed -or $installed.Installed -ne 1 -or
+        -not [version]::TryParse(([string]$installed.Version).TrimStart('v'), [ref]$current) -or $current -lt $Required) { return $false }
+    foreach ($name in @('msvcp140.dll','vcruntime140.dll','vcruntime140_1.dll')) {
+        if (-not (Test-Path (Join-Path ([Environment]::SystemDirectory) $name))) { return $false }
+    }
+    return $true
 }
 
 function Get-GMSSHReadiness {

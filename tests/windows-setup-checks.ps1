@@ -82,6 +82,18 @@ try {
     'fixture'|Set-Content (Join-Path $package 'desktop-engine.zip')
     @{filename='desktop-engine.zip';sourceSha256=('a'*64);sha256=(Get-FileHash (Join-Path $package 'desktop-engine.zip') -Algorithm SHA256).Hash.ToLowerInvariant()}|ConvertTo-Json|Set-Content (Join-Path $package 'desktop-payload.json') -Encoding UTF8
     Assert ((Get-GMSSHInstallPlan -SetupRoot $package -Dedicated $true -DataRoot (Join-Path $fixture 'new-data') -ProgramRoot (Join-Path $fixture 'new-program') -SSHRoot (Join-Path $fixture 'new-ssh')) -eq 'New') 'Fresh verified payload was rejected'
+    Remove-Item (Join-Path $package 'installers\vcredist.exe')
+    $manifest.vcredist.filename='VC_redist.x64.exe';$manifest.vcredist.version='14.51.36247.0'
+    $manifest.vcredist.url='https://download.visualstudio.microsoft.com/download/pr/fixture/VC_redist.x64.exe'
+    $manifest|ConvertTo-Json|Set-Content (Join-Path $package 'windows-installers.json') -Encoding UTF8
+    @{runtimeSource='microsoft'}|ConvertTo-Json|Set-Content (Join-Path $package 'setup-config.json') -Encoding UTF8
+    Assert ((Get-GMSSHInstallPlan -SetupRoot $package -Dedicated $true -DataRoot (Join-Path $fixture 'new-data') -ProgramRoot (Join-Path $fixture 'new-program') -SSHRoot (Join-Path $fixture 'new-ssh')) -eq 'New') 'Official runtime download plan was rejected'
+    $manifest.vcredist.url='https://example.invalid/runtime.exe'
+    $manifest|ConvertTo-Json|Set-Content (Join-Path $package 'windows-installers.json') -Encoding UTF8
+    $blocked=$false;try { Get-GMSSHInstallPlan -SetupRoot $package -Dedicated $true -DataRoot (Join-Path $fixture 'new-data') -ProgramRoot (Join-Path $fixture 'new-program') -SSHRoot (Join-Path $fixture 'new-ssh')|Out-Null } catch { $blocked=$true }
+    Assert $blocked 'Unofficial runtime source was accepted'
+    $manifest.vcredist.url='https://download.visualstudio.microsoft.com/download/pr/fixture/VC_redist.x64.exe'
+    $manifest|ConvertTo-Json|Set-Content (Join-Path $package 'windows-installers.json') -Encoding UTF8
     'damaged'|Set-Content (Join-Path $package 'installers\openssh.exe')
     $blocked=$false;try { Get-GMSSHInstallPlan -SetupRoot $package -Dedicated $true -DataRoot (Join-Path $fixture 'new-data') -ProgramRoot (Join-Path $fixture 'new-program') -SSHRoot (Join-Path $fixture 'new-ssh')|Out-Null } catch { $blocked=$true }
     Assert $blocked 'Damaged offline payload was accepted'
@@ -92,5 +104,5 @@ try {
     $blocked=$false;try { & $parameters -TrayUserSid 'S-1-5-21-1-2-3-1001 -TrayOnly'|Out-Null } catch { $blocked=$true }
     Assert $blocked 'Injected tray identity was accepted'
     Assert ($script:mutations -eq 0) 'Read-only checks changed the system'
-    'PASS: preflight, existing install, offline corruption, readiness, Unicode parameters and no mutations.'
+    'PASS: preflight, existing install, offline corruption, official runtime source, readiness, Unicode parameters and no mutations.'
 } finally { if (Test-Path $fixture) { Remove-Item -LiteralPath $fixture -Recurse -Force } }

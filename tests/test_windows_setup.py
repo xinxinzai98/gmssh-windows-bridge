@@ -6,6 +6,13 @@ from pathlib import Path
 
 @unittest.skipUnless(sys.platform == 'win32', 'native Windows argument parser required')
 class WindowsSetupTests(unittest.TestCase):
+    def test_runtime_download_without_real_network_or_installation(self):
+        script = Path(__file__).with_name('windows-runtime-checks.ps1')
+        result = subprocess.run(['powershell.exe', '-NoProfile', '-File', str(script)],
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('PASS:', result.stdout)
+
     def test_preflight_and_readiness_without_changing_system_settings(self):
         script = Path(__file__).with_name('windows-setup-checks.ps1')
         result = subprocess.run(['powershell.exe', '-NoProfile', '-File', str(script)],
