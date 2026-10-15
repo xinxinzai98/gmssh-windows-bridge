@@ -41,6 +41,9 @@ test('skips Linux sudo only for the configured Windows bridge and restores nativ
   }
   window.installWindowsMachinePolicy({bridgePort:22253, username:'other-user'});
   assert.equal(send('http://127.0.0.1:5000/node/add',account),JSON.stringify(account));
+  window.installWindowsMachinePolicy([{bridgePort:22252,username:'synthetic-user'},{bridgePort:22253,username:'other-user'}]);
+  assert.equal(JSON.parse(send('http://127.0.0.1:5000/node/add',account)).sudoPolicy,'skip');
+  assert.equal(JSON.parse(send('http://127.0.0.1:5000/node/edit',{...account,port:22253,userName:'other-user'})).sudoPolicy,'skip');
   window.removeWindowsMachinePolicy();
   assert.equal(Request.prototype.open,originalOpen); assert.equal(Request.prototype.send,originalSend);
 });

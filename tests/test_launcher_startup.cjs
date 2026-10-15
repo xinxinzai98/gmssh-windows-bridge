@@ -8,17 +8,17 @@ const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../gmssh_windows_bridge/launcher.cjs'), 'utf8')
   .replace('start().catch(', 'globalThis.completion = start().catch(');
 
-async function launch({ monitoring = true, failure, terminal = false, keychain = true, wake = false } = {}) {
-  const children = [], dialogs = [], copies = [];
+async function launch({ monitoring = true, failure, terminal = false, keychain = true, wake = false, pairingOnly = false } = {}) {
+  const children = [], dialogs = [], copies = [], pickers = [];
   const app = new EventEmitter();
   const handlers = new Map();
   const ipcMain = {handle:(channel,listener)=>handlers.set(channel,listener)};
   let nativeInstallCalls = 0;
   const autoUpdater = {checkForUpdates:()=>nativeInstallCalls++,quitAndInstall:()=>nativeInstallCalls++};
   let imported = false, exitCode;
-  Object.assign(app, { requestSingleInstanceLock: () => true, whenReady: async () => {}, exit: value => { exitCode = value; } });
+  Object.assign(app, { requestSingleInstanceLock: () => true, whenReady: async () => {}, getPath:()=>'/synthetic/user-data', exit: value => { exitCode = value; } });
   const config = { python: '/synthetic/python', vendorAsar: '/synthetic/app.asar', target: '100.64.0.7',
-    tailscaleName: 'synthetic-peer', tailscaleCli: '/synthetic/tailscale', port: 22256, keychain,
+    tailscaleName: 'synthetic-peer', tailscaleCli: '/synthetic/tailscale', port: 22256, keychain, pairingOnly,
     wake: wake ? { mac:'02:00:00:00:00:01', broadcast:'192.168.1.255' } : null,
     monitor: monitoring ? { port: 22255, targetPort: 22, username: 'synthetic-user', knownHosts: '/synthetic/known_hosts', hostKey: '/synthetic/host_key', forwardTerminal: terminal } : null };
   const spawn = (program, args, options) => {
@@ -28,7 +28,7 @@ async function launch({ monitoring = true, failure, terminal = false, keychain =
       const monitor = args[1] === 'gmssh_windows_bridge';
       const desktopLine = 'RustDesk desktop preview: http://127.0.0.1:22256/#token=' + (failure === 'token' ? 'bad' : 's'.repeat(43)) + '\n';
       const monitorLine = 'Monitoring bridge ready: 127.0.0.1:22255\n';
-      const line = monitor ? (failure === 'desktop' ? '' : desktopLine) + (failure === 'monitor' ? '' : monitorLine) : desktopLine;
+      const line = args[1]==='gmssh_windows_bridge.pairing'?'GMSSH local assets: http://127.0.0.1:22256/\n':monitor ? (failure === 'desktop' ? '' : desktopLine) + (failure === 'monitor' ? '' : monitorLine) : desktopLine;
       child.stdout.emit('data', Buffer.from(line.slice(0, 12)));
       child.stdout.emit('data', Buffer.from(line.slice(12)));
       if (failure === 'desktop' || failure === 'monitor') child.emit('exit', 1);
@@ -38,15 +38,16 @@ async function launch({ monitoring = true, failure, terminal = false, keychain =
   const context = { __dirname: '/synthetic', process: { env: { PYTHONPATH: '/must-not-inherit', PYTHONHOME: '/must-not-inherit' } },
     setTimeout, clearTimeout, URL, URLSearchParams,
     require: name => {
-      if (name === 'electron') return { app, ipcMain, autoUpdater, clipboard:{writeText:value=>copies.push(value)}, dialog: { showMessageBox: async value => dialogs.push(value) } };
+      if (name === 'electron') return { app, ipcMain, autoUpdater, clipboard:{writeText:value=>copies.push(value)}, dialog: { showMessageBox: async value => dialogs.push(value),showOpenDialog:async value=>{pickers.push(value);return {canceled:true,filePaths:[]};} } };
       if (name === 'node:child_process') return { spawn };
       if (name === 'node:fs') return { readFileSync: () => '/* synthetic page entry */' };
       if (name === './launcher-config.json') return config;
+      if (name === './pairing.cjs') return require('../gmssh_windows_bridge/pairing.cjs');
       return require(name);
     } };
   vm.runInNewContext(source, context, { importModuleDynamically: async () => { imported = true; return import('node:assert/strict'); } });
   await context.completion;
-  return { children, app, dialogs, copies, imported, exitCode, ipcMain, autoUpdater, handlers, nativeInstallCalls:()=>nativeInstallCalls };
+  return { children, app, dialogs, copies, pickers, imported, exitCode, ipcMain, autoUpdater, handlers, nativeInstallCalls:()=>nativeInstallCalls };
 }
 
 test('starts one shared SSH bridge, waits for both listeners and keeps monitoring read-only', async () => {
@@ -134,4 +135,16 @@ test('copies only an address requested by the trusted native home page', async (
   assert.equal((await handler({sender:{getURL:()=> 'https://example.com/'}},{type:'gmssh-copy-address',data:'192.0.2.42'})).status,'error');
   assert.deepEqual(result.copies,['192.0.2.42','2001:db8::42','lab-pc.local']);assert.equal(delegated,0);
   result.app.emit('will-quit');
+});
+
+test('starts an empty controller without a remote target, and restricts enrollment IPC to its native home',async()=>{
+  const result=await launch({monitoring:false,pairingOnly:true});
+  assert.equal(result.imported,true);assert.equal(result.children.length,1);
+  assert.deepEqual(Array.from(result.children[0].args),['-m','gmssh_windows_bridge.pairing','--serve-assets','--port','22256']);
+  result.ipcMain.handle('render-to-main',async()=>({multiPort:5000}));
+  const handler=result.handlers.get('render-to-main');
+  assert.equal((await handler({sender:{getURL:()=> 'https://untrusted.invalid/'}},{type:'gmssh-pair-file'})).status,'error');
+  assert.equal(result.pickers.length,0);
+  assert.equal((await handler({sender:{getURL:()=> 'file:///synthetic/app.asar/dist/index.html#/home'}},{type:'gmssh-pair-file'})).status,'cancelled');
+  assert.equal(result.pickers.length,1);result.app.emit('will-quit');
 });

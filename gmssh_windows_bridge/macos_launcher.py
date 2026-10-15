@@ -110,20 +110,23 @@ def _build_launcher(config, output):
                "profile": str(config.profile.absolute()) if config.profile else None}
     payload["keychain"] = config.keychain
     payload["monitor"] = monitor
+    payload["pairingOnly"] = getattr(config, 'pairing_only', False)
     from .desktop_operations import wake_settings
     wake = wake_settings(config)
     if wake:
         payload['wake'] = {'mac': config.wake_mac, 'broadcast': config.wake_broadcast}
-    if monitor is None:
+    if monitor is None and not payload['pairingOnly']:
         payload.update(tailscaleName=config.tailscale_name, tailscaleCli=str(config.tailscale_cli.absolute()))
     if config.profile:
         config.profile.mkdir(parents=True, exist_ok=True, mode=0o700)
     digest = write_asar(contents / "Resources/app.asar", {
         "package.json": json.dumps({"name": "GMSSH", "version": "2.0.4", "main": "launcher.cjs"}).encode(),
         "launcher.cjs": (here / "launcher.cjs").read_bytes(),
+        "pairing.cjs": (here / "pairing.cjs").read_bytes(),
         "launcher-config.json": json.dumps(payload, ensure_ascii=False).encode(),
         "gmssh-entry.js": (here / "desktop_web/gmssh-entry.js").read_bytes(),
         "gmssh-home.js": (here / "desktop_web/gmssh-home.js").read_bytes(),
+        "gmssh-pairing.js": (here / "desktop_web/gmssh-pairing.js").read_bytes(),
         "gmssh-theme.css": (here / "desktop_web/gmssh-theme.css").read_bytes(),
     })
     brand = here / 'brand/gmssh.icns'
@@ -185,7 +188,8 @@ def main():
     parser.add_argument("--gmssh-app", type=Path, default=Path("/Applications/极目Linux桌面.app"))
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--python", type=Path, default=Path(sys.executable))
-    parser.add_argument("--target", required=True)
+    parser.add_argument("--target")
+    parser.add_argument("--pairing-only", action="store_true", help="Start a general controller and import Windows connection files from the UI")
     parser.add_argument("--tailscale-name", help="Optional legacy direct-Tailscale preview; LAN monitoring does not use this")
     parser.add_argument("--tailscale-cli", type=Path, default=Path("/Applications/Tailscale.app/Contents/MacOS/Tailscale"))
     parser.add_argument("--port", type=int, default=22243)
@@ -207,7 +211,12 @@ def main():
     try:
         if not 1 <= config.port <= 65535:
             raise ValueError("use a valid local desktop port")
-        if config.monitor_port is not None:
+        if config.pairing_only:
+            if config.target or config.monitor_port is not None or config.tailscale_name or config.wake_mac or config.wake_broadcast:
+                raise ValueError('--pairing-only cannot be combined with a fixed target')
+        elif not config.target:
+            raise ValueError('use --pairing-only or specify --target')
+        elif config.monitor_port is not None:
             try:
                 ipaddress.ip_address(config.target)
             except ValueError:

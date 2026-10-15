@@ -5,6 +5,8 @@ const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
+const { createHash } = require('node:crypto');
+const { PairingManager, loopbackRequest } = require('./pairing.cjs');
 const config = require('./launcher-config.json');
 const backends = [];
 const stopBackends = () => backends.forEach(child => child.kill('SIGTERM'));
@@ -19,9 +21,11 @@ app.on('quit', stopBackends);
 
 const entry = fs.readFileSync(path.join(__dirname, 'gmssh-entry.js'), 'utf8');
 const home = fs.readFileSync(path.join(__dirname, 'gmssh-home.js'), 'utf8');
+const pairingPage = fs.readFileSync(path.join(__dirname, 'gmssh-pairing.js'), 'utf8');
 const theme = fs.readFileSync(path.join(__dirname, 'gmssh-theme.css'), 'utf8');
 const viewerUrl = `http://127.0.0.1:${config.port}/`;
-let accessToken;
+const legacyBindings = [], windows = new Set();
+let pairing, pairingAvailable = false, nativeApiPort;
 let vendorUpdateNotice;
 const indexUrl = pathToFileURL(path.join(config.vendorAsar, 'dist/index.html')).href;
 const updateExplanation = '本增强版包含 Windows 桌面、监控和终端适配。官方更新包不包含这些功能，请通过验收后的增强版兼容包更新。';
@@ -30,6 +34,26 @@ autoUpdater.checkForUpdates = () => {};
 autoUpdater.quitAndInstall = () => {};
 const handle = ipcMain.handle.bind(ipcMain);
 ipcMain.handle = (channel, listener) => handle(channel, channel === 'render-to-main' ? async (event, request, ...args) => {
+  if (['gmssh-pair-file','gmssh-pair-connect','gmssh-pair-desktop-auth'].includes(request?.type)) {
+    if (event.sender?.getURL().split('#')[0] !== indexUrl || !pairingAvailable) return {status:'error',message:'接入向导暂不可用，请检查本地连接配置。'};
+    try {
+      if(request.type==='gmssh-pair-desktop-auth')return {status:'ok',data:typeof request.data?.machineId==='string'?pairing.takeDesktopAuth(request.data.machineId):null};
+      if (request.type==='gmssh-pair-file') {
+        if(pairing.busy)throw Error('正在接入，请等待当前操作完成。');
+        const result=await dialog.showOpenDialog({title:'导入 Windows 连接文件',properties:['openFile'],filters:[{name:'GMSSH 连接文件',extensions:['json']}]});
+        if(result.canceled||!result.filePaths.length)return {status:'cancelled'};
+        const file=result.filePaths[0],stat=fs.statSync(file);
+        if(!stat.isFile()||stat.size>65536)throw Error('请选择 Windows 生成的 GMSSH-connection.json，文件不能超过 64 KB。');
+        return {status:'ok',data:await pairing.inspect(fs.readFileSync(file,'utf8'))};
+      }
+      const ports=await listener(event,{type:'get-port'});
+      nativeApiPort=ports?.multiPort;
+      if(!Number.isInteger(nativeApiPort)||nativeApiPort<1||nativeApiPort>65535)throw Error('GMSSH 本地服务尚未就绪，请稍后重试。');
+      if(!request.data||typeof request.data!=='object'||Array.isArray(request.data))throw Error('接入信息格式无效。');
+      return {status:'ok',data:await pairing.connect(request.data)};
+    } catch(error) {return {status:'error',message:error instanceof Error?error.message:'接入未完成，请重新核对连接信息。'};}
+    finally {if(request?.data&&typeof request.data==='object')delete request.data.password;}
+  }
   if (request?.type === 'gmssh-copy-address') {
     const address = request.data;
     if (event.sender?.getURL().split('#')[0] !== indexUrl || typeof address !== 'string' || address.length > 253 ||
@@ -57,23 +81,30 @@ app.on('browser-window-created', (_event, window) => {
   };
   contents.on('did-finish-load', () => {
     if (contents.getURL().split('#')[0] !== indexUrl) return;
-    const bootstrap = entry + '\ninstallWindowsDesktopEntry(' + JSON.stringify({
-      machineId: config.machineId ?? undefined, viewerUrl, label: config.label,
-      card: config.machineId ? undefined : { host: config.target, name: config.tailscaleName || config.target },
-      autoConnect: true, accessToken,
-    }) + ');\n' + home + '\n' + (config.monitor ? 'installWindowsMachinePolicy(' + JSON.stringify({
-      bridgePort: config.monitor.port, username: config.monitor.username,
-    }) + ');\n' : '') + 'installGMSSHHome(' + JSON.stringify({
-      viewerUrl, machineId:config.machineId ?? undefined, target:config.target,targetPort:config.monitor?.targetPort,css:theme,accessToken,
-    }) + ');\n' + (vendorUpdateNotice ? 'installWindowsUpdateNotice(' + JSON.stringify(vendorUpdateNotice) + ');\n' : '') + 'void 0;';
-    contents.executeJavaScript(bootstrap).catch(error => {
+    windows.add(contents);contents.once('destroyed',()=>windows.delete(contents));
+    inject(contents).catch(error => {
       dialog.showMessageBox(window, { type: 'error', message: 'Windows 桌面入口加载失败',
         detail: error instanceof Error ? error.message : '请检查 GMSSH 版本和本地启动器配置。' });
     });
   });
 });
 
-async function startService(args, label, isReady) {
+async function inject(contents) {
+  const bindings=[...legacyBindings,...(pairing?.bindings()||[])];
+  const entries=bindings.map(value=>({machineId:value.machineId??undefined,viewerUrl:value.viewerUrl,label:value.label,
+    card:value.machineId?undefined:{host:value.target,name:value.tailscaleName||value.target},autoConnect:true,accessToken:value.accessToken}));
+  const devices=bindings.map(value=>({machineId:value.machineId,viewerUrl:value.viewerUrl,target:value.target,targetPort:value.monitor?.targetPort,accessToken:value.accessToken}));
+  const policies=bindings.filter(value=>value.monitor).map(value=>({bridgePort:value.monitor.port,username:value.monitor.username}));
+  const first=devices[0]||{viewerUrl};
+  const bootstrap=entry+'\nif(typeof installWindowsDesktopEntries==="function")installWindowsDesktopEntries('+JSON.stringify(entries)+');else if('+entries.length+')installWindowsDesktopEntry('+JSON.stringify(entries[0]||{})+');\n'+home+'\ninstallWindowsMachinePolicy('+JSON.stringify(policies)+');\nglobalThis.gmsshHomeController=installGMSSHHome('+JSON.stringify({...first,viewerUrl,css:theme,devices})+');\n'+pairingPage+'\nif(typeof installGMSSHPairing==="function")installGMSSHPairing();\n'+(vendorUpdateNotice?'installWindowsUpdateNotice('+JSON.stringify(vendorUpdateNotice)+');\n':'')+'void 0;';
+  await contents.executeJavaScript(bootstrap);
+}
+
+async function nativeRequest(endpoint,data) {
+  return loopbackRequest(nativeApiPort,endpoint,data);
+}
+
+async function startService(args, label, isReady, target=config.target) {
   const environment = { ...process.env, PYTHONUNBUFFERED: '1' };
   delete environment.PYTHONPATH;
   delete environment.PYTHONHOME;
@@ -95,7 +126,7 @@ async function startService(args, label, isReady) {
       if (!Object.hasOwn(upstreamErrors, type) || type === lastUpstreamError) continue;
       lastUpstreamError = type;
       app.whenReady().then(() => dialog.showMessageBox({ type: 'error', message: '无法连接 Windows SSH',
-        detail: `${config.target} · ${upstreamErrors[type]}（${type}）\n这类错误不能通过重新输入密码解决。` })).catch(() => {});
+        detail: `${target} · ${upstreamErrors[type]}（${type}）\n这类错误不能通过重新输入密码解决。` })).catch(() => {});
     }
   });
   await new Promise((resolve, reject) => {
@@ -118,48 +149,71 @@ async function startService(args, label, isReady) {
   });
 }
 
-async function start() {
-  if (!app.requestSingleInstanceLock()) {
-    await app.whenReady();
-    await dialog.showMessageBox({ type: 'info', message: 'GMSSH 已在运行',
-      detail: '首次切换请先正常退出原 GMSSH，再打开 Windows 桌面启动器。' });
-    app.exit(0);
-    return;
-  }
-  // There is no inspector port, developer-server origin, or shell command.
-  delete process.env.VITE_DEV_SERVER_URL;
+async function startDevice(device) {
+  const viewerUrl=`http://127.0.0.1:${device.port}/`;
+  let accessToken;
+  const firstChild=backends.length;
   const desktopReady = line => {
     if (!line.startsWith('RustDesk desktop preview: ')) return false;
     const address = new URL(line.slice('RustDesk desktop preview: '.length).trim());
     if (address.origin + address.pathname !== viewerUrl || address.search || address.username || address.password) throw new Error();
     const token = new URLSearchParams(address.hash.slice(1)).get('token');
-    if ((config.keychain || config.monitor || config.wake) && (!token || !/^[A-Za-z0-9_-]{32,128}$/.test(token))) throw new Error();
+    if ((device.keychain || device.monitor || device.wake) && (!token || !/^[A-Za-z0-9_-]{32,128}$/.test(token))) throw new Error();
     accessToken = token || undefined;
     return true;
   };
-  if (config.monitor) {
-    const m = config.monitor;
-    const args = ['-m', 'gmssh_windows_bridge', '--target', config.target,
+  try { if (device.monitor) {
+    const m = device.monitor;
+    const args = ['-m', 'gmssh_windows_bridge', '--target', device.target,
       '--target-port', String(m.targetPort), '--username', m.username,
       '--listen-port', String(m.port), '--known-hosts', m.knownHosts, '--host-key', m.hostKey,
-      '--desktop-port', String(config.port), '--desktop-shared-auth'];
+      '--desktop-port', String(device.port), '--desktop-shared-auth'];
     if (m.forwardTerminal) args.push('--gmssh-terminal', '--shell', 'powershell');
-    if (config.wake) args.push('--wake-mac', config.wake.mac, '--wake-broadcast', config.wake.broadcast);
-    if (config.keychain) args.push('--desktop-keychain');
+    if (device.wake) args.push('--wake-mac', device.wake.mac, '--wake-broadcast', device.wake.broadcast);
+    if (device.keychain) args.push('--desktop-keychain');
     let monitorStarted = false, desktopStarted = false;
     await startService(args, '本地监控与桌面服务', line => {
       if (line.trim() === `Monitoring bridge ready: 127.0.0.1:${m.port}`) monitorStarted = true;
       if (desktopReady(line)) desktopStarted = true;
       return monitorStarted && desktopStarted;
-    });
+    },device.target);
   } else {
-    const args = ['-m', 'gmssh_windows_bridge.desktop', '--target', config.target,
-      '--direct-tailscale', '--tailscale-name', config.tailscaleName,
-      '--tailscale-cli', config.tailscaleCli, '--listen-port', String(config.port)];
-    if (config.keychain) args.push('--keychain');
-    if (config.wake) args.push('--wake-mac', config.wake.mac, '--wake-broadcast', config.wake.broadcast);
-    await startService(args, '本地桌面服务', desktopReady);
+    const args = ['-m', 'gmssh_windows_bridge.desktop', '--target', device.target,
+      '--direct-tailscale', '--tailscale-name', device.tailscaleName,
+      '--tailscale-cli', device.tailscaleCli, '--listen-port', String(device.port)];
+    if (device.keychain) args.push('--keychain');
+    if (device.wake) args.push('--wake-mac', device.wake.mac, '--wake-broadcast', device.wake.broadcast);
+    await startService(args, '本地桌面服务', desktopReady,device.target);
   }
+  }catch(error){for(const child of backends.slice(firstChild))child.kill('SIGTERM');throw error;}
+  return {...device,viewerUrl,accessToken};
+}
+
+async function start() {
+  if (!app.requestSingleInstanceLock()) {
+    await app.whenReady();
+    await dialog.showMessageBox({ type: 'info', message: 'GMSSH 已在运行',detail: '首次切换请先正常退出原 GMSSH，再打开 Windows 桌面启动器。' });
+    app.exit(0);return;
+  }
+  delete process.env.VITE_DEV_SERVER_URL;
+  if(config.pairingOnly){
+    await startService(['-m','gmssh_windows_bridge.pairing','--serve-assets','--port',String(config.port)],'本地界面服务',line=>line.trim()==='GMSSH local assets: '+viewerUrl);
+  }else{
+    const binding=await startDevice(config);
+    if(config.monitor){
+      try{const endpoint=config.monitor.targetPort===22?config.target:`[${config.target}]:${config.monitor.targetPort}`;
+        const key=fs.readFileSync(config.monitor.knownHosts,'utf8').split('\n').map(line=>line.trim().split(/\s+/)).find(parts=>parts[0]?.split(',').includes(endpoint)&&parts[1]==='ssh-ed25519');
+        if(key)binding.fingerprint='SHA256:'+createHash('sha256').update(Buffer.from(key[2],'base64')).digest('base64').replace(/=+$/,'');
+      }catch{}
+    }
+    legacyBindings.push(binding);
+  }
+  pairing=new PairingManager({root:path.join(app.getPath('userData'),'windows-devices'),python:config.python,legacy:legacyBindings,reserved:[config.port],keychain:config.keychain===true,startDevice,api:nativeRequest,
+    changed:async()=>{for(const contents of windows)if(!contents.isDestroyed()&&contents.getURL().split('#')[0]===indexUrl)await inject(contents);}});
+  try{
+    const warnings=await pairing.restore();pairingAvailable=true;
+    if(warnings.length)app.whenReady().then(()=>dialog.showMessageBox({type:'warning',message:'部分 Windows 连接未启动',detail:warnings.join('\n')}));
+  }catch{app.whenReady().then(()=>dialog.showMessageBox({type:'error',message:'无法读取已保存的 Windows 接入信息',detail:'新增接入暂不可用，现有配置已保留。请检查本机 windows-devices 目录。'}));}
   await import(pathToFileURL(path.join(config.vendorAsar, 'dist-electron/main.js')).href);
 }
 start().catch(async error => {

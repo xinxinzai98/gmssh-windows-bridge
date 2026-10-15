@@ -28,6 +28,13 @@ function Get-GMSSHConnectionInfo {
     $ssh = Get-Service sshd -ErrorAction SilentlyContinue
     $public.sshStatus = if ($ssh) { [string]$ssh.Status } else { 'NotInstalled' }
     $public.sshStartup = if ($ssh) { [string]$ssh.StartType } else { '' }
+    $desktopAuth = 'manual'
+    try {
+        $agent = Get-Content (Join-Path $DataRoot 'agent.json') -Raw -ErrorAction Stop | ConvertFrom-Json
+        $account = Get-LocalUser -Name $public.username -ErrorAction Stop
+        if ($agent.unifiedPassword -eq $true -and $agent.username -ceq $public.username -and $agent.managedAccountSid -ceq $account.SID.Value) { $desktopAuth = 'shared-ssh' }
+    } catch { }
+    $public | Add-Member -NotePropertyName desktopAuth -NotePropertyValue $desktopAuth -Force
     $public
 }
 

@@ -117,6 +117,27 @@ document.querySelector('#run').onclick = async () => {
     let rejected = false;
     try { installWindowsDesktopEntry({ machineId: 'synthetic-windows', viewerUrl: 'https://example.com/' }); } catch { rejected = true; }
     assert(rejected, '继续拒绝非本机查看器');
+    search.value='';
+    const first=addNative('first-windows'),second=addNative('second-windows');
+    first.querySelector('.machine-ip').textContent=second.querySelector('.machine-ip').textContent='127.0.0.1';
+    const entries=[{machineId:'first-windows',viewerUrl,label:'First PC'},{machineId:'second-windows',viewerUrl:new URL('other/',viewerUrl).href,label:'Second PC'}];
+    installWindowsDesktopEntries(entries);first.querySelector('i').click();
+    const firstPanel=document.querySelector('[data-windows-machine="first-windows"]'),firstFrame=firstPanel.querySelector('iframe');
+    second.querySelector('i').click();
+    const secondPanel=document.querySelector('[data-windows-machine="second-windows"]'),secondFrame=secondPanel.querySelector('iframe');
+    assert(firstPanel.hidden&&!secondPanel.hidden&&firstPanel.id!==secondPanel.id,'多台 Windows 使用独立桌面标签，切换保留各自会话');
+    document.querySelector('button[aria-label="关闭 First PC"]').click();
+    assert(!secondPanel.hidden&&document.documentElement.hasAttribute('data-windows-desktop-active'),'关闭后台桌面不会清除前台桌面的选中状态');
+    installWindowsDesktopEntries(entries);
+    assert(document.querySelector('[data-windows-machine="second-windows"] iframe')===secondFrame&&document.querySelectorAll('.gmssh-windows-tabs').length===1,'重新配置设备复用已有会话与同一行标签容器');
+    const multi=installGMSSHHome({viewerUrl,css,devices:[{machineId:'first-windows',viewerUrl,target:'192.0.2.10',targetPort:22},{machineId:'second-windows',viewerUrl:entries[1].viewerUrl,target:'192.0.2.11',targetPort:2222}]});
+    multi.select('second-windows');
+    assert(document.querySelectorAll('.gm-device-identity .gm-os-icon[alt="Windows"]').length===2&&document.querySelector('.gm-copy-address').textContent==='192.0.2.11'&&document.querySelector('.gm-device-details').textContent.includes('2222'),'多台 Windows 独立显示系统图标、真实地址和 SSH 端口');
+    await settle();let tool;
+    secondFrame.contentWindow.postMessage=(message,origin)=>{tool={message,origin};};
+    document.querySelector('[data-gmssh-row="second-windows"] button[title="文件互传"]').click();
+    assert(tool?.message.tool==='files'&&tool.origin===new URL(entries[1].viewerUrl).origin,'多台设备的文件工具投递到被选中的桌面');
+    multi.remove();window.removeWindowsDesktopEntry();first.remove();second.remove();
     result.textContent = checks.join('\n') + '\n全部通过';
   } catch (error) { result.textContent = checks.join('\n') + '\nFAIL ' + error.message; }
 };

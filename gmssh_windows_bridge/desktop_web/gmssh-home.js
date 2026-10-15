@@ -13,10 +13,10 @@ window.installWindowsUpdateNotice = function ({ version }) {
   notice.title = '官方更新包不包含 Windows 增强功能，请使用验收后的兼容包更新。点击查看官方更新说明。';
 };
 
-window.installWindowsMachinePolicy = function ({ bridgePort, username }) {
+window.installWindowsMachinePolicy = function (options) {
   window.removeWindowsMachinePolicy?.();
-  if (!Number.isInteger(bridgePort) || bridgePort < 1 || bridgePort > 65535 ||
-      typeof username !== 'string' || !username) throw Error('Verified Windows bridge required');
+  const bridges=Array.isArray(options)?options:[options];
+  if (bridges.some(({bridgePort,username})=>!Number.isInteger(bridgePort)||bridgePort<1||bridgePort>65535||typeof username!=='string'||!username)) throw Error('Verified Windows bridge required');
   const prototype = window.XMLHttpRequest.prototype;
   const open = prototype.open, send = prototype.send, requests = new WeakMap();
   const wrappedOpen = function (method, url, ...options) {
@@ -35,7 +35,7 @@ window.installWindowsMachinePolicy = function ({ bridgePort, username }) {
       try {
         const data = JSON.parse(body);
         if (data && !Array.isArray(data) && ['127.0.0.1', 'localhost'].includes(data.ip) &&
-            Number(data.port) === bridgePort && data.userName === username) {
+            bridges.some(({bridgePort,username})=>Number(data.port)===bridgePort&&data.userName===username)) {
           data.sudoPolicy = 'skip';
           delete data.sudoPassword;
           body = JSON.stringify(data);
@@ -51,12 +51,15 @@ window.installWindowsMachinePolicy = function ({ bridgePort, username }) {
   };
 };
 
-window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort = 22, css = '', accessToken }) {
+window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort = 22, css = '', accessToken, devices }) {
   window.removeGMSSHHome?.();
   const base = new URL(viewerUrl);
   if (base.protocol !== 'http:' || !['localhost', '127.0.0.1'].includes(base.hostname)) throw Error('Local assets required');
+  const connections=devices||[{viewerUrl,machineId,target,targetPort,accessToken}];
+  for(const device of connections){const url=new URL(device.viewerUrl);if(url.protocol!=='http:'||!['localhost','127.0.0.1'].includes(url.hostname)||url.username||url.password||url.hash||url.search)throw Error('Local device required');}
+  const byId=new Map(connections.filter(device=>device.machineId).map(device=>[device.machineId,device]));
   const style = document.createElement('style'); style.textContent = css; document.head.append(style);
-  let root, host, selected, fingerprint = '', timer, noticeTimer, disposed = false, infoBusy = false, infoFrame, infoReady, infoRequestId = 0, cancelInfo, filesTimer;
+  let root, host, selected, fingerprint = '', timer, noticeTimer, disposed = false, infoBusy = false, infoFrame, infoReady, infoOrigin, infoRequestId = 0, cancelInfo, filesTimer;
   const metadata = new Map(), systemInfo = new Map(), scrollPositions = {list:{top:0,left:0},card:{top:0,left:0}};
   const fitWorkspace = () => { if (root?.getClientRects().length) root.style.height = Math.max(0, window.innerHeight - Math.max(0, root.getBoundingClientRect().top)) + 'px'; };
   const make = (tag, className, text) => { const node = document.createElement(tag); node.className = className || ''; if (text !== undefined) node.textContent = text; return node; };
@@ -84,10 +87,10 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
   const publicInfo = value => Object.fromEntries(publicFields.filter(key => typeof value?.[key] === 'string' || Number.isFinite(value?.[key])).map(key => [key,value[key]]));
   const details = node => {
     const get = selector => node.querySelector(selector)?.textContent.trim() || '';
-    const id = node.dataset.machineId, windows = id === machineId || node.hasAttribute('data-windows-desktop-card');
+    const id = node.dataset.machineId, binding=byId.get(id)||(node.hasAttribute('data-windows-desktop-card')?connections[0]:undefined), windows=!!binding;
     const name = get('.machine-name .name-txt') || get('.windows-card-name') || get('.machine-name') || id;
     const shownAddress = get('.machine-ip') || get('.windows-card-host').split(' · ')[0];
-    const address = windows && target && (!shownAddress || shownAddress==='127.0.0.1' || /^100\./.test(shownAddress)) ? target : shownAddress || '—';
+    const address = windows && binding.target && (!shownAddress || shownAddress==='127.0.0.1' || /^100\./.test(shownAddress)) ? binding.target : shownAddress || '—';
     const metrics = [...node.querySelectorAll('.machine-progress')].map(metric => metric.querySelector('.label-value')?.textContent.trim() || metric.querySelector('.label')?.textContent.trim().replace(/^[^:：]+[:：]/, '') || '—');
     const cpuText = node.querySelector('.machine-progress')?.textContent || '';
     const cores = cpuText.match(/(\d+)\s*核/)?.[1];
@@ -101,7 +104,7 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
       if (value?.id === id) { model = publicInfo(value); break; }
     }
     const info = {...metadata.get(id), ...model, ...systemInfo.get(id)};
-    return { node, id, windows, name, address, metrics, latency, desktop, terminal, info, cores:info.cores || info.cpuCores || cores,
+    return { node, id, windows, binding, name, address, metrics, latency, desktop, terminal, info, cores:info.cores || info.cpuCores || cores,
       image: node.querySelector('.machine-icon-img')?.getAttribute('src'), note: get('.machine-note') || get('.windows-card-note') };
   };
   function status(record) {
@@ -147,7 +150,7 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
     record.desktop?.click();
     if (type === 'files' && !record.windows) { openLinuxFiles(record); return; }
     if (['files','power'].includes(type) && record.windows) {
-      const send = () => { const frame = document.querySelector('#gmssh-windows-panel iframe'); frame?.contentWindow.postMessage({type:'gmssh-desktop-tool',tool:type}, base.origin); };
+      const send = () => { const frame=window.gmsshWindowsControllers?.get(record.id)?.frame()||[...document.querySelectorAll('[data-windows-machine]')].find(node=>node.dataset.windowsMachine===record.id)?.querySelector('iframe');frame?.contentWindow.postMessage({type:'gmssh-desktop-tool',tool:type},new URL(record.binding.viewerUrl).origin); };
       send(); setTimeout(send, 800);
     }
   }
@@ -237,7 +240,7 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
       pane.append(make('h3','','网络与设备'));
       const info=record.info;
       const item=(name,value)=>{const line=make('p','gm-info-row');line.append(make('span','gm-muted',name),make('span','',String(value)));pane.append(line);};
-      item('SSH 端口',record.windows?targetPort:info.port||'—');
+      item('SSH 端口',record.windows?record.binding.targetPort||22:info.port||'—');
       if(info.publicIp&&info.publicIp!=='UnKnown')item('公网地址',info.publicIp);
       if(info.os||info.osName)item('系统',info.os||info.osName);
       if(info.cpu||record.cores)item('处理器',info.cpu||record.cores+' 逻辑核');
@@ -253,7 +256,7 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
       if(previousPane)previousPane.replaceWith(pane);else root.append(pane);
       fitWorkspace();list.scrollTop=scrollPositions[mode].top;list.scrollLeft=scrollPositions[mode].left;pane.scrollTop=paneScroll;
     } finally {observer.observe(document.body,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['hidden','class','disabled','src']});}
-    if(!systemInfo.has(machineId))void refreshSystemInfo();
+    if(byId.has(selected)&&!systemInfo.has(selected))void refreshSystemInfo();
   }
   async function loadNativeMetadata() {
     try {
@@ -266,29 +269,32 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
     }catch{}
   }
   async function refreshSystemInfo() {
-    if(disposed||infoBusy||!accessToken||!root?.getClientRects().length||selected!==machineId)return;
+    const binding=byId.get(selected),sampledId=selected;
+    if(disposed||infoBusy||!binding?.accessToken||!root?.getClientRects().length)return;
+    const source=new URL(binding.viewerUrl);
     infoBusy=true;
     try {
       const info=await new Promise((resolve,reject)=>{
-        if(!infoFrame){
+        if(!infoFrame||infoOrigin!==source.origin){
+          infoFrame?.remove();infoOrigin=source.origin;
           infoFrame=make('iframe');infoFrame.hidden=true;infoFrame.title='设备信息';infoFrame.referrerPolicy='no-referrer';
-          infoReady=new Promise(done=>{infoFrame.onload=done;});infoFrame.src=new URL('system-info.html',base).href;document.body.append(infoFrame);
+          infoReady=new Promise(done=>{infoFrame.onload=done;});infoFrame.src=new URL('system-info.html',source).href;document.body.append(infoFrame);
         }
         const requestId=++infoRequestId;
         const done=(error,value)=>{clearTimeout(timeout);cancelInfo=undefined;window.removeEventListener('message',receive);error?reject(error):resolve(value);};
-        const receive=event=>{if(event.source!==infoFrame?.contentWindow||event.origin!==base.origin||event.data?.type!=='gmssh-system-info'||event.data.requestId!==requestId)return;
+        const receive=event=>{if(event.source!==infoFrame?.contentWindow||event.origin!==source.origin||event.data?.type!=='gmssh-system-info'||event.data.requestId!==requestId)return;
           const reply=event.data;reply.ok&&reply.info&&typeof reply.info==='object'?done(null,reply.info):done(Error());};
         const timeout=setTimeout(()=>done(Error()),15000);cancelInfo=()=>done(Error());window.addEventListener('message',receive);
-        infoReady.then(()=>{if(!disposed&&infoBusy&&requestId===infoRequestId)infoFrame.contentWindow.postMessage({type:'gmssh-system-info-request',token:accessToken,requestId},base.origin);});
+        infoReady.then(()=>{if(!disposed&&infoBusy&&requestId===infoRequestId)infoFrame.contentWindow.postMessage({type:'gmssh-system-info-request',token:binding.accessToken,requestId},source.origin);});
       });
       if(disposed)return;
-      const previous=systemInfo.get(machineId);systemInfo.set(machineId,{...info,sampledAt:Date.now(),previous:previous?{sampledAt:previous.sampledAt,network:previous.network}:undefined});fingerprint='';render();
-    }catch{if(!disposed){systemInfo.set(machineId,{...systemInfo.get(machineId),unavailable:true});fingerprint='';render();}}finally{infoBusy=false;}
+      const previous=systemInfo.get(sampledId);systemInfo.set(sampledId,{...info,sampledAt:Date.now(),previous:previous?{sampledAt:previous.sampledAt,network:previous.network}:undefined});fingerprint='';render();
+    }catch{if(!disposed){systemInfo.set(sampledId,{...systemInfo.get(sampledId),unavailable:true});fingerprint='';render();}}finally{infoBusy=false;if(!disposed&&selected!==sampledId)void refreshSystemInfo();}
   }
   const observer=new MutationObserver(records=>{if(records.every(record=>root?.contains(record.target)))return;clearTimeout(timer);timer=setTimeout(render,100);});
   observer.observe(document.body,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['hidden','class','disabled','src']});render();
   window.addEventListener('resize',fitWorkspace);void loadNativeMetadata();void refreshSystemInfo();
   const infoInterval=setInterval(refreshSystemInfo,30000);
   window.removeGMSSHHome=()=>{disposed=true;observer.disconnect();clearTimeout(timer);clearTimeout(noticeTimer);clearTimeout(filesTimer);clearInterval(infoInterval);cancelInfo?.();infoFrame?.remove();window.removeEventListener('resize',fitWorkspace);root?.remove();host?.classList.remove('gm-native-source');style.remove();};
-  return {refresh:render,remove:window.removeGMSSHHome};
+  return {refresh:render,select(id){selected=id;fingerprint='';render();},remove:window.removeGMSSHHome};
 };

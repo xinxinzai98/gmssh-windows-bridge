@@ -1,0 +1,45 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>Windows 接入向导回归</title>
+<style>*{margin:0;padding:0}body{background:#171719;color:#eee;font:14px system-ui;padding:28px}button{padding:10px;color:#eee;background:#34343a;border:1px solid #555;border-radius:6px;cursor:pointer}.sub-nav{display:flex;padding:14px;background:#232326;margin:20px 0}pre{white-space:pre-wrap;line-height:1.8}</style>
+<h1>Windows 接入向导回归</h1><p>本页使用本机模拟设备和模拟接口，不连接 Windows，不保存真实密码。</p><button id="run">运行检查</button> <button id="preview">查看向导预览</button><pre id="result">待运行</pre>
+<div class="machine-manage"><div class="sub-nav">全部分组</div><div class="action-btn"><i class="icon-shuaxin"></i></div><div data-machine-id="11111111111111111111111111111111">模拟电脑</div></div>
+<script src="../desktop-web/public/gmssh-pairing.js?v=alpha7-native-centered"></script><script>
+document.getElementById('run').onclick=async()=>{
+ const result=document.getElementById('result'),checks=[];const assert=(value,text)=>{if(!value)throw Error(text);checks.push('PASS '+text);};const settle=()=>new Promise(resolve=>setTimeout(resolve,30));
+ let mode='cancel',last,opens=0,refreshes=0;
+ const data={id:'a'.repeat(32),computer:'LAB-PC',username:'gmssh',sshPort:22,addresses:['192.0.2.42','192.0.2.43'],sshHostFingerprint:'SHA256:synthetic-public-identity',desktopAuth:'shared-ssh',canRememberDesktop:true};
+ const nativeId='1'.repeat(32);
+ window.electronAPI={invoke:async(_channel,request)=>{
+  if(request.type==='gmssh-pair-file')return mode==='cancel'?{status:'cancelled'}:mode==='bad'?{status:'error',message:'连接文件未通过身份检查'}:{status:'ok',data:{...data,existing:mode==='existing'?{machineId:nativeId,target:'192.0.2.42'}:null}};
+  last=structuredClone(request.data);return mode==='auth-failed'?{status:'error',message:'连接认证未通过'}:{status:'ok',data:{machineId:nativeId,existing:mode==='existing'}};
+ }};
+ window.gmsshWindowsControllers=new Map([[nativeId,{open:()=>opens++}]]);window.gmsshHomeController={select:id=>{assert(id===nativeId,'定位原生机器 ID，不使用名称模糊匹配');}};
+ document.querySelector('.action-btn').onclick=()=>refreshes++;
+ try{
+  window.gmsshPairingController?.remove();installGMSSHPairing();
+  assert(document.querySelector('.sub-nav .gm-pair-open'),'零设备时也提供首页接入入口');document.querySelector('.gm-pair-open').click();
+  const dialog=document.querySelector('.gm-pair-dialog'),field=name=>dialog.querySelector('[data-pair="'+name+'"]');
+  const centered=()=>{const r=dialog.getBoundingClientRect();return Math.abs(r.x+r.width/2-innerWidth/2)<2&&Math.abs(r.y+r.height/2-innerHeight/2)<2;};
+  assert(centered(),'原生样式重置后，接入对话框仍在窗口中心');
+  field('file').click();await settle();assert(dialog.open&&field('connect').disabled,'取消文件选择保持当前向导且不创建连接');
+  mode='bad';field('file').click();await settle();assert(field('status').textContent.includes('身份检查')&&field('preview').hidden,'无效连接文件显示错误，不进入认证');
+  mode='new';field('file').click();await settle();assert(field('computer').textContent==='LAB-PC'&&field('fingerprint').textContent===data.sshHostFingerprint&&field('target').options.length===2,'展示确切电脑、主机指纹与可选地址');
+  const r=dialog.getBoundingClientRect();assert(centered()&&r.x>=0&&r.y>=0&&r.right<=innerWidth&&r.bottom<=innerHeight,'完整接入表单保持居中并在窗口内滚动');
+  assert(!field('remember-label').hidden&&field('remember').checked,'仅声明共享认证的安装包提供桌面记住选项');
+  mode='auth-failed';field('password').value='synthetic-secret';field('password').dispatchEvent(new Event('input'));field('connect').click();await settle();
+  assert(dialog.open&&!field('password').value&&field('status').textContent.includes('认证未通过'),'认证失败保留向导并清除密码，不显示成功');
+  mode='new';field('password').value='synthetic-secret';field('password').dispatchEvent(new Event('input'));field('connect').click();await settle();
+  assert(!dialog.open&&opens===1&&refreshes===1&&!field('password').value,'成功后刷新原生列表、打开对应桌面并清除密码');
+  assert(last.id===data.id&&last.target==='192.0.2.42'&&last.password==='synthetic-secret'&&last.rememberDesktop===true,'连接参数只使用所选电脑，记住选项显式传递');
+  document.querySelector('.gm-pair-open').click();mode='existing';field('file').click();await settle();
+  assert(field('password-label').hidden&&!field('connect').disabled&&field('connect').textContent==='打开已有设备','重复导入识别已有设备，无需再次输入密码');
+  field('connect').click();await settle();assert(opens===2&&last.password==='','已有设备沿同一入口打开，不索取新密码');
+  window.gmsshPairingController.remove();assert(!document.querySelector('.gm-pair-open')&&!document.querySelector('.gm-pair-dialog'),'卸载清理接入按钮、对话框和观察器');
+  result.textContent=checks.join('\n')+'\n全部通过';
+ }catch(error){result.textContent=checks.join('\n')+'\nFAIL '+error.message;}
+};
+document.getElementById('preview').onclick=()=>{
+ window.gmsshPairingController?.remove();
+ window.electronAPI={invoke:async(_channel,request)=>request.type==='gmssh-pair-file'?{status:'ok',data:{id:'a'.repeat(32),computer:'实验室工作站',username:'gmssh',sshPort:22,addresses:['192.0.2.42','192.0.2.43'],sshHostFingerprint:'SHA256:DEMO-PUBLIC-IDENTITY-FOR-UI-PREVIEW',desktopAuth:'shared-ssh',canRememberDesktop:true}}:{status:'error',message:'本页仅作模拟预览，请在增强版 GMSSH 内接入真实电脑。'}};
+ installGMSSHPairing().open();
+};
+</script></html>

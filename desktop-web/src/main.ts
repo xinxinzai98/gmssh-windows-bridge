@@ -22,6 +22,7 @@ let frames = 0;
 let peer = "";
 let transport = "ssh";
 let keychain = false;
+let initialAuth: {password:string;remember:boolean}|undefined;
 let accessToken = new URLSearchParams(location.hash.slice(1)).get("token") || "";
 const operations=new Operations(()=>accessToken);
 let filesAvailable=false,powerAvailable=false,wakeAvailable=false;
@@ -32,6 +33,9 @@ const tokenReady = new Promise<void>(resolve => {
     if (event.source !== window.parent || event.data?.type !== "gmssh-desktop-access" ||
         typeof event.data.token !== "string" || !/^[A-Za-z0-9_-]{32,128}$/.test(event.data.token)) return;
     accessToken = event.data.token;
+    if(typeof event.data.password==='string'&&event.data.password&&new TextEncoder().encode(event.data.password).length<=1024){
+      initialAuth={password:event.data.password,remember:event.data.remember===true};delete event.data.password;
+    }
     resolve();
   });
 });
@@ -70,8 +74,9 @@ fetch("/config.json").then(response => {
   }
   connect.disabled = false;
   if (keychain && !config.has_saved_password) status("首次连接：输入安装时设置的固定密码，验证成功后记住。");
-  if ((direct || shared) && (!keychain || config.has_saved_password) && new URL(location.href).searchParams.get("autoconnect") === "1") {
-    client.connect("", "", transport, { saved: keychain, remember: false, token: accessToken });
+  if ((direct || shared) && (initialAuth || !keychain || config.has_saved_password) && new URL(location.href).searchParams.get("autoconnect") === "1") {
+    const first=initialAuth;initialAuth=undefined;
+    client.connect("",first?.password||"",transport,{saved:first?false:keychain,remember:keychain&&first?.remember===true,token:accessToken});
     connect.disabled = true; disconnect.disabled = false;
   }
 })

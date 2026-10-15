@@ -56,6 +56,12 @@ try {
     Assert $healthy.readyToPair 'Healthy fixture was rejected'
     $export = Get-GMSSHConnectionInfo -DataRoot $data
     Assert ($export.addresses[0] -eq '10.10.10.2' -and $export.sshStatus -eq 'Running' -and $export.sshHostPublicKey -ceq $public) 'Live connection export changed identity or kept stale address'
+    Assert ($export.desktopAuth -eq 'manual') 'Legacy export claimed shared desktop authentication'
+    $agentPath=Join-Path $data 'agent.json';$agent=Get-Content $agentPath -Raw|ConvertFrom-Json
+    $agent|Add-Member -NotePropertyName unifiedPassword -NotePropertyValue $true -Force
+    $agent|ConvertTo-Json|Set-Content $agentPath -Encoding UTF8
+    Assert ((Get-GMSSHConnectionInfo -DataRoot $data).desktopAuth -eq 'shared-ssh') 'Managed shared authentication was not exported'
+    $agent.unifiedPassword=$false;$agent|ConvertTo-Json|Set-Content $agentPath -Encoding UTF8
     $script:taskValid = $false
     Assert (-not (Get-GMSSHReadiness -DataRoot $data -ProgramRoot $script:program -SSHRoot $ssh).readyToPair) 'Wrong tray target was accepted'
     $script:taskValid = $true

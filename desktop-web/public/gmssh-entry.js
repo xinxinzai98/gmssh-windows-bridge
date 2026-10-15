@@ -1,5 +1,5 @@
 /* GMSSH 2.0.4 page integration; no account records or vendor files change. */
-window.installWindowsDesktopEntry = function ({ machineId, viewerUrl, label = "Windows 桌面", card, autoConnect = false, preserveSession = false, accessToken }) {
+window.installWindowsDesktopEntry = function ({ machineId, viewerUrl, label = "Windows 桌面", card, autoConnect = false, preserveSession = false, accessToken, managed = false }) {
   const url = new URL(viewerUrl);
   if (url.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(url.hostname) ||
       url.username || url.password || url.search || url.hash ||
@@ -29,17 +29,19 @@ window.installWindowsDesktopEntry = function ({ machineId, viewerUrl, label = "W
     try { window.removeWindowsDesktopEntry?.(); } finally { retained.remove = remove; }
     retained.querySelector(":scope > header")?.remove();
     retained.style.display = "";
-  } else window.removeWindowsDesktopEntry?.();
+  } else if (!managed) window.removeWindowsDesktopEntry?.();
   if (autoConnect) url.searchParams.set("autoconnect", "1");
   let panel = retained, tab, desktopCard;
-  const slot = document.createElement("div");
+  const slot = (managed && (window.gmsshWindowsTabSlot || document.querySelector('.gmssh-windows-tabs'))) || document.createElement("div");
+  if (managed) window.gmsshWindowsTabSlot = slot;
   slot.className = "gmssh-windows-tabs no-drag";
   slot.setAttribute("role", "tablist");
   slot.setAttribute("aria-label", "Windows 桌面标签");
-  const style = document.createElement("style");
+  const style = (managed && document.getElementById('gmssh-windows-entry-style')) || document.createElement("style");
+  if (managed) style.id = 'gmssh-windows-entry-style';
   style.textContent = [
-    ".gmssh-windows-tabs { display:flex; flex:0 1 auto; gap:6px; max-width:45%; min-width:0; -webkit-app-region:no-drag; }",
-    ".gmssh-windows-tab { display:flex; align-items:center; height:34px; max-width:240px; border-radius:8px; background:transparent; color:#ffffffa6; overflow:hidden; }",
+    ".gmssh-windows-tabs { display:flex; flex:0 1 auto; gap:6px; max-width:45%; min-width:0; overflow-x:auto; scrollbar-width:thin; -webkit-app-region:no-drag; }",
+    ".gmssh-windows-tab { display:flex; flex:0 0 auto; align-items:center; height:34px; max-width:240px; border-radius:8px; background:transparent; color:#ffffffa6; overflow:hidden; }",
     ".gmssh-windows-tab.active { background:#ffffff26; color:#fff; }",
     ".gmssh-windows-tab:hover { background:#ffffff1f; }",
     ".gmssh-windows-tab button { font:14px system-ui,sans-serif; color:inherit; border:0; background:transparent; cursor:pointer; -webkit-app-region:no-drag; }",
@@ -146,10 +148,10 @@ window.installWindowsDesktopEntry = function ({ machineId, viewerUrl, label = "W
     const active = panel && !panel.hidden;
     panel?.remove(); panel = undefined;
     tab?.remove(); tab = undefined;
-    document.documentElement.removeAttribute("data-windows-desktop-active");
-    if (active) document.querySelector(".tab-chip--home")?.click();
+    if (active) { document.documentElement.removeAttribute("data-windows-desktop-active"); document.querySelector(".tab-chip--home")?.click(); }
   }
   function open() {
+    if (managed) for (const controller of window.gmsshWindowsControllers?.values() || []) controller.hide();
     if (!panel) {
       panel = document.createElement("section");
       const frame = document.createElement("iframe");
@@ -160,13 +162,18 @@ window.installWindowsDesktopEntry = function ({ machineId, viewerUrl, label = "W
       panel.append(frame);
       document.body.append(panel);
     }
-    panel.id = "gmssh-windows-panel";
+    panel.id = managed ? "gmssh-windows-panel-" + boundId : "gmssh-windows-panel";
+    panel.dataset.windowsMachine = boundId;
     panel.setAttribute("role", "tabpanel");
     panel.setAttribute("aria-label", label);
     panel.querySelector("iframe").title = label + " · RustDesk 查看器";
     if (accessToken) {
       const frame = panel.querySelector("iframe");
-      frame.onload = () => frame.contentWindow.postMessage({ type: "gmssh-desktop-access", token: accessToken }, url.origin);
+      frame.onload = () => {
+        const send=auth=>frame.contentWindow?.postMessage({type:'gmssh-desktop-access',token:accessToken,...(auth||{})},url.origin);
+        if(managed&&window.electronAPI?.invoke)window.electronAPI.invoke('render-to-main',{type:'gmssh-pair-desktop-auth',data:{machineId:boundId}}).then(reply=>send(reply?.status==='ok'?reply.data:null)).catch(()=>send());
+        else send();
+      };
     }
     Object.assign(panel.style, { position: "fixed", inset: "48px 0 0", zIndex: "2147483000", background: "#13181f", border: "0", borderRadius: "0" });
     Object.assign(panel.querySelector("iframe").style, { display: "block", height: "100%", width: "100%", border: "0" });
@@ -208,14 +215,30 @@ window.installWindowsDesktopEntry = function ({ machineId, viewerUrl, label = "W
   }
   document.addEventListener("click", click, true);
   document.addEventListener("input", mountCard);
-  window.removeWindowsDesktopEntry = () => {
+  const remove = () => {
     document.removeEventListener("click", click, true);
     document.removeEventListener("input", mountCard);
     observer.disconnect();
     for (const [image, original] of nativeIcons) restoreIcon(image, original);
+    if (panel && !panel.hidden) document.documentElement.removeAttribute("data-windows-desktop-active");
     panel?.remove(); panel = undefined;
-    slot.remove(); style.remove(); desktopCard?.remove();
-    document.documentElement.removeAttribute("data-windows-desktop-active");
+    tab?.remove(); desktopCard?.remove();
+    if (!managed) { slot.remove(); style.remove(); }
   };
-  return { open, hide, close, remove: window.removeWindowsDesktopEntry };
+  if (!managed) window.removeWindowsDesktopEntry = remove;
+  return { open, hide, close, remove, frame:()=>panel?.querySelector('iframe') };
+};
+
+window.installWindowsDesktopEntries = function (devices) {
+  const controllers = window.gmsshWindowsControllers ||= new Map();
+  const wanted = new Set(devices.map(value=>value.machineId || 'windows-desktop:' + value.card?.host));
+  for (const [id, controller] of controllers) if (!wanted.has(id)) { controller.remove(); controllers.delete(id); }
+  for (const device of devices) {
+    const id=device.machineId || 'windows-desktop:' + device.card?.host;
+    if (!controllers.has(id)) controllers.set(id,window.installWindowsDesktopEntry({...device,managed:true}));
+  }
+  window.removeWindowsDesktopEntry = () => {
+    for (const controller of controllers.values()) controller.remove();
+    controllers.clear(); window.gmsshWindowsTabSlot?.remove(); delete window.gmsshWindowsTabSlot; document.getElementById('gmssh-windows-entry-style')?.remove();
+  };
 };
