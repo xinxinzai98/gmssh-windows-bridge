@@ -9,6 +9,7 @@ const { createHash } = require('node:crypto');
 const { PairingManager, loopbackRequest } = require('./pairing.cjs');
 const { DeviceBackup, writeBackup, MAX_FILE } = require('./device-backup.cjs');
 const readonlyTools = require('./readonly-tools.cjs');
+const { FileTasks } = require('./file-tasks.cjs');
 const config = require('./launcher-config.json');
 const backends = [];
 const stopBackends = () => backends.forEach(child => child.kill('SIGTERM'));
@@ -35,18 +36,33 @@ const legacyBindings = [], windows = new Set();
 const backups = new WeakMap();
 const toolQueries = new WeakSet();
 const fileActivity = new Map();
-let fileQuitAllowed=false,confirmingFileQuit=false;
+let fileQuitAllowed=false,confirmingFileQuit=false,nativeFiles;
+function fileTasks(){
+  if(!nativeFiles||nativeFiles.closed)nativeFiles=new FileTasks({root:path.join(app.getPath('userData'),'file-transfers'),python:config.python,
+    pickOpen:options=>dialog.showOpenDialog(options),pickSave:options=>dialog.showSaveDialog(options),
+    resolveBinding:async machineId=>{
+      const binding=[...(pairing?.bindings()||[]),...legacyBindings].find(value=>value.machineId===machineId);
+      if(!binding?.monitor)throw Object.assign(Error('DEVICE_CONFIG_UNAVAILABLE'),{code:'DEVICE_CONFIG_UNAVAILABLE'});
+      const reply=await nativeRequest('/node/detail',{id:machineId}),node=reply?.data;
+      if(![0,200].includes(reply?.code)||node?.id!==machineId||!['127.0.0.1','localhost'].includes(node.ip)||Number(node.port)!==binding.monitor.port||node.userName!==binding.monitor.username)throw Object.assign(Error('DEVICE_CONFIG_CHANGED'),{code:'DEVICE_CONFIG_CHANGED'});
+      return binding;
+    }});
+  return nativeFiles;
+}
 function protectFileQuit(event,finish){
-  const active=[...fileActivity.values()].reduce((sum,value)=>sum+value,0);
-  if(fileQuitAllowed||!active)return;
+  const legacy=[...fileActivity.values()].reduce((sum,value)=>sum+value,0),active=legacy+(nativeFiles?.activeCount()||0);
+  if(fileQuitAllowed)return;
+  if(!active){
+    if(!nativeFiles)return;event.preventDefault();if(confirmingFileQuit)return;confirmingFileQuit=true;nativeFiles.shutdown().then(()=>{fileQuitAllowed=true;finish();}).catch(()=>dialog.showMessageBox({type:'error',message:'文件任务未能保存，暂未退出',detail:'请检查本机存储空间和文件中心目录权限后重试。'})).finally(()=>{confirmingFileQuit=false;});return;
+  }
   event.preventDefault();if(confirmingFileQuit)return;confirmingFileQuit=true;
-  dialog.showMessageBox({type:'warning',message:'仍有 '+active+' 项文件传输未完成',detail:'退出会停止当前传输；未完成任务需重新选择文件后重试。收起文件中心或关闭桌面标签可以继续传输。',buttons:['继续传输','停止传输并退出'],defaultId:0,cancelId:0,noLink:true}).then(async result=>{
-    if(result?.response!==1)return;fileQuitAllowed=true;
+  dialog.showMessageBox({type:'warning',message:'仍有 '+active+' 项文件传输未完成',detail:'退出会暂停并保存主进程中的任务；重开后可继续，源文件或保存位置需重新确认。浏览器兼容任务仍需重新选择文件。',buttons:['继续传输','暂停并退出'],defaultId:0,cancelId:0,noLink:true}).then(async result=>{
+    if(result?.response!==1)return;await nativeFiles?.shutdown();fileQuitAllowed=true;
     for(const contents of fileActivity.keys())if(!contents.isDestroyed()){
-      let timer;await Promise.race([contents.executeJavaScript('window.gmsshFilesController?.cancelAll();void 0;').catch(()=>{}),new Promise(resolve=>{timer=setTimeout(resolve,2000);})]).finally(()=>clearTimeout(timer));
+      let timer;await Promise.race([contents.executeJavaScript('if(!window.gmsshFilesController?.native)window.gmsshFilesController?.cancelAll();void 0;').catch(()=>{}),new Promise(resolve=>{timer=setTimeout(resolve,2000);})]).finally(()=>clearTimeout(timer));
     }
     finish();
-  }).catch(()=>{}).finally(()=>{confirmingFileQuit=false;});
+  }).catch(()=>dialog.showMessageBox({type:'error',message:'文件任务未能保存，暂未退出',detail:'请检查本机存储空间和文件中心目录权限后重试。'})).finally(()=>{confirmingFileQuit=false;});
 }
 app.on('before-quit',event=>protectFileQuit(event,()=>app.quit()));
 let pairing, pairingAvailable = false, nativeApiPort;
@@ -58,6 +74,17 @@ autoUpdater.checkForUpdates = () => {};
 autoUpdater.quitAndInstall = () => {};
 const handle = ipcMain.handle.bind(ipcMain);
 ipcMain.handle = (channel, listener) => handle(channel, channel === 'render-to-main' ? async (event, request, ...args) => {
+  if(request?.type==='gmssh-transfer'){
+    if(event.sender?.getURL().split('#')[0]!==indexUrl)return {status:'error',code:'UNTRUSTED_PAGE'};
+    const value=request.data;
+    if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).sort().join()!=='action,data,machineId'||typeof value.action!=='string'||(value.machineId!==null&&!/^[a-f0-9]{32}$/i.test(value.machineId)))return {status:'error',code:'INVALID_TRANSFER'};
+    try{
+      const ports=await listener(event,{type:'get-port'});nativeApiPort=ports?.multiPort;
+      const data=await fileTasks().invoke(value.action,value.machineId,value.data);
+      if(nativeFiles.activeCount())fileQuitAllowed=false;
+      return {status:'ok',data};
+    }catch(error){return {status:'error',code:typeof error?.code==='string'&&/^[A-Z_]{1,48}$/.test(error.code)?error.code:'TRANSFER_IO'};}
+  }
   if(request?.type==='gmssh-files-state'){
     if(event.sender?.getURL().split('#')[0]!==indexUrl||!request.data||Object.keys(request.data).sort().join()!=='active,failed'||!['active','failed'].every(key=>Number.isInteger(request.data[key])&&request.data[key]>=0&&request.data[key]<=400000))return {status:'error'};
     fileActivity.set(event.sender,request.data.active);if(request.data.active&&!confirmingFileQuit)fileQuitAllowed=false;return {status:'ok'};

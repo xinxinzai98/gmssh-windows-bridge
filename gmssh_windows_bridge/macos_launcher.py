@@ -139,6 +139,7 @@ def _build_launcher(config, output):
     digest = write_asar(contents / "Resources/app.asar", {
         "package.json": json.dumps({"name": "GMSSH", "version": "2.0.4", "main": "launcher.cjs"}).encode(),
         "launcher.cjs": (here / "launcher.cjs").read_bytes(),
+        "file-tasks.cjs": (here / "file-tasks.cjs").read_bytes(),
         "pairing.cjs": (here / "pairing.cjs").read_bytes(),
         "device-backup.cjs": (here / "device-backup.cjs").read_bytes(),
         "readonly-tools.cjs": (here / "readonly-tools.cjs").read_bytes(),

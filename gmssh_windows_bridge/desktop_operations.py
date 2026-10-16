@@ -18,6 +18,7 @@ from pathlib import Path
 
 import paramiko
 from . import readonly_tools
+from .file_stream import FileStream, StreamError
 
 MAX_CONTROL = 8192
 MAX_CHUNK = 65536
@@ -180,6 +181,8 @@ class OperationsSession:
         self.sftp = None
         self.upload = None
         self.config = config
+        self.stream = FileStream(self)
+        self.stream_request_id = None
 
     def ssh(self):
         if self.client is None:
@@ -304,7 +307,8 @@ class OperationsSession:
 
     def close(self):
         try:
-            self.cancel_upload()
+            try:self.stream.close()
+            finally:self.cancel_upload()
         finally:
             try:
                 if self.sftp is not None:
@@ -315,6 +319,10 @@ class OperationsSession:
                     lease.close()
 
     def receive_chunk(self, data):
+        if self.stream.pending is not None:
+            result=self.stream.write(data)
+            send_reply(self.websocket,self.stream_request_id,ok=True,result=result)
+            return
         upload = self.upload
         if upload is None or not 1 <= len(data) <= MAX_CHUNK:
             raise OperationError("没有待接收的上传，或文件块超过 64 KiB。")
@@ -334,12 +342,21 @@ class OperationsSession:
                   "upload-start": {"id", "op", "path", "name", "size"}, "upload-finish": {"id", "op"},
                   "upload-cancel": {"id", "op"}, "power": {"id", "op", "action"}, "wake": {"id", "op"},
                   "system-info": {"id", "op"}, "readonly": {"id", "op", "tool", "options"},
-                  "diagnostics": {"id", "op"}}
+                  "diagnostics": {"id", "op"}, "transfer": {"id", "op", "action", "options"}}
         if not isinstance(op, str) or op not in fields or set(data) != fields[op]:
             raise OperationError("操作类型或请求字段无效。")
         if self.upload is not None and (op not in {"upload-finish", "upload-cancel"} or request_id != self.upload["id"]):
             raise OperationError("请先使用当前上传 id 完成或取消传输。")
-        if op == "readonly":
+        if self.stream.mode and op!='transfer':raise OperationError("请先完成当前文件传输。")
+        if op == "transfer":
+            progress=lambda **value:send_reply(self.websocket,request_id,ok=True,progress=value)
+            result=self.stream.request(data['action'],data['options'],progress)
+            self.stream_request_id=request_id
+            payload=None
+            if isinstance(result,tuple):result,payload=result
+            send_reply(self.websocket,request_id,ok=True,result=result)
+            if payload is not None:self.websocket.send(payload)
+        elif op == "readonly":
             readonly_tools.options_for(data["tool"], data["options"])
             result = readonly_tools.query(self.ssh_nowait(), data["tool"], data["options"], self.timeout, run_command)
             send_reply(self.websocket, request_id, ok=True, result=result)
@@ -448,7 +465,7 @@ def handle_operations(config, websocket, slots):
         send_reply(websocket, type="operations_ready")
         while True:
             raw = websocket.recv(timeout=60 if session.upload is not None else 300)
-            request_id = session.upload["id"] if session.upload is not None else None
+            request_id = session.stream_request_id if session.stream.pending is not None else session.upload["id"] if session.upload is not None else None
             try:
                 if isinstance(raw, bytes):
                     session.receive_chunk(raw)
@@ -462,7 +479,11 @@ def handle_operations(config, websocket, slots):
                     session.cancel_upload()
                 except Exception:
                     pass
-                if isinstance(error, SSHPoolUnavailable):
+                if isinstance(error, StreamError):
+                    send_reply(websocket,request_id,ok=False,code=error.code,message="文件传输校验未通过。")
+                elif isinstance(error,OSError) and error.errno in {errno.EACCES,errno.EPERM,errno.ENOSPC}:
+                    send_reply(websocket,request_id,ok=False,code="DISK_FULL" if error.errno==errno.ENOSPC else "ACCESS_DENIED",message="文件权限或存储空间不足。")
+                elif isinstance(error, SSHPoolUnavailable):
                     send_reply(websocket, request_id, ok=False, message="请先在 GMSSH 连接这台机器的监控，再打开工具。", code="SSHPoolUnavailable")
                 else:
                     message = str(error) if isinstance(error, (OperationError, readonly_tools.ReadonlyInputError)) else "Windows 请求失败，请检查权限和连接。"

@@ -1,3 +1,3 @@
 """Unofficial Windows metrics compatibility bridge."""
 
-__version__ = "0.4.0a16"
+__version__ = "0.4.0a17"

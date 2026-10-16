@@ -39,7 +39,7 @@ document.getElementById('run').onclick=async()=>{
   controller.update(config.devices);controller.open('3'.repeat(32));assert(document.querySelector('.gm-files-native').textContent.includes('原生文件管理'),'Linux 继续使用原生文件工具并说明队列范围');document.querySelector('.gm-files-native button').click();assert(nativeOpened===1,'Linux 文件入口交给原有设备逻辑');
   controller.open(a);const rectangle=document.querySelector('.gm-files-center').getBoundingClientRect();assert(rectangle.top>=40&&rectangle.bottom<=innerHeight+1,'文件中心保持在应用标题栏下方且没有溢出');controller.hide();assert(frameFor(a)===first&&document.querySelector('.gm-files-center').hidden,'收起只隐藏中心，不卸载任务页');
   assert((await state()).desktopConnections===0&&desktopClosed===1,'完整检查未建立任何远端桌面会话');
-  assert(requests.every(r=>r.type==='gmssh-files-state'&&Object.keys(r.data).sort().join()==='active,failed'),'退出保护只接收任务统计，不发送文件内容或连接凭据');
+  assert(requests.every(r=>r.type==='gmssh-files-state'&&Object.keys(r.data).sort().join()==='active,failed'||r.type==='gmssh-transfer'&&r.data.action==='hello'&&r.data.machineId===null&&Object.keys(r.data.data).length===0),'只发送任务统计与协议探测，不发送文件内容或连接凭据');
   out.textContent=checks.join('\n')+'\n全部通过';
  }catch(error){controller?.hide();out.textContent=checks.join('\n')+'\nFAIL '+error.message;}
 };

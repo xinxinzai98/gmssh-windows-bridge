@@ -3,8 +3,9 @@ import type { Operations, DownloadProgress } from './operations';
 export type UploadEntry = { file?:File; relative:string; directory?:boolean };
 export type TransferTask = {
   id:number; kind:'upload'|'download'|'directory'; name:string; path:string; relative?:string; file?:File; directory?:boolean;
-  status:'queued'|'running'|'done'|'failed'|'cancelled'; bytes:number; size:number; started:number; phase:string; message:string;
+  status:'queued'|'running'|'paused'|'done'|'failed'|'cancelled'; bytes:number; size:number; started:number; phase:string; message:string; cleanupPending?:boolean;
 };
+export type TransferCollection = {items:TransferTask[];addUploads:(entries:UploadEntry[],base:string)=>void|Promise<void>;addDownloads:(entries:{path:string;name:string;directory:boolean;size:number}[])=>void|Promise<void>;retry:(id:number,name?:string)=>void|Promise<void>;cancel:(id:number)=>void|Promise<void>;cancelAll:()=>void|Promise<void>;clearFinished:()=>void|Promise<void>} & {native?:boolean;pause?:(id:number)=>void|Promise<void>;dispose?:()=>void;chooseUploads?:(remote:string,directory:boolean)=>void|Promise<void>};
 type Worker = Pick<Operations,'mkdir'|'upload'|'download'|'close'>;
 const MAX_FILE=512*1024*1024,MAX_QUEUE=2000;
 export function validateRelativePath(value:string):string {

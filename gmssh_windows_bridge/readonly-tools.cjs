@@ -1,7 +1,7 @@
 /* Fixed read-only queries. Credentials and native connection records stay in main. */
 const net = require('node:net');
 const { spawn } = require('node:child_process');
-const VERSION = '0.4.0a16';
+const VERSION = '0.4.0a17';
 const MAX_OUTPUT = 262144;
 const stamp = () => new Date().toISOString();
 const failure = error => ({error});
