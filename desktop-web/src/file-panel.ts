@@ -4,7 +4,7 @@ import { TransferQueue, droppedUploads, selectedUploads, type TransferTask } fro
 const get=<T extends HTMLElement>(id:string)=>document.getElementById(id) as T;
 const size=(bytes:number)=>bytes>=1024**2?(bytes/1024**2).toFixed(1)+' MiB':bytes>=1024?(bytes/1024).toFixed(1)+' KiB':bytes+' B';
 const button=(text:string,run:()=>void)=>{const node=document.createElement('button');node.type='button';node.textContent=text;node.onclick=run;return node;};
-export function installFilePanel(options:{token:()=>string;operations:Operations;available:()=>boolean;releaseInputs:()=>void}) {
+export function installFilePanel(options:{token:()=>string;operations:Operations;available:()=>boolean;releaseInputs:()=>void;closeBrowseAfterUse?:boolean;changed?:(tasks:readonly TransferTask[])=>void;permit?:(signal:AbortSignal)=>Promise<()=>void>}) {
   const panel=get('file-panel'),list=get('file-list'),note=get('file-note'),selected=new Map<string,FileEntry>();
   let path='/',entries:FileEntry[]=[],request=0,renderTimer:number|undefined,idleCompleted=0,lastTask=0,mode:'files'|'transfers'='files',disposed=false;
   const pendingDrops=new Set<AbortController>();
@@ -16,11 +16,12 @@ export function installFilePanel(options:{token:()=>string;operations:Operations
   const save=(file:{blob:Blob;name:string})=>{const url=URL.createObjectURL(file.blob),anchor=document.createElement('a');anchor.href=url;anchor.download=file.name;anchor.click();setTimeout(()=>URL.revokeObjectURL(url),60_000);};
   const queue=new TransferQueue(()=>new Operations(options.token),save,()=>{
     if(disposed)return;
+    options.changed?.(queue.items);
     const newest=queue.items.at(-1)?.id||0;if(newest>lastTask){lastTask=newest;setMode('transfers');}
     if(renderTimer===undefined)renderTimer=window.setTimeout(()=>{renderTimer=undefined;renderTransfers();},50);
     const complete=queue.items.filter(item=>item.status==='done').length;
     if(!queue.items.some(item=>item.status==='queued'||item.status==='running')&&complete!==idleCompleted){idleCompleted=complete;if(!panel.hidden)void refresh();}
-  });
+  },options.permit);
   function setMode(next:'files'|'transfers'):void {
     mode=next;get('file-browser-view').hidden=next!=='files';get('transfer-box').hidden=next!=='transfers';
     get('file-browse-tab').setAttribute('aria-selected',String(next==='files'));get('file-transfers-tab').setAttribute('aria-selected',String(next==='transfers'));
@@ -65,6 +66,7 @@ export function installFilePanel(options:{token:()=>string;operations:Operations
       }
       updateSelection();tell(path==='/'?'先打开一个磁盘或文件夹，再上传或选择下载。':reply.truncated?'目录较大，当前显示前 2000 项。':entries.length?entries.length+' 项':'此文件夹为空，可选择文件或拖入上传。');
     }catch(error){if(!disposed&&current===request)fail(error instanceof Error?error.message:'目录读取失败。');}
+    finally{if(options.closeBrowseAfterUse&&current===request)options.operations.close();}
   }
   function renderTransfers():void {
     const pending=queue.items.filter(item=>item.status==='queued'||item.status==='running').length;
@@ -90,7 +92,7 @@ export function installFilePanel(options:{token:()=>string;operations:Operations
       view.name.textContent=(task.kind==='download'?'↓ ':'↑ ')+task.name;view.name.title=task.name;view.root.dataset.state=task.status;
       const active=task.status==='running',rate=active&&task.phase==='receiving'?task.bytes/Math.max(.1,(Date.now()-task.started)/1000):0;
       const remaining=rate>0&&task.size>task.bytes?Math.ceil((task.size-task.bytes)/rate):0;
-      view.detail.textContent=active?(task.phase==='preparing'?'正在打包文件夹 · 已读取 '+size(task.bytes):size(task.bytes)+' / '+size(task.size)+(rate?' · '+size(Math.round(rate))+'/s'+(remaining?' · 约 '+remaining+' 秒':''):'')):task.message||({queued:'排队中',done:'完成',failed:'传输未完成',cancelled:'已取消'} as Record<string,string>)[task.status];
+      view.detail.textContent=active?(task.phase==='waiting'?'等待前面的文件传输':task.phase==='preparing'?'正在打包文件夹 · 已读取 '+size(task.bytes):size(task.bytes)+' / '+size(task.size)+(rate?' · '+size(Math.round(rate))+'/s'+(remaining?' · 约 '+remaining+' 秒':''):'')):task.message||({queued:'排队中',done:'完成',failed:'传输未完成',cancelled:'已取消'} as Record<string,string>)[task.status];
       view.bar.value=task.status==='done'?100:task.size>0&&task.phase!=='preparing'?100*task.bytes/task.size:0;
       view.cancel.hidden=!['queued','running','failed'].includes(task.status);view.cancel.textContent=task.status==='failed'?'跳过':'取消';
       view.cancel.setAttribute('aria-label',view.cancel.textContent+' · '+task.name);view.retry.setAttribute('aria-label','重试 · '+task.name);view.renameButton.setAttribute('aria-label','改名重试 · '+task.name);view.rename.setAttribute('aria-label','重试文件名 · '+task.name);
@@ -118,7 +120,7 @@ export function installFilePanel(options:{token:()=>string;operations:Operations
   };
   window.addEventListener('dragover',dragOver);window.addEventListener('drop',drop);
   panel.ondragleave=event=>{if(!panel.contains(event.relatedTarget as Node))panel.classList.remove('drop-active');};
-  const dispose=()=>{disposed=true;request++;for(const pending of pendingDrops)pending.abort();pendingDrops.clear();queue.cancelAll();clearTimeout(renderTimer);window.removeEventListener('dragover',dragOver);window.removeEventListener('drop',drop);};
+  const dispose=()=>{disposed=true;request++;for(const pending of pendingDrops)pending.abort();pendingDrops.clear();queue.cancelAll();if(options.closeBrowseAfterUse)options.operations.close();clearTimeout(renderTimer);window.removeEventListener('dragover',dragOver);window.removeEventListener('drop',drop);};
   window.addEventListener('pagehide',dispose,{once:true});
-  return {open,dispose};
+  return {open,dispose,transfers(){if(disposed)return;panel.hidden=false;options.releaseInputs();setMode('transfers');},cancelAll:()=>queue.cancelAll()};
 }

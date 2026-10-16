@@ -185,6 +185,9 @@ document.querySelector('#run').onclick = async () => {
     assert(tool?.message.tool==='reconnect'&&tool.origin===new URL(entries[1].viewerUrl).origin&&document.querySelector('[data-windows-machine="second-windows"] iframe')===secondFrame,'再次打开卡片仅向原查看器请求恢复已保存的连接，不重建标签');
     document.querySelector('[data-gmssh-row="second-windows"] button[title="文件互传"]').click();
     assert(tool?.message.tool==='files'&&tool.origin===new URL(entries[1].viewerUrl).origin,'多台设备的文件工具投递到被选中的桌面');
+    let independentId;const previousFiles=window.gmsshFilesController;window.gmsshFilesController={open:id=>independentId=id,hide(){}};
+    window.gmsshWindowsControllers.get('second-windows').close();document.querySelector('[data-gmssh-row="second-windows"] button[title="文件互传"]').click();
+    assert(independentId==='second-windows'&&!document.querySelector('[data-windows-machine="second-windows"]'),'有独立文件中心时从卡片直接打开文件，不创建桌面标签');window.gmsshFilesController=previousFiles;
     multi.remove();window.removeWindowsDesktopEntry();first.remove();second.remove();
     result.textContent = checks.join('\n') + '\n全部通过';
   } catch (error) { result.textContent = checks.join('\n') + '\nFAIL ' + error.message; }

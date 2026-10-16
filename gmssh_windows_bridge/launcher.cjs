@@ -26,6 +26,7 @@ const home = fs.readFileSync(path.join(__dirname, 'gmssh-home.js'), 'utf8');
 const pairingPage = fs.readFileSync(path.join(__dirname, 'gmssh-pairing.js'), 'utf8');
 const backupPage = fs.readFileSync(path.join(__dirname, 'gmssh-backup.js'), 'utf8');
 const toolsPage = fs.readFileSync(path.join(__dirname, 'gmssh-tools.js'), 'utf8');
+const filesPage = fs.readFileSync(path.join(__dirname, 'gmssh-files.js'), 'utf8');
 const qrPage = fs.readFileSync(path.join(__dirname, 'gmssh-qr.js'), 'utf8');
 const qrDecoder = fs.readFileSync(path.join(__dirname, 'jsQR.js'), 'utf8');
 const theme = fs.readFileSync(path.join(__dirname, 'gmssh-theme.css'), 'utf8');
@@ -33,6 +34,21 @@ const viewerUrl = `http://127.0.0.1:${config.port}/`;
 const legacyBindings = [], windows = new Set();
 const backups = new WeakMap();
 const toolQueries = new WeakSet();
+const fileActivity = new Map();
+let fileQuitAllowed=false,confirmingFileQuit=false;
+function protectFileQuit(event,finish){
+  const active=[...fileActivity.values()].reduce((sum,value)=>sum+value,0);
+  if(fileQuitAllowed||!active)return;
+  event.preventDefault();if(confirmingFileQuit)return;confirmingFileQuit=true;
+  dialog.showMessageBox({type:'warning',message:'仍有 '+active+' 项文件传输未完成',detail:'退出会停止当前传输；未完成任务需重新选择文件后重试。收起文件中心或关闭桌面标签可以继续传输。',buttons:['继续传输','停止传输并退出'],defaultId:0,cancelId:0,noLink:true}).then(async result=>{
+    if(result?.response!==1)return;fileQuitAllowed=true;
+    for(const contents of fileActivity.keys())if(!contents.isDestroyed()){
+      let timer;await Promise.race([contents.executeJavaScript('window.gmsshFilesController?.cancelAll();void 0;').catch(()=>{}),new Promise(resolve=>{timer=setTimeout(resolve,2000);})]).finally(()=>clearTimeout(timer));
+    }
+    finish();
+  }).catch(()=>{}).finally(()=>{confirmingFileQuit=false;});
+}
+app.on('before-quit',event=>protectFileQuit(event,()=>app.quit()));
 let pairing, pairingAvailable = false, nativeApiPort;
 let vendorUpdateNotice;
 const indexUrl = pathToFileURL(path.join(config.vendorAsar, 'dist/index.html')).href;
@@ -42,6 +58,10 @@ autoUpdater.checkForUpdates = () => {};
 autoUpdater.quitAndInstall = () => {};
 const handle = ipcMain.handle.bind(ipcMain);
 ipcMain.handle = (channel, listener) => handle(channel, channel === 'render-to-main' ? async (event, request, ...args) => {
+  if(request?.type==='gmssh-files-state'){
+    if(event.sender?.getURL().split('#')[0]!==indexUrl||!request.data||Object.keys(request.data).sort().join()!=='active,failed'||!['active','failed'].every(key=>Number.isInteger(request.data[key])&&request.data[key]>=0&&request.data[key]<=400000))return {status:'error'};
+    fileActivity.set(event.sender,request.data.active);if(request.data.active&&!confirmingFileQuit)fileQuitAllowed=false;return {status:'ok'};
+  }
   if(request?.type==='gmssh-tools-query'){
     if(event.sender?.getURL().split('#')[0]!==indexUrl)return {status:'error',code:'UNTRUSTED_PAGE'};
     if(toolQueries.has(event.sender))return {status:'error',code:'QUERY_BUSY'};
@@ -132,6 +152,7 @@ ipcMain.handle = (channel, listener) => handle(channel, channel === 'render-to-m
 } : listener);
 app.on('browser-window-created', (_event, window) => {
   const contents = window.webContents;
+  window.on?.('close',event=>{if(contents.getURL().split('#')[0]===indexUrl)protectFileQuit(event,()=>window.close());});
   const send = contents.send.bind(contents);
   contents.send = (channel, payload, ...args) => {
     if (channel === 'main-to-render' && ['upgrade-prompt', 'update-downloaded'].includes(payload?.type)) {
@@ -144,7 +165,7 @@ app.on('browser-window-created', (_event, window) => {
   };
   contents.on('did-finish-load', () => {
     if (contents.getURL().split('#')[0] !== indexUrl) return;
-    windows.add(contents);contents.once('destroyed',()=>{windows.delete(contents);backups.get(contents)?.clear();});
+    windows.add(contents);contents.once('destroyed',()=>{windows.delete(contents);fileActivity.delete(contents);backups.get(contents)?.clear();});
     inject(contents).catch(error => {
       dialog.showMessageBox(window, { type: 'error', message: 'Windows 桌面入口加载失败',
         detail: error instanceof Error ? error.message : '请检查 GMSSH 版本和本地启动器配置。' });
@@ -156,11 +177,11 @@ async function inject(contents) {
   const bindings=[...legacyBindings.filter(value=>!pairing?.records.some(record=>record.machineId===value.machineId)),...(pairing?.bindings()||[])];
   const entries=bindings.map(value=>({machineId:value.machineId??undefined,viewerUrl:value.viewerUrl,label:value.label,
     card:value.machineId?undefined:{host:value.target,name:value.tailscaleName||value.target},autoConnect:true,accessToken:value.accessToken}));
-  const devices=bindings.map(value=>({machineId:value.machineId,viewerUrl:value.viewerUrl,target:value.target,targetPort:value.monitor?.targetPort,accessToken:value.accessToken}));
+  const devices=bindings.map(value=>({machineId:value.machineId,viewerUrl:value.viewerUrl,target:value.target,label:value.label,targetPort:value.monitor?.targetPort,accessToken:value.accessToken}));
   const policies=bindings.filter(value=>value.monitor).map(value=>({bridgePort:value.monitor.port,username:value.monitor.username}));
   const first=devices[0]||{viewerUrl};
   const bootstrap=entry+'\nif(typeof installWindowsDesktopEntries==="function")installWindowsDesktopEntries('+JSON.stringify(entries)+');else if('+entries.length+')installWindowsDesktopEntry('+JSON.stringify(entries[0]||{})+');\n'+home+'\ninstallWindowsMachinePolicy('+JSON.stringify(policies)+');\nglobalThis.gmsshHomeController=installGMSSHHome('+JSON.stringify({...first,viewerUrl,css:theme,devices})+');\n'+pairingPage+'\nif(typeof installGMSSHPairing==="function")installGMSSHPairing();\n'+backupPage+'\nif(typeof installGMSSHBackup==="function")installGMSSHBackup('+JSON.stringify({viewerUrl})+');\n'+(vendorUpdateNotice?'installWindowsUpdateNotice('+JSON.stringify(vendorUpdateNotice)+');\n':'')+'void 0;';
-  await contents.executeJavaScript('(()=>{const module={exports:{}};const exports=module.exports;'+qrDecoder+'\nwindow.jsQR=module.exports;})();\n'+qrPage+'\n'+bootstrap+'\n'+toolsPage+'\nif(typeof installGMSSHTools==="function")installGMSSHTools('+JSON.stringify({viewerUrl})+');void 0;');
+  await contents.executeJavaScript('(()=>{const module={exports:{}};const exports=module.exports;'+qrDecoder+'\nwindow.jsQR=module.exports;})();\n'+qrPage+'\n'+bootstrap+'\n'+toolsPage+'\nif(typeof installGMSSHTools==="function")installGMSSHTools('+JSON.stringify({viewerUrl})+');\n'+filesPage+'\nif(typeof installGMSSHFileCenter==="function")installGMSSHFileCenter('+JSON.stringify({viewerUrl,devices:devices.filter(d=>d.machineId)})+');void 0;');
 }
 
 async function nativeRequest(endpoint,data) {

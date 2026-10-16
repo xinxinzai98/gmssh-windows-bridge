@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>GMSSH · 文件中心</title><link rel="icon" href="/brand/gmssh.png">
+<span id="session-label" hidden>此设备</span><button id="files" hidden>文件互传<span id="file-transfer-count" hidden></span></button>
+<aside id="file-panel">
+<div class="panel-head"><h2>文件互传</h2><button id="close-files" aria-label="收起文件中心"><img src="/ui-icons/x.svg" alt=""></button></div>
+<div class="panel-tabs"><div class="file-mode-tabs" role="tablist" aria-label="文件与传输"><button id="file-browse-tab" type="button" role="tab" aria-selected="true" aria-controls="file-browser-view">文件</button><button id="file-transfers-tab" type="button" role="tab" aria-selected="false" aria-controls="transfer-box">传输<span id="file-queue-count"></span></button></div><small id="remote-files-label">本机 ↔ 此设备</small></div><p id="file-feedback" role="alert" hidden></p><section id="file-browser-view" role="tabpanel" aria-labelledby="file-browse-tab">
+<nav id="file-location" aria-label="当前位置"></nav>
+<form id="path-form"><button id="parent-folder" type="button" title="上一级"><img src="/ui-icons/arrow-up.svg" alt=""></button><input id="file-path" aria-label="远端路径" placeholder="选择磁盘或输入路径"><button type="submit" title="打开路径">打开</button></form>
+<input id="upload-input" type="file" multiple hidden><input id="folder-input" type="file" webkitdirectory multiple hidden>
+<div class="file-upload-actions"><button id="upload" class="primary" disabled><img src="/ui-icons/upload-simple.svg" alt="">上传文件</button><button id="upload-folder" disabled>上传文件夹</button></div>
+<p class="transfer-hint">可拖入文件和文件夹；下载文件夹会打包为 ZIP。</p>
+<div class="file-selection"><label><input id="select-all-files" type="checkbox" disabled>全选</label><button id="download-selected" disabled>下载所选<span id="download-count"></span></button></div>
+<p id="file-note" role="status">先打开磁盘或文件夹，再上传。</p><div id="file-list"></div></section>
+<section id="transfer-box" role="tabpanel" aria-labelledby="file-transfers-tab" hidden><div class="transfer-heading"><strong id="transfer-summary" role="status">传输任务</strong><button id="cancel-transfers">取消待完成</button><button id="clear-transfers">清除已完成</button></div><p id="transfer-empty">还没有传输任务，可切换到“文件”选择上传或下载。</p><div id="transfer-list"></div><p class="transfer-hint">单文件 / 文件夹打包暂限 512 MiB。关闭面板不影响传输；关闭桌面标签或收起文件中心不影响传输。退出管理端会停止未完成任务。</p></section>
+</aside>
+<script type="module" src="/src/files.ts"></script></html>

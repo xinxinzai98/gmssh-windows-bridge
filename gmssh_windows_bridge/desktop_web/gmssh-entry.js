@@ -152,6 +152,7 @@ window.installWindowsDesktopEntry = function ({ machineId, viewerUrl, label = "W
   }
   function open() {
     const existing = !!panel;
+    window.gmsshFilesController?.hide();
     if (managed) for (const controller of window.gmsshWindowsControllers?.values() || []) controller.hide();
     if (!panel) {
       panel = document.createElement("section");

@@ -8,15 +8,15 @@ const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../gmssh_windows_bridge/launcher.cjs'), 'utf8')
   .replace('start().catch(', 'globalThis.completion = start().catch(');
 
-async function launch({ monitoring = true, failure, terminal = false, keychain = true, wake = false, pairingOnly = false, clipboardText = '', adopted = false } = {}) {
+async function launch({ monitoring = true, failure, terminal = false, keychain = true, wake = false, pairingOnly = false, clipboardText = '', adopted = false, fileQuitResponse=0 } = {}) {
   const children = [], dialogs = [], copies = [], pickers = [];
   const app = new EventEmitter();
   const handlers = new Map();
   const ipcMain = {handle:(channel,listener)=>handlers.set(channel,listener)};
   let nativeInstallCalls = 0;
   const autoUpdater = {checkForUpdates:()=>nativeInstallCalls++,quitAndInstall:()=>nativeInstallCalls++};
-  let imported = false, exitCode, clipboardReads = 0;
-  Object.assign(app, { requestSingleInstanceLock: () => true, whenReady: async () => {}, getPath:()=>'/synthetic/user-data', exit: value => { exitCode = value; } });
+  let imported = false, exitCode, clipboardReads = 0,quits=0;
+  Object.assign(app, { requestSingleInstanceLock: () => true, whenReady: async () => {}, getPath:()=>'/synthetic/user-data', exit: value => { exitCode = value; },quit:()=>quits++ });
   const config = { python: '/synthetic/python', vendorAsar: '/synthetic/app.asar', target: '100.64.0.7',
     tailscaleName: 'synthetic-peer', tailscaleCli: '/synthetic/tailscale', port: 22256, keychain, pairingOnly,
     wake: wake ? { mac:'02:00:00:00:00:01', broadcast:'192.168.1.255' } : null,
@@ -39,7 +39,7 @@ async function launch({ monitoring = true, failure, terminal = false, keychain =
   const context = { __dirname: '/synthetic', process: { env: { PYTHONPATH: '/must-not-inherit', PYTHONHOME: '/must-not-inherit' } },
     setTimeout, clearTimeout, URL, URLSearchParams, Buffer,
     require: name => {
-      if (name === 'electron') return { app, ipcMain, autoUpdater, clipboard:{writeText:value=>copies.push(value),readText:()=>{clipboardReads++;return clipboardText;}}, dialog: { showMessageBox: async value => dialogs.push(value),showOpenDialog:async value=>{pickers.push(value);return {canceled:true,filePaths:[]};} } };
+      if (name === 'electron') return { app, ipcMain, autoUpdater, clipboard:{writeText:value=>copies.push(value),readText:()=>{clipboardReads++;return clipboardText;}}, dialog: { showMessageBox: async value => {dialogs.push(value);return {response:fileQuitResponse};},showOpenDialog:async value=>{pickers.push(value);return {canceled:true,filePaths:[]};} } };
       if (name === 'node:child_process') return { spawn };
       if (name === 'node:fs') return { readFileSync: () => '/* synthetic page entry */' };
       if (name === './launcher-config.json') return config;
@@ -60,7 +60,7 @@ async function launch({ monitoring = true, failure, terminal = false, keychain =
     } };
   vm.runInNewContext(source, context, { importModuleDynamically: async () => { imported = true; return import('node:assert/strict'); } });
   await context.completion;
-  return { children, app, dialogs, copies, pickers, imported, exitCode, ipcMain, autoUpdater, handlers, nativeInstallCalls:()=>nativeInstallCalls, clipboardReads:()=>clipboardReads };
+  return { children, app, dialogs, copies, pickers, imported, exitCode, ipcMain, autoUpdater, handlers, nativeInstallCalls:()=>nativeInstallCalls, clipboardReads:()=>clipboardReads,quits:()=>quits };
 }
 
 test('starts one shared SSH bridge, waits for both listeners and keeps monitoring read-only', async () => {
@@ -173,6 +173,25 @@ test('read-only tool IPC rejects remote pages before querying any device',async(
   const handler=result.handlers.get('render-to-main');
   const reply=await handler({sender:{getURL:()=> 'https://untrusted.invalid/'}},{type:'gmssh-tools-query',data:{machineId:'1'.repeat(32),tool:'services',options:{limit:50,search:'',sort:'name'}}});
   assert.equal(reply.status,'error');assert.equal(reply.code,'UNTRUSTED_PAGE');assert.equal(delegated,0);result.app.emit('will-quit');
+});
+
+test('file activity is accepted only from the trusted home and protects quit without silently cancelling',async()=>{
+  const result=await launch();result.ipcMain.handle('render-to-main',async()=>{});const handler=result.handlers.get('render-to-main');
+  const contents={getURL:()=> 'file:///synthetic/app.asar/dist/index.html#/home',isDestroyed:()=>false,executeJavaScript:async()=>{throw Error('must not cancel');}};
+  for(const data of [{active:-1,failed:0},{active:1.2,failed:0},{active:1,failed:0,password:'synthetic'},{active:400001,failed:0}])assert.equal((await handler({sender:contents},{type:'gmssh-files-state',data})).status,'error');
+  assert.equal((await handler({sender:{getURL:()=> 'https://untrusted.invalid/'}},{type:'gmssh-files-state',data:{active:2,failed:0}})).status,'error');
+  assert.equal((await handler({sender:contents},{type:'gmssh-files-state',data:{active:2,failed:0}})).status,'ok');
+  let blocked=0;result.app.emit('before-quit',{preventDefault:()=>blocked++});await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(blocked,1);assert.equal(result.dialogs.length,1);assert.match(result.dialogs[0].message,/2/);assert.equal(result.dialogs[0].defaultId,0);assert.equal(result.quits(),0);assert.ok(!result.children.some(c=>c.killed));
+  await handler({sender:contents},{type:'gmssh-files-state',data:{active:0,failed:1}});result.app.emit('before-quit',{preventDefault:()=>blocked++});assert.equal(blocked,1);result.app.emit('will-quit');
+});
+test('an explicit stop-and-quit cancels file workspaces, then exits without a second prompt',async()=>{
+  const result=await launch({fileQuitResponse:1});result.ipcMain.handle('render-to-main',async()=>{});const scripts=[];
+  const contents={getURL:()=> 'file:///synthetic/app.asar/dist/index.html#/home',isDestroyed:()=>false,executeJavaScript:async code=>scripts.push(code)};
+  await result.handlers.get('render-to-main')({sender:contents},{type:'gmssh-files-state',data:{active:1,failed:0}});
+  result.app.emit('before-quit',{preventDefault(){}});await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(result.quits(),1);assert.ok(scripts.some(s=>s.includes('gmsshFilesController?.cancelAll')));
+  result.app.emit('before-quit',{preventDefault(){throw Error('should be approved');}});assert.equal(result.dialogs.length,1);result.app.emit('will-quit');
 });
 
 test('starts an empty controller without a remote target, and restricts enrollment IPC to its native home',async()=>{

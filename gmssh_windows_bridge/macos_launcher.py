@@ -148,6 +148,7 @@ def _build_launcher(config, output):
         "gmssh-pairing.js": (here / "desktop_web/gmssh-pairing.js").read_bytes(),
         "gmssh-backup.js": (here / "desktop_web/gmssh-backup.js").read_bytes(),
         "gmssh-tools.js": (here / "desktop_web/gmssh-tools.js").read_bytes(),
+        "gmssh-files.js": (here / "desktop_web/gmssh-files.js").read_bytes(),
         "gmssh-qr.js": (here / "desktop_web/gmssh-qr.js").read_bytes(),
         "jsQR.js": (here / "desktop_web/vendor/jsQR.js").read_bytes(),
         "gmssh-theme.css": (here / "desktop_web/gmssh-theme.css").read_bytes(),

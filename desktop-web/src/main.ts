@@ -180,12 +180,20 @@ get('copy-local').onclick=async()=>{try{await navigator.clipboard.writeText(get<
 get('read-local').onclick=async()=>{try{get<HTMLTextAreaElement>('clipboard-text').value=await navigator.clipboard.readText();get('clipboard-note').textContent='已读取本机文本，点击发送后传到 Windows。';}catch{get('clipboard-note').textContent='当前容器未允许读取剪贴板，请直接粘贴到文本框。';}};
 
 const filePanel=installFilePanel({token:()=>accessToken,operations,available:()=>filesAvailable,releaseInputs});
+let fileRequest=0;
+function openFileCenter():void{
+  if(!embedded){filePanel.open();return;}
+  const requestId='files-'+(++fileRequest),timer=window.setTimeout(()=>{window.removeEventListener('message',acknowledged);filePanel.open();},1200);
+  function acknowledged(event:MessageEvent):void{if(event.source!==window.parent||event.data?.type!=='gmssh-file-center-opened'||event.data.requestId!==requestId)return;clearTimeout(timer);window.removeEventListener('message',acknowledged);}
+  window.addEventListener('message',acknowledged);window.parent.postMessage({type:'gmssh-open-file-center',requestId},'*');
+}
+get('files').onclick=openFileCenter;
 window.addEventListener('message',event=>{
   if(embedded&&event.source===window.parent&&event.data?.type==='gmssh-desktop-state-request'&&typeof event.data.requestId==='string'&&event.data.requestId.length<=80){
     window.parent.postMessage({type:'gmssh-desktop-state',requestId:event.data.requestId,data:client.diagnostics.snapshot()},event.origin==='null'?'*':event.origin);return;
   }
   if(event.source!==window.parent||event.data?.type!=='gmssh-desktop-tool')return;
-  if(event.data.tool==='files')filePanel.open();
+  if(event.data.tool==='files')openFileCenter();
   else if(event.data.tool==='power')get('power').click();
   else if(event.data.tool==='reconnect'&&!client.connected&&!connect.disabled&&keychain&&savedPasswordAvailable&&!password.value&&!ssh.value&&(transport==='monitor'||transport==='tailscale')){
     client.connect('','',transport,{saved:true,remember:false,token:accessToken});

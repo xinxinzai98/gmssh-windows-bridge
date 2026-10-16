@@ -33,6 +33,21 @@ test('folder batches retain their destination, create nested/empty folders and d
   assert.deepEqual(h.saved,['folder.zip']);assert.ok(h.queue.items.every(item=>item.status==='done'));
   assert.ok(h.queue.items.every(item=>!item.file),'completed tasks release local File references');
 });
+
+test('a shared file workspace permit gates I/O and releases after both success and failure',async()=>{
+  let grant,released=0,calls=0;
+  const worker={mkdir:async()=>{},upload:async()=>{calls++;if(calls===1)throw Error('synthetic disconnect');},download:async()=>{},close:()=>{}};
+  const queue=new TransferQueue(()=>worker,()=>{},()=>{},()=>new Promise(resolve=>{grant=()=>resolve(()=>released++);}));
+  queue.addUploads([{file:new File(['first'],'first.txt'),relative:'first.txt'},{file:new File(['second'],'second.txt'),relative:'second.txt'}],'C:/target');
+  assert.equal(calls,0);assert.equal(queue.items[0].phase,'waiting');grant();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(released,1);assert.equal(queue.items[0].status,'failed');assert.equal(calls,1);grant();await queue.idle();assert.equal(released,2);assert.equal(queue.items[1].status,'done');
+});
+test('cancelling while waiting for another device never opens a remote file or directory',async()=>{
+  let calls=0;
+  const queue=new TransferQueue(()=>({mkdir:async()=>calls++,upload:async()=>calls++,download:async()=>calls++,close:()=>{}}),()=>{},()=>{},signal=>new Promise((resolve,reject)=>signal.addEventListener('abort',()=>reject(Error('cancelled')),{once:true})));
+  queue.addUploads([{file:new File(['data'],'child.txt'),relative:'folder/child.txt'}],'C:/target');queue.cancel(queue.items[0].id);await queue.idle();
+  assert.equal(calls,0);assert.equal(queue.items[0].status,'cancelled');
+});
 test('a failed task does not block the queue, and conflict renaming never overwrites the original',async()=>{
   const h=queueFixture();h.files.set('C:/目标/同名.txt','original');
   h.queue.addUploads([{relative:'同名.txt',file:new File(['new'],'同名.txt')},{relative:'下一项.txt',file:new File(['next'],'下一项.txt')}],'C:/目标');await h.queue.idle();

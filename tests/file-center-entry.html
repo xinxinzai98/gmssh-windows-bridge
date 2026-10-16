@@ -1,0 +1,46 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>独立文件中心本地验收</title><link rel="stylesheet" href="/gmssh-theme.css"><style>body{background:#171719;color:#eee;font:14px system-ui;margin:0}.tabs-container{height:48px;display:flex;align-items:center;padding:0 18px;background:#141416}.tab-chip{background:#333;color:#eee;border:0;border-radius:6px;padding:7px 12px}main{padding:24px}pre{white-space:pre-wrap}main>button{margin:4px;padding:10px}</style>
+<div class="tabs-container"><div class="tabs-home"><button class="tab-chip tab-chip--home">首页</button></div></div>
+<main><h1>独立文件中心 · 本地集成检查</h1><p>两个回环 WebSocket/SFTP 替身，仅使用合成文件；不连接 A4 或其他远端电脑。</p><button id="run">运行检查</button><button id="preview">打开文件中心预览</button><pre id="result">待运行</pre></main>
+<script src="/gmssh-files.js"></script><script>
+const wait=async predicate=>{for(let i=0;i<800;i++){if(await predicate())return;await new Promise(resolve=>setTimeout(resolve,25));}throw Error('等待超时');};
+let config,controller,requestId=0,holdActivity=false,activityAck,nativeOpened=0,desktopClosed=0;const activity=[],requests=[],drivers=new Set();
+window.addEventListener('message',event=>{if(event.data?.type==='gmssh-fixture-ready'&&[...document.querySelectorAll('.gm-files-frames iframe')].some(f=>f.contentWindow===event.source&&event.origin===new URL(f.src).origin))drivers.add(event.source);});
+window.electronAPI={invoke:async(channel,request)=>{requests.push(structuredClone(request));if(request.type!=='gmssh-files-state')throw Error('Unexpected IPC');activity.push(request.data.active);if(holdActivity&&request.data.active>0){holdActivity=false;return await new Promise(resolve=>activityAck=()=>resolve({status:'ok'}));}return {status:'ok'};}};
+const ready=fetch('/fixture-config.json').then(r=>r.json()).then(value=>{config=value;window.gmsshHomeController={filesDevices:()=>[...config.devices.map(d=>({id:d.machineId,name:d.label,windows:true})),{id:'3'.repeat(32),name:'演示 Linux',windows:false}],openNativeFiles:()=>nativeOpened++};window.gmsshWindowsControllers=new Map(config.devices.map(d=>[d.machineId,{hide(){},close(){desktopClosed++;},frame:()=>undefined}]));controller=installGMSSHFileCenter({viewerUrl:location.origin+'/',devices:config.devices});return controller;});
+if(new URL(location.href).searchParams.get('preview')==='1')ready.then(()=>controller.open(config.devices[0].machineId));
+const frameFor=id=>[...document.querySelectorAll('.gm-files-frames iframe')].find(f=>new URL(f.src).origin===new URL(config.devices.find(d=>d.machineId===id).viewerUrl).origin);
+async function command(frame,action,values={}){await wait(()=>drivers.has(frame.contentWindow));const id=++requestId;return await new Promise((resolve,reject)=>{const timer=setTimeout(()=>{window.removeEventListener('message',receive);reject(Error('fixture response timeout'));},25000);function receive(event){if(event.source!==frame.contentWindow||event.origin!==new URL(frame.src).origin||event.data?.type!=='gmssh-fixture-result'||event.data.requestId!==id)return;clearTimeout(timer);window.removeEventListener('message',receive);event.data.error?reject(Error(event.data.error)):resolve(event.data.result);}window.addEventListener('message',receive);frame.contentWindow.postMessage({type:'gmssh-fixture',requestId:id,action,...values},new URL(frame.src).origin);});}
+const state=()=>fetch('/fixture-state.json?time='+Date.now()).then(r=>r.json());
+document.getElementById('preview').onclick=async()=>{await ready;controller.open(config.devices[0].machineId);};
+document.querySelector('.tab-chip--home').onclick=()=>controller?.hide();
+document.getElementById('run').onclick=async()=>{
+ const checks=[],assert=(value,text)=>{if(!value)throw Error(text);checks.push('PASS '+text);},out=document.getElementById('result');
+ try{
+  await ready;const [a,b]=config.devices.map(d=>d.machineId);controller.open(a);await wait(()=>frameFor(a));const first=frameFor(a);await command(first,'prepare');
+  assert(first.src.includes('/files.html')&&!first.src.includes('token='),'文件中心使用独立文件页，令牌不放入地址');assert((await state()).desktopConnections===0,'不建立 RustDesk 或桌面画面即可读取文件');
+  assert(installGMSSHFileCenter({viewerUrl:location.origin+'/',devices:config.devices})===controller&&frameFor(a)===first,'重新注入入口保留同一文件页和队列');
+  holdActivity=true;await command(first,'download-large');await wait(()=>activityAck);assert(!(await state()).events.some(e=>e.event==='download-start'),'主进程确认任务状态前不开始远端传输');activityAck();await wait(async()=> (await state()).events.some(e=>e.event==='download-start'));
+  window.gmsshWindowsControllers.get(a).close();controller.hide();assert(frameFor(a)===first&&first.isConnected,'关闭桌面并收起中心仍保留原文件页');
+  controller.open(b);await wait(()=>frameFor(b));const second=frameFor(b);await command(second,'prepare');await command(second,'upload',{name:'来自B-中文.txt',text:'乙设备中文内容'});
+  await wait(()=>controller.pending()>=2);assert(!(await state()).events.some(e=>e.device==='B'&&e.event==='upload-start'),'第二台设备等待传输许可，避免无限并发');
+  controller.open(a);assert(frameFor(a)===first&&frameFor(b)===second,'切换设备保留各自独立文件页');
+  await wait(async()=> (await command(first,'state')).saved['大文件.bin']===config.bigHash);await wait(async()=>Boolean((await state()).files[1]['来自B-中文.txt']));
+  const finished=await state(),ended=finished.events.find(e=>e.device==='A'&&e.event==='download-end'),uploaded=finished.events.find(e=>e.device==='B'&&e.event==='upload-start');assert(uploaded.time>=ended.time,'前一任务完成后再开始另一台设备的传输');
+  assert(!finished.files[0]['来自B-中文.txt']&&finished.files[1]['来自B-中文.txt'],'上传始终落在所选设备，没有串用目录');assert((await command(first,'state')).saved['大文件.bin']===config.bigHash,'完整下载按 SHA-256 比对内容一致');
+  const expectedUpload=[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode('乙设备中文内容')))].map(v=>v.toString(16).padStart(2,'0')).join('');assert(finished.files[1]['来自B-中文.txt']===expectedUpload,'完整上传按 SHA-256 比对内容一致');
+  await wait(()=>controller.pending()===0);await wait(async()=> (await state()).leases.every(n=>n===0));assert(true,'完成后释放文件与浏览连接的 SSH 使用权');
+  window.dispatchEvent(new MessageEvent('message',{source:window,origin:new URL(config.devices[0].viewerUrl).origin,data:{type:'gmssh-file-state',active:1,failed:0,total:1,tasks:[]}}));assert(controller.pending()===0,'其他窗口伪造文件状态不能改变任务计数');
+  const before=finished.events.filter(e=>e.device==='B'&&e.event==='upload-start').length;await command(first,'download-large');await wait(async()=> (await state()).events.filter(e=>e.device==='A'&&e.event==='download-start').length===2);controller.open(b);await command(second,'upload',{name:'应取消.txt'});await wait(()=>controller.pending()>=2);await command(second,'cancel');
+  await wait(()=>controller.pending()===1);assert((await state()).events.filter(e=>e.device==='B'&&e.event==='upload-start').length===before,'取消等待中的设备任务不会读写远端文件');
+  assert((await command(first,'state')).grants.length===2,'取消另一台设备不影响当前设备的文件许可');await command(first,'cancel');await wait(()=>controller.pending()===0);
+  assert(activity.some(n=>n>=2)&&activity.at(-1)===0,'未完成任务数和归零状态同步给管理端退出保护');
+  controller.open(b);await command(second,'upload',{name:'已有.txt',text:'must not overwrite'});await wait(async()=> (await command(second,'state')).feedback!==''||document.querySelector('.gm-files-badge[data-error=true]'));await wait(()=>controller.pending()===0);assert((await state()).files[1]['已有.txt']===finished.files[1]['已有.txt'],'同名冲突不会覆盖已有完整文件');
+  const oldSecond=second;controller.update(config.devices.map(d=>d.machineId===b?{...d,viewerUrl:config.devices[0].viewerUrl}:d));controller.open(b);assert(frameFor(b)===oldSecond&&document.querySelector('.gm-files-native').textContent.includes('更新通道'),'连接地址变更时保留原队列并要求显式更新通道');
+  controller.update(config.devices);controller.open('3'.repeat(32));assert(document.querySelector('.gm-files-native').textContent.includes('原生文件管理'),'Linux 继续使用原生文件工具并说明队列范围');document.querySelector('.gm-files-native button').click();assert(nativeOpened===1,'Linux 文件入口交给原有设备逻辑');
+  controller.open(a);const rectangle=document.querySelector('.gm-files-center').getBoundingClientRect();assert(rectangle.top>=40&&rectangle.bottom<=innerHeight+1,'文件中心保持在应用标题栏下方且没有溢出');controller.hide();assert(frameFor(a)===first&&document.querySelector('.gm-files-center').hidden,'收起只隐藏中心，不卸载任务页');
+  assert((await state()).desktopConnections===0&&desktopClosed===1,'完整检查未建立任何远端桌面会话');
+  assert(requests.every(r=>r.type==='gmssh-files-state'&&Object.keys(r.data).sort().join()==='active,failed'),'退出保护只接收任务统计，不发送文件内容或连接凭据');
+  out.textContent=checks.join('\n')+'\n全部通过';
+ }catch(error){controller?.hide();out.textContent=checks.join('\n')+'\nFAIL '+error.message;}
+};
+</script></html>

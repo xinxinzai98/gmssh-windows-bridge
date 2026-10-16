@@ -42,7 +42,7 @@ export class TransferQueue {
   #abort?:AbortController;
   #worker?:Worker;
   #directories=new Set<string>();
-  constructor(private worker:()=>Worker,private save:(file:{blob:Blob;name:string})=>void|Promise<void>,private changed:(items:readonly TransferTask[])=>void){}
+  constructor(private worker:()=>Worker,private save:(file:{blob:Blob;name:string})=>void|Promise<void>,private changed:(items:readonly TransferTask[])=>void,private permit?:(signal:AbortSignal)=>Promise<()=>void>){}
   addUploads(entries:UploadEntry[],base:string):void {
     if(!/^[A-Za-z]:\//.test(base))throw Error('请先打开磁盘或文件夹，再上传。');
     if(entries.length+this.items.length>MAX_QUEUE)throw Error('任务列表最多 2000 项，请清除已完成任务后分批选择。');
@@ -102,9 +102,11 @@ export class TransferQueue {
         const task=this.items.find(item=>item.status==='queued');if(!task)break;
         const controller=new AbortController();this.#abort=controller;
         const abort=()=>this.#worker!.close(Error('已取消传输。'));controller.signal.addEventListener('abort',abort,{once:true});
-        task.status='running';task.started=Date.now();task.message='';this.notify();
+        task.status='running';task.started=Date.now();task.message='';task.phase=this.permit?'waiting':'';this.notify();let release:(()=>void)|undefined;
         const progress:DownloadProgress=(bytes,total,phase)=>{if(task.phase!==phase)task.started=Date.now();task.bytes=bytes;if(phase==='receiving')task.size=total;task.phase=phase;this.notify();};
         try {
+          if(this.permit)release=await this.permit(controller.signal);
+          if(controller.signal.aborted)throw Error('已取消传输。');
           if(task.kind==='download'){
             const file=await this.#worker.download(task.path,{directory:task.directory,signal:controller.signal,progress});
             if(controller.signal.aborted)throw Error('已取消传输。');
@@ -120,7 +122,7 @@ export class TransferQueue {
           if(controller.signal.aborted)throw Error('已取消传输。');
           task.status='done';task.file=undefined;
         }catch(error){task.status=controller.signal.aborted?'cancelled':'failed';task.message=controller.signal.aborted?'已取消传输':error instanceof Error?error.message:'传输未完成';this.#directories.clear();}
-        finally{controller.signal.removeEventListener('abort',abort);this.#abort=undefined;this.notify();}
+        finally{if(this.permit)this.#worker?.close();release?.();controller.signal.removeEventListener('abort',abort);this.#abort=undefined;this.notify();}
       }
     }finally{this.#worker?.close();this.#worker=undefined;}
   }
