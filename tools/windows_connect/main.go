@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -24,8 +25,27 @@ func run() error {
 	flags.SetOutput(io.Discard)
 	root := flags.String("state", "", "")
 	publicInput := flags.Bool("connection-stdin", false, "")
-	if flags.Parse(os.Args[2:]) != nil || flags.NArg() != 0 || *root == "" {
+	if flags.Parse(os.Args[2:]) != nil || flags.NArg() != 0 || (*root == "" && command != "qr") {
 		return errUnavailable
+	}
+	if command == "qr" {
+		body, err := io.ReadAll(io.LimitReader(os.Stdin, 8193))
+		if err != nil || len(body) > 8192 {
+			return errUnavailable
+		}
+		defer clear(body)
+		var request struct {
+			Text string `json:"text"`
+		}
+		if decodeJSON(body, &request) != nil {
+			return errUnavailable
+		}
+		image, err := connectionQR(request.Text)
+		if err != nil {
+			return err
+		}
+		fmt.Println(base64.StdEncoding.EncodeToString(image))
+		return nil
 	}
 	absolute, err := filepath.Abs(*root)
 	if err != nil {

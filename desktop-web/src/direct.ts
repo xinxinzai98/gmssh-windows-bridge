@@ -4,6 +4,7 @@ import { Message, ImageQuality, ControlKey, KeyboardMode, ClipboardFormat, Optio
 import { boundedText, countAppVariants, topLevelFieldNumbers, validatePeerInfo, validateCursorMessage, validateDisabledSideChannel } from "../vendor/wire";
 import { Vp9CanvasRenderer } from "../vendor/video";
 import { clipboardText, multiClipboard } from './clipboard';
+import { DesktopDiagnostics } from './diagnostics';
 
 type Events = { status(text: string): void; peer(name: string): void; frame(): void; stopped(): void; credential?(saved: boolean): void; clipboard?(text:string):void; displays?(items:DisplayInfo[],current:number):void };
 
@@ -22,6 +23,7 @@ export async function challengeResponse(password: Uint8Array, salt: string, chal
 }
 
 export class DirectClient {
+  readonly diagnostics = new DesktopDiagnostics();
   #socket?: WebSocket;
   #password?: Uint8Array;
   #remember?: Uint8Array;
@@ -37,6 +39,7 @@ export class DirectClient {
 
   connect(sshPassword: string, desktopPassword: string, transport = "ssh", options: { saved: boolean; remember: boolean; token?: string } = { saved: false, remember: false }): void {
     this.disconnect();
+    this.diagnostics.begin();
     const generation = this.#generation;
     this.#password = utf8.encode(desktopPassword);
     if (options.remember && desktopPassword) this.#remember = utf8.encode(desktopPassword);
@@ -45,9 +48,9 @@ export class DirectClient {
     socket.binaryType = "arraybuffer";
     this.#socket = socket;
     let chain = Promise.resolve();
-    const fail = (error: unknown): void => {
+    const fail = (error: unknown, code?: string): void => {
       if (generation !== this.#generation) return;
-      this.disconnect();
+      this.diagnostics.failed(code);this.disconnect(true);
       this.events.status(error instanceof Error ? error.message : "连接失败。");
     };
     socket.addEventListener("open", () => socket.send(JSON.stringify({ password: sshPassword,
@@ -64,16 +67,16 @@ export class DirectClient {
           if (result.type === "credential_saved" || result.type === "credential_error") {
             this.events.credential?.(result.type === "credential_saved"); return;
           }
-          if (result.type === "ssh_ready") { this.events.status("SSH 已验证，等待 RustDesk 握手；留空密码时请在 Windows 端确认。"); return; }
-          if (result.type === "tailscale_ready") { this.events.status("Tailscale 设备已核对，等待 RustDesk 握手；留空密码时请在 Windows 端确认。"); return; }
+          if (result.type === "ssh_ready") { this.diagnostics.transport();this.events.status("SSH 已验证，等待 RustDesk 握手；留空密码时请在 Windows 端确认。"); return; }
+          if (result.type === "tailscale_ready") { this.diagnostics.transport();this.events.status("Tailscale 设备已核对，等待 RustDesk 握手；留空密码时请在 Windows 端确认。"); return; }
           throw new Error(result.type === "error" && typeof result.message === "string" ? result.message : "无效的传输响应。");
         }
-        await this.#receive(await frameBytes(event.data), generation);
+        const bytes=await frameBytes(event.data);this.diagnostics.received(bytes.length);await this.#receive(bytes, generation);
       }).catch(fail);
     });
     socket.addEventListener("error", () => fail(new Error("本地桌面服务连接失败。")));
     socket.addEventListener("close", () => fail(new Error("桌面连接已关闭。")));
-    this.#timer = window.setTimeout(() => fail(new Error("登录超时，请检查 RustDesk 密码或 Windows 端确认提示。")), desktopPassword ? 60_000 : 300_000);
+    this.#timer = window.setTimeout(() => fail(new Error("登录超时，请检查 RustDesk 密码或 Windows 端确认提示。"),'DESKTOP_LOGIN_TIMEOUT'), desktopPassword ? 60_000 : 300_000);
     this.events.status(transport === "monitor" ? "正在等待这台机器的监控认证…" : transport === "tailscale" ? "正在核对 Tailscale 设备…" : "正在验证 Windows SSH…");
   }
 
@@ -97,6 +100,7 @@ export class DirectClient {
     if (this.#stage === "hash") {
       if (!message.hash || !this.#password) throw new Error("未收到 RustDesk 直接连接的密码挑战。请检查远程版本和直接 IP 设置。");
       boundedText(message.hash.salt, "salt"); boundedText(message.hash.challenge, "challenge");
+      this.diagnostics.handshake();
       const response = await challengeResponse(this.#password, message.hash.salt, message.hash.challenge);
       if (generation !== this.#generation) { wipe(response); return; }
       wipe(this.#password); this.#password = undefined;
@@ -118,10 +122,11 @@ export class DirectClient {
       const reply = message.loginResponse;
       if (!reply || !reply.peerInfo || reply.error !== undefined) throw new Error(reply?.error ? boundedText(reply.error, "login error") : "RustDesk 未批准连接。");
       const display = validatePeerInfo(reply.peerInfo);
+      this.diagnostics.approved(reply.peerInfo.version);
       const renderer = await Vp9CanvasRenderer.create(this.canvas, () => {
         if (generation !== this.#generation) return;
-        this.#send({ misc: { videoReceived: true } }); this.events.frame();
-      }, error => { if (generation === this.#generation) { this.disconnect(); this.events.status(error.message); } });
+        this.diagnostics.frame();this.#send({ misc: { videoReceived: true } }); this.events.frame();
+      }, error => { if (generation === this.#generation) { this.diagnostics.failed();this.disconnect(true); this.events.status(error.message); } });
       if (generation !== this.#generation) { renderer.close(); return; }
       this.#renderer = renderer;
       renderer.setDisplay(display.width, display.height);
@@ -178,7 +183,8 @@ export class DirectClient {
   }
   selectDisplay(index:number):void { if(this.connected&&this.#displays[index])this.#send({misc:{switchDisplay:{display:index}}}); }
   quality(value:string):void { if(this.connected)this.#send({misc:{option:{imageQuality:value==='low'?ImageQuality.Low:value==='best'?ImageQuality.Best:ImageQuality.Balanced}}}); }
-  disconnect(): void {
+  disconnect(preserveDiagnostics=false): void {
+    if(!preserveDiagnostics)this.diagnostics.disconnected();
     this.#generation++;
     this.#socket?.close(); this.#socket = undefined;
     this.#renderer?.close(); this.#renderer = undefined;

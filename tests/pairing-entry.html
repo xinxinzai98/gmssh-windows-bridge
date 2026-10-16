@@ -93,6 +93,7 @@ document.getElementById('run').onclick=async()=>{
   assert(!field('preview').hidden&&!field('password-label').hidden&&field('computer').textContent==='LAB-PC','拖入公开连接文件进入密码接入，未误当成免密码连接码');field('cancel').click();await settle();
   await openWindows();let finishRead;const delayed=new Event('drop',{bubbles:true,cancelable:true});Object.defineProperty(delayed,'dataTransfer',{value:{files:[{name:'connection.json',size:2,text:()=>new Promise(resolve=>finishRead=resolve)}],types:['Files']}});panel.dispatchEvent(delayed);field('cancel').click();await settle();finishRead(JSON.stringify(data));await settle();
   assert(!isOpen()&&field('preview').hidden,'取消窗口后，迟到的文件读取不会重新创建连接预览');
+  await openWindows();let scanned;window.gmsshReadConnectionQR=options=>{scanned=options.onResult;};field('qr').click();assert(typeof scanned==='function','统一添加窗口的连接码区域提供扫码入口');mode='code';scanned('GMSSH-CONNECT1.synthetic-scanned');await settle();assert(!field('preview').hidden&&field('password-label').hidden,'扫码文本复用正常连接码识别，先展示设备预览');field('cancel').click();await settle();scanned('GMSSH-CONNECT1.late');await settle();assert(!isOpen()&&field('preview').hidden,'取消添加后，迟到的扫码结果失效');delete window.gmsshReadConnectionQR;
   window.gmsshPairingController.edit(nativeId);await settle();
   assert(field('target').value==='192.0.2.42'&&field('password-label').hidden,'右键编辑载入同一设备的原连接地址');
   field('target').value='[2001:0db8::42]:22';field('target').dispatchEvent(new Event('input'));

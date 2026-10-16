@@ -1,0 +1,47 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>只读工具本地回归</title>
+<link rel="stylesheet" href="../desktop-web/public/gmssh-theme.css"><style>body{background:#171719;color:#eee;font:14px system-ui;padding:24px}pre{white-space:pre-wrap}body>button{margin:8px;padding:12px}iframe{display:none}</style>
+<h1>连接诊断与系统工具 · 本地模拟</h1><p>只使用合成设备与合成日志，不访问 A4 或其他远端设备。</p><button id="run">运行检查</button><button id="preview">查看工具预览</button><button id="diagnostics">查看诊断预览</button><pre id="result">待运行</pre>
+<iframe id="viewer" src="tools-viewer.html"></iframe><script src="../desktop-web/public/gmssh-tools.js"></script><script>
+const windowsId='1'.repeat(32),linuxId='2'.repeat(32),calls=[],now=()=>new Date().toISOString();let denied=false,empty=false,failed=false,legacy=false,slow=false,release;
+const common=tool=>({schema:1,kind:'windows',tool,state:'passed',code:'OK',sampledAt:now(),items:[],truncated:false});
+window.electronAPI={invoke:async(channel,request)=>{
+ calls.push(structuredClone(request));const {machineId,tool,options}=request.data,kind=machineId===linuxId?'linux':'windows',context={machineId,kind,name:kind==='windows'?'演示工作站':'演示服务器',address:kind==='windows'?'192.0.2.42':'2001:db8::42',port:22};
+ if(slow&&tool!=='capabilities')await new Promise(done=>release=done);
+ let result={...common(tool),kind};
+ if(failed)return {status:'ok',data:{context,result:{error:'QUERY_TIMEOUT'}}};
+ if(tool==='capabilities')result={...result,capabilities:{processes:true,services:true,logs:!legacy,sources:kind==='linux'?['journal']:['system','application']},versions:{controller:'0.4.0a15',bridge:'0.4.0a15',server:null,engine:null,os:'Synthetic'}};
+ if(tool==='diagnostics')result={...result,stages:[{id:'target',state:'passed',code:'SAVED_TARGET',sampledAt:now()},{id:'tcp',state:'passed',code:'TCP_REACHABLE',latencyMs:2.4,sampledAt:now()},{id:'identity',state:'passed',code:'SSH_PIN_VERIFIED',sampledAt:now()},{id:'auth',state:'passed',code:'SSH_AUTHENTICATED',sampledAt:now()},{id:'monitor',state:'passed',code:'MONITOR_OK',sampledAt:now()},{id:'files',state:'failed',code:'SFTP_UNAVAILABLE',sampledAt:now()}]};
+ if(tool==='processes')result={...result,units:{cpu:kind==='windows'?'logical-processors-normalized':'ps-lifetime-average',sampleSeconds:1.03},items:[{pid:71,name:'桌面会话',cpuPercent:12.3,memoryBytes:180000000},{pid:8,name:'后台工作进程',cpuPercent:null,memoryBytes:null}].filter(item=>!options.search||item.name.includes(options.search)||String(item.pid).includes(options.search))};
+ if(tool==='services')result={...result,items:[{name:'sshd',displayName:'OpenSSH SSH Server',state:'Running',startType:kind==='linux'?null:'Auto'},{name:'GMSSHWindowsConnect',displayName:'GMSSH 连接服务',state:'Running',startType:'Auto'}]};
+ if(tool==='logs')result={...result,items:[{recordId:kind==='windows'?12:'s=abc;i=1',source:options.source,time:now(),level:'错误',provider:'GMSSHConnect',eventId:1,preview:'<img src=x onerror="window.fixtureUnsafe=true"> 中文日志'}]};
+ if(tool==='log-detail')result={...result,items:[{recordId:options.recordId,source:options.source,time:now(),level:'错误',provider:'GMSSHConnect',eventId:1,message:'<script>window.fixtureUnsafe=true;<\/script>\n这是一条合成日志正文。',messageTruncated:true}]};
+ if(empty)result.items=[];
+ if(denied)result={...result,state:'failed',code:'ACCESS_DENIED',items:[]};
+ if(legacy&&tool==='logs')result={...result,state:'unsupported',code:'EVENT_LOG_UNAVAILABLE',items:[]};
+ return {status:'ok',data:{context,result}};
+}};
+window.gmsshWindowsControllers=new Map([[windowsId,{frame:()=>document.getElementById('viewer') }]]);
+const controller=installGMSSHTools({viewerUrl:new URL('../desktop-web/public/',location.href).href});
+const settle=()=>new Promise(resolve=>setTimeout(resolve,35)),wait=async()=>{for(let i=0;i<150;i++){await settle();if(!document.querySelector('.gm-tools-footer button:last-child').disabled)return;}throw Error('等待超时');};
+const click=text=>[...document.querySelectorAll('.gm-tools-dialog button')].find(n=>n.textContent===text)?.click(),get=label=>document.querySelector('[aria-label="'+label+'"]');
+document.getElementById('preview').onclick=()=>controller.open(windowsId,'processes');document.getElementById('diagnostics').onclick=()=>controller.open(windowsId);
+document.getElementById('run').onclick=async()=>{
+ const checks=[],assert=(value,text)=>{if(!value)throw Error(text);checks.push('PASS '+text);},out=document.getElementById('result');
+ try{
+  await controller.open(windowsId);await wait();assert(document.querySelectorAll('.gm-tools-tabs [role=tab]').length===4,'四个只读工具标签可达');assert(document.querySelectorAll('.gm-diagnostic-stage').length===11,'分离显示 SSH、文件、桌面认证和首帧状态');assert(document.querySelector('.gm-tools-body').textContent.includes('15 秒'),'已认证但没有画面会显示首帧超时');assert(document.querySelector('.gm-tools-body').textContent.includes('服务端 未知'),'旧服务端版本未知时不伪造版本');
+  let exported;const original=URL.createObjectURL;URL.createObjectURL=blob=>{exported=blob;return original(blob);};click('导出诊断');await settle();URL.createObjectURL=original;const report=await exported.text();assert(!report.includes('192.0.2')&&!report.includes('演示工作站')&&!report.includes('synthetic-private')&&!report.includes('message'),'导出报告不含地址、名称、凭据和日志正文');assert(JSON.parse(report).stages.length===11,'诊断报告保留阶段和错误码');
+  click('进程');await wait();assert(document.querySelectorAll('.gm-tools-table tbody tr').length===2,'进程展示 PID、CPU 与内存');assert(document.querySelector('.gm-tools-body').textContent.includes('归一'),'Windows CPU 采样口径可见');assert(document.querySelector('.gm-tools-table tbody').textContent.includes('—'),'读不到的字段不会显示成 0');
+  get('搜索').value='71';get('搜索').dispatchEvent(new Event('input'));click('查询');await wait();assert(document.querySelectorAll('.gm-tools-table tbody tr').length===1,'搜索 PID 可缩小结果');
+  failed=true;click('刷新');await wait();assert(document.querySelectorAll('.gm-tools-table tbody tr').length===1&&document.querySelector('.gm-tools-status').textContent.includes('保留上次数据'),'刷新失败保留上次采样并标注过期');failed=false;
+  click('服务');await wait();assert(document.querySelector('.gm-tools-body').textContent.includes('OpenSSH SSH Server'),'服务状态可读');assert(![...document.querySelectorAll('.gm-tools-dialog button')].some(n=>/^(停止|启动|重启|结束进程)$/.test(n.textContent)),'面板没有进程终止、服务启停或重启操作');
+  click('日志');await wait();assert(document.querySelector('.gm-tools-body').textContent.includes('<img src=x'),'日志列表按普通文本显示标记');assert(!window.fixtureUnsafe&&!document.querySelector('.gm-tools-table img'),'日志不会作为 HTML 执行');assert(document.querySelector('.gm-tools-body').textContent.includes('合成日志正文')===false,'未点击时不读取日志正文');click('详情');await wait();assert(document.querySelector('.gm-log-detail pre').textContent.includes('<script>'),'点击单条详情后才读取正文且按文本显示');assert(document.querySelector('.gm-log-detail').textContent.includes('4096'),'正文截断有明确说明');assert(!window.fixtureUnsafe,'详情中的脚本不执行');
+  denied=true;click('刷新');await wait();assert(document.querySelector('.gm-tools-status').textContent.includes('没有读取权限')&&document.querySelector('.gm-tools-status').textContent.includes('保留上次数据'),'权限不足有独立提示并保留此前采样');denied=false;empty=true;click('刷新');await wait();assert(document.querySelector('.gm-tools-empty').textContent.includes('查询成功'),'确实为空与查询失败区分');empty=false;
+  legacy=true;click('刷新');await wait();assert(document.querySelector('.gm-tools-empty').textContent.includes('不支持'),'缺少日志组件时说明不支持');legacy=false;
+  click('关闭');await controller.open(linuxId,'processes');await wait();assert(document.querySelector('.gm-tools-body').textContent.includes('生存期平均值'),'Linux 的 CPU 统计口径独立说明');click('日志');await wait();assert(get('日志源').value==='journal','Linux 只提供可用 journal 源');assert(document.querySelector('.gm-tools-body').textContent.includes('当前账号可读'),'Linux 日志说明当前账号的可读范围');
+  const rect=document.querySelector('.gm-tools-dialog').getBoundingClientRect(),footer=document.querySelector('.gm-tools-footer').getBoundingClientRect();assert(rect.top>=0&&rect.bottom<=innerHeight+1&&rect.left>=0&&rect.right<=innerWidth+1&&footer.bottom<=innerHeight+1,'小窗口中内容可滚动且操作区保持可达');
+  slow=true;click('刷新');await settle();click('关闭');release();await settle();assert(!document.querySelector('.gm-tools-dialog').open&&!document.querySelector('.gm-tools-body').children.length,'关闭后迟到结果不会重新打开面板或展示内容');slow=false;
+  assert(calls.every(r=>r.type==='gmssh-tools-query'&&['capabilities','diagnostics','processes','services','logs','log-detail'].includes(r.data.tool)),'UI 只提交设备 ID、固定查询类型和受限选项');
+  out.textContent=checks.join('\n')+'\n全部通过';
+ }catch(error){out.textContent=checks.join('\n')+'\nFAIL '+error.message;}
+};
+</script></html>

@@ -21,6 +21,7 @@ from urllib.parse import unquote, urlsplit
 import paramiko
 
 from .desktop_operations import MAX_CHUNK, SSHPoolUnavailable, handle_operations, valid_access_token, wake_settings
+from .readonly_tools import now
 
 MAX_FRAME = 16 * 1024 * 1024
 MAX_INPUT = 16 * 1024
@@ -46,11 +47,22 @@ class MonitorDesktopPool:
         self.timeout = timeout
         self.changed = threading.Condition()
         self.clients = {}
+        self.last_result = {}
 
     def attach(self, client):
         with self.changed:
             self.clients[client] = {"monitor": True, "leases": 0}
+            self.last_result = {"code": "SSH_AUTHENTICATED", "sampledAt": now()}
             self.changed.notify_all()
+
+    def record_failure(self, code):
+        with self.changed:
+            self.last_result = {"code": code if code in {"BadHostKeyException", "AuthenticationException", "TimeoutError", "NoValidConnectionsError"} else "SSH_UNAVAILABLE", "sampledAt": now()}
+
+    def snapshot(self):
+        with self.changed:
+            borrowable = any(entry["monitor"] and client.get_transport() and client.get_transport().is_active() and client.get_transport().is_authenticated() for client, entry in self.clients.items())
+            return {**self.last_result, "borrowable": bool(borrowable)}
 
     def detach(self, client):
         with self.changed:
@@ -74,7 +86,7 @@ class MonitorDesktopPool:
         if close:
             client.close()
 
-    def acquire(self):
+    def acquire(self, timeout=None):
         def ready():
             for client, entry in reversed(self.clients.items()):
                 transport = client.get_transport()
@@ -82,7 +94,7 @@ class MonitorDesktopPool:
                     return client
             return None
         with self.changed:
-            client = self.changed.wait_for(ready, timeout=self.timeout)
+            client = self.changed.wait_for(ready, timeout=self.timeout if timeout is None else timeout)
             if client is None:
                 raise SSHPoolUnavailable("Connect this machine's monitoring session first")
             self.clients[client]["leases"] += 1

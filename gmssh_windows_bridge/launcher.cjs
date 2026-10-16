@@ -7,6 +7,8 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { createHash } = require('node:crypto');
 const { PairingManager, loopbackRequest } = require('./pairing.cjs');
+const { DeviceBackup, writeBackup, MAX_FILE } = require('./device-backup.cjs');
+const readonlyTools = require('./readonly-tools.cjs');
 const config = require('./launcher-config.json');
 const backends = [];
 const stopBackends = () => backends.forEach(child => child.kill('SIGTERM'));
@@ -22,9 +24,15 @@ app.on('quit', stopBackends);
 const entry = fs.readFileSync(path.join(__dirname, 'gmssh-entry.js'), 'utf8');
 const home = fs.readFileSync(path.join(__dirname, 'gmssh-home.js'), 'utf8');
 const pairingPage = fs.readFileSync(path.join(__dirname, 'gmssh-pairing.js'), 'utf8');
+const backupPage = fs.readFileSync(path.join(__dirname, 'gmssh-backup.js'), 'utf8');
+const toolsPage = fs.readFileSync(path.join(__dirname, 'gmssh-tools.js'), 'utf8');
+const qrPage = fs.readFileSync(path.join(__dirname, 'gmssh-qr.js'), 'utf8');
+const qrDecoder = fs.readFileSync(path.join(__dirname, 'jsQR.js'), 'utf8');
 const theme = fs.readFileSync(path.join(__dirname, 'gmssh-theme.css'), 'utf8');
 const viewerUrl = `http://127.0.0.1:${config.port}/`;
 const legacyBindings = [], windows = new Set();
+const backups = new WeakMap();
+const toolQueries = new WeakSet();
 let pairing, pairingAvailable = false, nativeApiPort;
 let vendorUpdateNotice;
 const indexUrl = pathToFileURL(path.join(config.vendorAsar, 'dist/index.html')).href;
@@ -34,6 +42,42 @@ autoUpdater.checkForUpdates = () => {};
 autoUpdater.quitAndInstall = () => {};
 const handle = ipcMain.handle.bind(ipcMain);
 ipcMain.handle = (channel, listener) => handle(channel, channel === 'render-to-main' ? async (event, request, ...args) => {
+  if(request?.type==='gmssh-tools-query'){
+    if(event.sender?.getURL().split('#')[0]!==indexUrl)return {status:'error',code:'UNTRUSTED_PAGE'};
+    if(toolQueries.has(event.sender))return {status:'error',code:'QUERY_BUSY'};
+    toolQueries.add(event.sender);
+    try{
+      const ports=await listener(event,{type:'get-port'});nativeApiPort=ports?.multiPort;
+      return {status:'ok',data:await readonlyTools.query({api:nativeRequest,pairing,legacy:legacyBindings,python:config.python,sender:event.sender},request.data)};
+    }catch{return {status:'error',code:'QUERY_FAILED'};}
+    finally{toolQueries.delete(event.sender);}
+  }
+  if(['gmssh-backup-list','gmssh-backup-export','gmssh-backup-open','gmssh-backup-preview','gmssh-backup-import','gmssh-backup-clear'].includes(request?.type)){
+    if(event.sender?.getURL().split('#')[0]!==indexUrl||!pairingAvailable)return {status:'error',message:'配置备份暂不可用，请检查本地管理端。'};
+    let backup;
+    try{
+      if(!backups.has(event.sender))backups.set(event.sender,new DeviceBackup({pairing,api:nativeRequest,changed:async()=>{for(const contents of windows)if(!contents.isDestroyed()&&contents.getURL().split('#')[0]===indexUrl)await inject(contents);}}));
+      backup=backups.get(event.sender);
+      if(request.type==='gmssh-backup-clear'){backup.clear();return {status:'ok'};}
+      const ports=await listener(event,{type:'get-port'});nativeApiPort=ports?.multiPort;
+      if(request.type==='gmssh-backup-list')return {status:'ok',data:await backup.list()};
+      if(request.type==='gmssh-backup-open'){
+        if(backup.busy)throw Error('正在导入，请等待操作结束。');
+        const picked=await dialog.showOpenDialog({title:'导入设备配置',properties:['openFile'],filters:[{name:'GMSSH 配置备份',extensions:['gmsshbackup','json']}]});
+        if(picked.canceled||!picked.filePaths.length)return {status:'cancelled'};
+        const file=picked.filePaths[0],stat=fs.statSync(file);if(!stat.isFile()||stat.size>MAX_FILE)throw Error('请选择不超过 8 MiB 的 GMSSH 配置备份。');
+        return {status:'ok',data:{...backup.open(fs.readFileSync(file)),filename:path.basename(file)}};
+      }
+      if(request.type==='gmssh-backup-preview')return {status:'ok',data:await backup.inspect(request.data?.password)};
+      if(request.type==='gmssh-backup-import')return {status:'ok',data:await backup.import(request.data||{})};
+      const saved=await dialog.showSaveDialog({title:'导出所选设备配置',defaultPath:'GMSSH-devices-'+new Date().toISOString().slice(0,10)+(request.data?.encrypted?'.gmsshbackup':'.json'),filters:[{name:'GMSSH 配置备份',extensions:request.data?.encrypted?['gmsshbackup']:['json']}]});
+      if(saved.canceled||!saved.filePath)return {status:'cancelled'};
+      const body=await backup.export(request.data?.ids,request.data?.encrypted,request.data?.password);
+      try{writeBackup(saved.filePath,body);}finally{body.fill(0);}
+      return {status:'ok',data:{count:request.data.ids.length,filename:path.basename(saved.filePath)}};
+    }catch(error){return {status:'error',message:error instanceof Error?error.message:'配置转移未完成，请重新核对备份。'};}
+    finally{if(request?.data&&typeof request.data==='object'){delete request.data.password;delete request.data.auth;}}
+  }
   if (['gmssh-pair-file','gmssh-pair-paste','gmssh-pair-text','gmssh-pair-manual','gmssh-pair-edit','gmssh-pair-clear','gmssh-pair-connect','gmssh-pair-desktop-auth'].includes(request?.type)) {
     if (event.sender?.getURL().split('#')[0] !== indexUrl || !pairingAvailable) return {status:'error',message:'接入向导暂不可用，请检查本地连接配置。'};
     try {
@@ -100,7 +144,7 @@ app.on('browser-window-created', (_event, window) => {
   };
   contents.on('did-finish-load', () => {
     if (contents.getURL().split('#')[0] !== indexUrl) return;
-    windows.add(contents);contents.once('destroyed',()=>windows.delete(contents));
+    windows.add(contents);contents.once('destroyed',()=>{windows.delete(contents);backups.get(contents)?.clear();});
     inject(contents).catch(error => {
       dialog.showMessageBox(window, { type: 'error', message: 'Windows 桌面入口加载失败',
         detail: error instanceof Error ? error.message : '请检查 GMSSH 版本和本地启动器配置。' });
@@ -115,8 +159,8 @@ async function inject(contents) {
   const devices=bindings.map(value=>({machineId:value.machineId,viewerUrl:value.viewerUrl,target:value.target,targetPort:value.monitor?.targetPort,accessToken:value.accessToken}));
   const policies=bindings.filter(value=>value.monitor).map(value=>({bridgePort:value.monitor.port,username:value.monitor.username}));
   const first=devices[0]||{viewerUrl};
-  const bootstrap=entry+'\nif(typeof installWindowsDesktopEntries==="function")installWindowsDesktopEntries('+JSON.stringify(entries)+');else if('+entries.length+')installWindowsDesktopEntry('+JSON.stringify(entries[0]||{})+');\n'+home+'\ninstallWindowsMachinePolicy('+JSON.stringify(policies)+');\nglobalThis.gmsshHomeController=installGMSSHHome('+JSON.stringify({...first,viewerUrl,css:theme,devices})+');\n'+pairingPage+'\nif(typeof installGMSSHPairing==="function")installGMSSHPairing();\n'+(vendorUpdateNotice?'installWindowsUpdateNotice('+JSON.stringify(vendorUpdateNotice)+');\n':'')+'void 0;';
-  await contents.executeJavaScript(bootstrap);
+  const bootstrap=entry+'\nif(typeof installWindowsDesktopEntries==="function")installWindowsDesktopEntries('+JSON.stringify(entries)+');else if('+entries.length+')installWindowsDesktopEntry('+JSON.stringify(entries[0]||{})+');\n'+home+'\ninstallWindowsMachinePolicy('+JSON.stringify(policies)+');\nglobalThis.gmsshHomeController=installGMSSHHome('+JSON.stringify({...first,viewerUrl,css:theme,devices})+');\n'+pairingPage+'\nif(typeof installGMSSHPairing==="function")installGMSSHPairing();\n'+backupPage+'\nif(typeof installGMSSHBackup==="function")installGMSSHBackup('+JSON.stringify({viewerUrl})+');\n'+(vendorUpdateNotice?'installWindowsUpdateNotice('+JSON.stringify(vendorUpdateNotice)+');\n':'')+'void 0;';
+  await contents.executeJavaScript('(()=>{const module={exports:{}};const exports=module.exports;'+qrDecoder+'\nwindow.jsQR=module.exports;})();\n'+qrPage+'\n'+bootstrap+'\n'+toolsPage+'\nif(typeof installGMSSHTools==="function")installGMSSHTools('+JSON.stringify({viewerUrl})+');void 0;');
 }
 
 async function nativeRequest(endpoint,data) {

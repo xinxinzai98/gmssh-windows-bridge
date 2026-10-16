@@ -140,10 +140,16 @@ def _build_launcher(config, output):
         "package.json": json.dumps({"name": "GMSSH", "version": "2.0.4", "main": "launcher.cjs"}).encode(),
         "launcher.cjs": (here / "launcher.cjs").read_bytes(),
         "pairing.cjs": (here / "pairing.cjs").read_bytes(),
+        "device-backup.cjs": (here / "device-backup.cjs").read_bytes(),
+        "readonly-tools.cjs": (here / "readonly-tools.cjs").read_bytes(),
         "launcher-config.json": json.dumps(payload, ensure_ascii=False).encode(),
         "gmssh-entry.js": (here / "desktop_web/gmssh-entry.js").read_bytes(),
         "gmssh-home.js": (here / "desktop_web/gmssh-home.js").read_bytes(),
         "gmssh-pairing.js": (here / "desktop_web/gmssh-pairing.js").read_bytes(),
+        "gmssh-backup.js": (here / "desktop_web/gmssh-backup.js").read_bytes(),
+        "gmssh-tools.js": (here / "desktop_web/gmssh-tools.js").read_bytes(),
+        "gmssh-qr.js": (here / "desktop_web/gmssh-qr.js").read_bytes(),
+        "jsQR.js": (here / "desktop_web/vendor/jsQR.js").read_bytes(),
         "gmssh-theme.css": (here / "desktop_web/gmssh-theme.css").read_bytes(),
     })
     brand = here / 'brand/gmssh.icns'
@@ -158,6 +164,7 @@ def _build_launcher(config, output):
     info["CFBundleDisplayName"] = output.stem
     # Electron finds its existing helper bundles using the vendor's CFBundleName.
     info['NSLocalNetworkUsageDescription'] = '连接你添加的局域网电脑，提供监控、终端、文件传输和远程桌面。'
+    info['NSCameraUsageDescription'] = '仅在你点击扫码后，使用摄像头在本机识别电脑连接二维码。'
     info.pop("CFBundleURLTypes", None)
     info["ElectronAsarIntegrity"]["Resources/app.asar"]["hash"] = digest
     (contents / "Info.plist").write_bytes(plistlib.dumps(info))

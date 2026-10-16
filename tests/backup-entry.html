@@ -1,0 +1,45 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>设备配置转移回归</title>
+<style>body{background:#171719;color:#eee;font:14px system-ui;padding:24px}pre{white-space:pre-wrap}.machine-manage{display:block!important}.machine-head{display:flex!important;justify-content:space-between;align-items:center;background:#242426;padding:12px}.head-right{display:flex;gap:12px}</style>
+<h1>设备配置转移 · 本地模拟</h1><p>只使用合成设备，不读取真实配置、密码、私钥或远端电脑。</p><button id="run">运行检查</button> <button id="preview">查看导出预览</button><pre id="result">待运行</pre>
+<div class="machine-manage"><div class="machine-head"><strong>全部分组</strong><div class="head-right"></div></div></div>
+<script src="../desktop-web/public/gmssh-backup.js"></script><script>
+const devices=[{id:'1'.repeat(32),name:'演示工作站',kind:'windows',address:'192.0.2.42',port:22,username:'gmssh',group:'实验室'},{id:'2'.repeat(32),name:'演示服务器',kind:'linux',address:'2001:db8::42',port:2222,username:'tester',group:'服务器'}];
+const imported=devices.map((device,index)=>({...device,ref:device.id,authType:index?'ca':'pass',hasCredentials:!index,status:'new',bastion:''})).concat({...devices[1],ref:'3'.repeat(32),name:'已存在设备',status:'existing',hasCredentials:true,authType:'pass'});
+let encryptedFile=true,failImport=false,slowList,releaseList,calls=[];
+window.electronAPI={invoke:async(channel,request)=>{
+  calls.push(structuredClone(request));const data=request.data;
+  if(request.type==='gmssh-backup-clear')return {status:'ok'};
+  if(request.type==='gmssh-backup-list'){if(slowList)await new Promise(resolve=>releaseList=resolve);return {status:'ok',data:devices};}
+  if(request.type==='gmssh-backup-export')return {status:'ok',data:{count:data.ids.length,filename:data.encrypted?'测试.gmsshbackup':'测试.json'}};
+  if(request.type==='gmssh-backup-open')return {status:'ok',data:{encrypted:encryptedFile,filename:'本地演示备份.gmsshbackup'}};
+  if(request.type==='gmssh-backup-preview')return {status:'ok',data:{id:'preview',createdAt:'2026-01-01T00:00:00Z',canRememberDesktop:true,devices:imported}};
+  if(request.type==='gmssh-backup-import')return {status:'ok',data:{results:data.ids.map((ref,index)=>({ref,status:failImport&&index===1?'failed':'imported',message:'模拟保存失败'}))}};
+  return {status:'error',message:'Unexpected fixture operation'};
+}};
+const ready=fetch('../desktop-web/public/gmssh-theme.css').then(reply=>reply.text()).then(css=>{const style=document.createElement('style');style.textContent=css;document.head.append(style);return installGMSSHBackup({viewerUrl:location.origin+'/'});});
+document.getElementById('preview').onclick=async()=>{const controller=await ready;await controller.openExport();};
+document.getElementById('run').onclick=async()=>{
+ const checks=[],assert=(value,message)=>{if(!value)throw Error(message);checks.push('PASS '+message);},settle=()=>new Promise(resolve=>setTimeout(resolve,20));
+ const get=label=>document.querySelector('[aria-label="'+label+'"]'),click=text=>[...document.querySelectorAll('.gm-backup-dialog button')].find(node=>node.textContent===text).click();
+ const result=document.getElementById('result');
+ try{
+  const controller=await ready;assert(document.querySelectorAll('#gmssh-backup-tools button').length===2,'首页有导出配置和导入配置两个明确入口');
+  assert(installGMSSHBackup({viewerUrl:location.origin+'/'})===controller&&document.querySelectorAll('#gmssh-backup-tools').length===1,'绑定更新时复用转移窗口，不重复创建入口或打断导入结果');
+  await controller.openExport();assert(!document.querySelector('.gm-backup-footer .primary').disabled===false,'未选择设备时不能导出');
+  get('选择 演示工作站').click();assert(document.querySelector('.gm-backup-footer .primary').textContent==='导出所选（1）','可以只选择指定的一台设备');
+  get('搜索备份设备').value='2001:db8';get('搜索备份设备').dispatchEvent(new Event('input'));assert([...document.querySelectorAll('.gm-backup-device')].filter(node=>!node.hidden).length===1,'搜索同时支持完整 IPv6 地址');
+  click('选中搜索结果');assert(document.querySelectorAll('.gm-backup-device input[type=checkbox]:checked').length===2,'搜索结果批量选择保留此前已选设备');
+  get('加密备份（含 SSH 密码和私钥）').click();get('备份口令').value='synthetic-backup-password';get('再次输入备份口令').value='different';get('再次输入备份口令').dispatchEvent(new Event('input'));assert(document.querySelector('.gm-backup-footer .primary').disabled,'两次备份口令不一致不能保存');
+  get('再次输入备份口令').value='synthetic-backup-password';get('再次输入备份口令').dispatchEvent(new Event('input'));document.querySelector('.gm-backup-footer .primary').click();await settle();
+  const saved=calls.findLast(request=>request.type==='gmssh-backup-export');assert(saved.data.ids.length===2&&saved.data.encrypted&&saved.data.password==='synthetic-backup-password','仅提交勾选的设备 ID 和显式备份口令，不提交原设备凭据');assert(!get('备份口令').value&&!get('再次输入备份口令').value,'保存后清除备份口令');
+  click('关闭');assert(!document.querySelector('.gm-backup-dialog').open,'关闭窗口清除临时选择');
+  await controller.openImport();assert(get('解锁备份口令')&&document.querySelector('.gm-backup-list').children.length===0,'加密文件先解锁，未解锁不展示设备');get('解锁备份口令').value='synthetic-backup-password';click('解锁并预览');await settle();
+  assert(get('选择 已存在设备').disabled&&!get('选择 已存在设备').checked,'已存在设备默认保留，不覆盖原连接');assert(document.querySelector('.gm-backup-footer .primary').disabled,'普通配置缺少 SSH 私钥时不能导入');
+  get('演示服务器 SSH 私钥').value='synthetic-key';get('演示服务器 SSH 私钥').dispatchEvent(new Event('input'));get('演示服务器 私钥口令（可选）').value='synthetic-key-pass';failImport=true;document.querySelector('.gm-backup-footer .primary').click();await settle();
+  const restored=calls.findLast(request=>request.type==='gmssh-backup-import');assert(restored.data.ids.length===2&&restored.data.auth['2'.repeat(32)].keyPass==='synthetic-key-pass','导入只处理所选设备，并为缺少凭据的记录提供补充字段');assert(document.querySelector('[role=status]').textContent.includes('新增 1 台')&&document.querySelector('[role=status]').textContent.includes('失败 1 台'),'部分失败保留明确结果和重试入口');assert(!get('演示服务器 SSH 私钥').value&&!get('演示服务器 私钥口令（可选）').value,'导入提交后清除补充的凭据');
+  const rect=document.querySelector('.gm-backup-dialog').getBoundingClientRect();assert(rect.top>=0&&rect.bottom<=innerHeight+1&&rect.left>=0&&rect.right<=innerWidth+1,'小窗口中对话框与固定操作区保持可达');click('关闭');
+  slowList=true;const loading=controller.openExport();await settle();click('关闭');releaseList();await loading;assert(!document.querySelector('.gm-backup-dialog').open&&!document.querySelector('.gm-backup-list').children.length,'关闭后迟到的读取结果不会重新打开备份窗口');slowList=false;
+  result.textContent=checks.join('\n')+'\n全部通过';
+ }catch(error){result.textContent=checks.join('\n')+'\nFAIL '+error.message;}
+};
+</script></html>

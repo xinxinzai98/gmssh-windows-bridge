@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Develop 0.4.0a15 locally: add per-device connection diagnostics and read-only process, service and log tools for Windows and Linux. Reuse authenticated monitoring SSH or an existing native Linux session; no automatic login, provisioning, privilege changes or new remote listener.
+- Separate TCP reachability, pinned identity, observed authentication, monitoring, SFTP, RustDesk handshake, approval and first-frame/frame reception. Export only allowlisted versions, stage codes and timestamps; never include addresses, credentials or log contents.
+- Bound and validate queries, send packaged Windows scripts over SSH stdin to avoid default-shell command-length limits, load log details on demand and retain explicitly stale data after failed refreshes. Display unsupported tools and CPU/memory sampling definitions explicitly.
+- Develop 0.4.0a14 locally: export and import selected Linux/Windows connections, preserving groups and selected bastion dependencies. Ordinary files omit credentials; optional backups encrypt saved SSH passwords and keys with a user-supplied passphrase. Imports preview selections, retain existing devices and report partial failures.
+- Generate standard text QR codes in the Windows sharing panel, with copy/save image actions; scan a camera or a local image in the controller's existing Add Machine flow. Decoding is local and still requires the normal device-identity preview before enrollment.
 - Develop 0.4.0a13 locally: clarify existing-device enrollment and preserve its displayed name; add masked direct code paste and public connection-file drag-in.
 - Probe the authenticated remote SSH TCP endpoint instead of presenting loopback bridge latency; keep unknown and failed collection states explicit.
 - Add a scrollable device-details dialog and complete per-device actions for narrow windows.

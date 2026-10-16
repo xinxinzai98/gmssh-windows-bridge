@@ -17,6 +17,7 @@ import zipfile
 from pathlib import Path
 
 import paramiko
+from . import readonly_tools
 
 MAX_CONTROL = 8192
 MAX_CHUNK = 65536
@@ -136,7 +137,7 @@ def send_reply(websocket, request_id=None, **fields):
     websocket.send(json.dumps(fields, ensure_ascii=False))
 
 
-def run_command(client, command, timeout):
+def run_command(client, command, timeout, max_output=MAX_CHUNK, stdin=None):
     """Run only packaged allowlisted commands; discard remote stderr details."""
     deadline = time.monotonic() + timeout
     channel = client.get_transport().open_session(timeout=timeout)
@@ -145,6 +146,11 @@ def run_command(client, command, timeout):
     try:
         channel.settimeout(timeout)
         channel.exec_command(command)
+        if stdin is not None:
+            if not isinstance(stdin, bytes) or len(stdin) > MAX_CHUNK:
+                raise OperationError("查询脚本超过限制。")
+            channel.sendall(stdin)
+            channel.shutdown_write()
         while True:
             if time.monotonic() >= deadline:
                 raise TimeoutError()
@@ -152,7 +158,7 @@ def run_command(client, command, timeout):
                 output.extend(channel.recv(32768))
             if channel.recv_stderr_ready():
                 error_size += len(channel.recv_stderr(32768))
-            if len(output) > MAX_CHUNK or error_size > MAX_CHUNK:
+            if len(output) > max_output or error_size > MAX_CHUNK:
                 raise OperationError("Windows 返回内容超过限制。")
             if channel.exit_status_ready() and not channel.recv_ready() and not channel.recv_stderr_ready():
                 if channel.recv_exit_status() != 0:
@@ -164,7 +170,7 @@ def run_command(client, command, timeout):
 
 
 class OperationsSession:
-    def __init__(self, client, websocket, timeout, pool=None, wake=None):
+    def __init__(self, client, websocket, timeout, pool=None, wake=None, config=None):
         self.client = client
         self.websocket = websocket
         self.timeout = timeout
@@ -173,6 +179,7 @@ class OperationsSession:
         self.wake = wake
         self.sftp = None
         self.upload = None
+        self.config = config
 
     def ssh(self):
         if self.client is None:
@@ -192,6 +199,13 @@ class OperationsSession:
                 channel.close()
                 raise
         return self.sftp
+
+    def ssh_nowait(self):
+        if self.client is None:
+            if self.pool is None:
+                raise SSHPoolUnavailable()
+            self.lease, self.client = self.pool.acquire(timeout=0)
+        return self.client
 
     def exists(self, path):
         try:
@@ -319,12 +333,20 @@ class OperationsSession:
                   "download-folder": {"id", "op", "path"}, "mkdir": {"id", "op", "path"},
                   "upload-start": {"id", "op", "path", "name", "size"}, "upload-finish": {"id", "op"},
                   "upload-cancel": {"id", "op"}, "power": {"id", "op", "action"}, "wake": {"id", "op"},
-                  "system-info": {"id", "op"}}
+                  "system-info": {"id", "op"}, "readonly": {"id", "op", "tool", "options"},
+                  "diagnostics": {"id", "op"}}
         if not isinstance(op, str) or op not in fields or set(data) != fields[op]:
             raise OperationError("操作类型或请求字段无效。")
         if self.upload is not None and (op not in {"upload-finish", "upload-cancel"} or request_id != self.upload["id"]):
             raise OperationError("请先使用当前上传 id 完成或取消传输。")
-        if op == "system-info":
+        if op == "readonly":
+            readonly_tools.options_for(data["tool"], data["options"])
+            result = readonly_tools.query(self.ssh_nowait(), data["tool"], data["options"], self.timeout, run_command)
+            send_reply(self.websocket, request_id, ok=True, result=result)
+        elif op == "diagnostics":
+            result = readonly_tools.diagnostics(self, self.config, run_command, SYSTEM_COMMAND)
+            send_reply(self.websocket, request_id, ok=True, result=result)
+        elif op == "system-info":
             info = json.loads(run_command(self.ssh(), SYSTEM_COMMAND, self.timeout).decode("utf-8-sig"))
             if not isinstance(info, dict) or set(info) != {"computer", "os", "version", "cpu", "cores", "memory", "uptime", "processes", "disks", "network"}:
                 raise OperationError("设备信息格式无效。")
@@ -422,7 +444,7 @@ def handle_operations(config, websocket, slots):
                 len(token) > 128 or not hmac.compare_digest(token.encode("utf-8"), expected.encode("ascii"))):
             send_reply(websocket, type="error", message="本机操作授权已失效，请重新从启动器打开。", code="DesktopAccessError")
             return
-        session = OperationsSession(None, websocket, config.timeout, pool=getattr(config, "monitor_pool", None), wake=wake_settings(config))
+        session = OperationsSession(None, websocket, config.timeout, pool=getattr(config, "monitor_pool", None), wake=wake_settings(config), config=config)
         send_reply(websocket, type="operations_ready")
         while True:
             raw = websocket.recv(timeout=60 if session.upload is not None else 300)
@@ -441,10 +463,10 @@ def handle_operations(config, websocket, slots):
                 except Exception:
                     pass
                 if isinstance(error, SSHPoolUnavailable):
-                    send_reply(websocket, request_id, ok=False, message="请先在 GMSSH 连接这台机器的监控，再打开文件或电源操作。", code="SSHPoolUnavailable")
+                    send_reply(websocket, request_id, ok=False, message="请先在 GMSSH 连接这台机器的监控，再打开工具。", code="SSHPoolUnavailable")
                 else:
-                    message = str(error) if isinstance(error, OperationError) else "Windows 文件、电源或唤醒请求失败，请检查权限和连接。"
-                    send_reply(websocket, request_id, ok=False, message=message)
+                    message = str(error) if isinstance(error, (OperationError, readonly_tools.ReadonlyInputError)) else "Windows 请求失败，请检查权限和连接。"
+                    send_reply(websocket, request_id, ok=False, message=message, code="INVALID_QUERY" if isinstance(error, readonly_tools.ReadonlyInputError) else "QUERY_FAILED")
     except Exception:
         try:
             send_reply(websocket, type="error", message="操作通道请求无效、超时或连接已关闭。", code="OperationsUnavailable")

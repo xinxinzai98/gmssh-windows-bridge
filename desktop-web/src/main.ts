@@ -181,6 +181,9 @@ get('read-local').onclick=async()=>{try{get<HTMLTextAreaElement>('clipboard-text
 
 const filePanel=installFilePanel({token:()=>accessToken,operations,available:()=>filesAvailable,releaseInputs});
 window.addEventListener('message',event=>{
+  if(embedded&&event.source===window.parent&&event.data?.type==='gmssh-desktop-state-request'&&typeof event.data.requestId==='string'&&event.data.requestId.length<=80){
+    window.parent.postMessage({type:'gmssh-desktop-state',requestId:event.data.requestId,data:client.diagnostics.snapshot()},event.origin==='null'?'*':event.origin);return;
+  }
   if(event.source!==window.parent||event.data?.type!=='gmssh-desktop-tool')return;
   if(event.data.tool==='files')filePanel.open();
   else if(event.data.tool==='power')get('power').click();

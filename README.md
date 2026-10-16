@@ -10,12 +10,13 @@
   <a href="https://github.com/xinxinzai98/gmssh-windows-bridge/releases/tag/v0.4.0a8">下载 Alpha 预览版</a> ·
   <a href="docs/getting-started.md">安装指南</a> ·
   <a href="docs/cli.md">CLI 文档</a> ·
+  <a href="docs/upgrade-plan.md">升级方案</a> ·
   <a href="CONTRIBUTING.md">参与贡献</a>
 </p>
 
 在 GMSSH / 极目 Linux 桌面中统一使用 Windows 的**资源监控、PowerShell、文件互传和远程桌面**。Windows 端提供一体化后台服务与托盘，macOS 端提供增强设备列表和桌面工作区，并保留原有 Linux 设备入口。
 
-> **已发布安装包：0.4.0a8 · Alpha。源码开发版本：0.4.0a13。** 本项目是非官方兼容扩展，当前基于 GMSSH 2.0.4。开发候选新增的接入、状态、文件队列和中文输入能力不包含在下方 0.4.0a8 下载包中，具体边界见[安装指南](docs/getting-started.md)与[验证记录](docs/validation.md)。
+> **已发布安装包：0.4.0a8 · Alpha。源码开发版本：0.4.0a15。** 本项目是非官方兼容扩展，当前基于 GMSSH 2.0.4。开发候选新增的接入、状态、文件队列、中文输入、设备配置转移、二维码和只读系统工具不包含在下方 0.4.0a8 下载包中，具体边界见[安装指南](docs/getting-started.md)与[验证记录](docs/validation.md)。
 
 ## 主要功能
 
@@ -27,6 +28,7 @@
 | 文件互传 | Windows 使用 SSH/SFTP，Linux 沿用 GMSSH 原生文件管理入口 |
 | 远程桌面 | 顶部设备标签、键鼠控制、文本剪贴板、屏幕选择、画质及文件侧栏 |
 | Windows 服务端 | 离线 OpenSSH、内部桌面引擎、托盘状态、连接信息导出与密码设置 |
+| 诊断与只读工具（开发候选） | 分阶段连接诊断、脱敏报告、进程、服务、限时日志与按需详情；见[工具说明](docs/read-only-tools.md) |
 
 ## 下载
 

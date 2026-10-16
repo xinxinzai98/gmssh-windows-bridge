@@ -1,0 +1,26 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>通用连接二维码回归</title>
+<style>body{background:#171719;color:#eee;font:15px system-ui;padding:24px}pre{white-space:pre-wrap;overflow-wrap:anywhere}.fixture-actions{display:flex;gap:12px}</style>
+<h1>连接二维码 · 本地模拟</h1><p>使用 Go 生成的合成二维码图片。摄像头仅模拟，不访问真实硬件，不连接设备。</p><div class="fixture-actions"><button id="run">运行检查</button><button id="preview">查看扫码预览</button><button id="sharing">查看通用二维码</button></div><pre id="result">待运行</pre><pre id="decoded"></pre><img id="sample" src="fixtures/synthetic-connection-qr.png" alt="合成设备的公开连接二维码" width="400" hidden>
+<script src="../desktop-web/public/vendor/jsQR.js"></script><script src="../desktop-web/public/gmssh-qr.js"></script><script>
+const theme=fetch('../desktop-web/public/gmssh-theme.css').then(reply=>reply.text()).then(css=>{const style=document.createElement('style');style.textContent=css;document.head.append(style);});
+let reads=0,stops=0,cameraMode='ready',releaseCamera;
+const camera=()=>{reads++;if(cameraMode==='denied'){const error=Error();error.name='NotAllowedError';return Promise.reject(error);}const stream=new MediaStream();stream.getTracks=()=>[{stop(){stops++;}}];return cameraMode==='slow'?new Promise(resolve=>releaseCamera=()=>resolve(stream)):Promise.resolve(stream);};
+Object.defineProperty(navigator,'mediaDevices',{configurable:true,value:{getUserMedia:camera}});HTMLMediaElement.prototype.play=async()=>{};
+document.getElementById('preview').onclick=async()=>{await theme;gmsshReadConnectionQR({onResult:text=>document.getElementById('decoded').textContent=text});};
+document.getElementById('sharing').onclick=()=>document.getElementById('sample').hidden=false;
+document.getElementById('run').onclick=async()=>{
+ const result=document.getElementById('result'),checks=[],assert=(value,message)=>{if(!value)throw Error(message);checks.push('PASS '+message);},settle=()=>new Promise(resolve=>setTimeout(resolve,30));
+ const click=text=>[...document.querySelectorAll('.gm-qr-dialog button')].find(node=>node.textContent===text).click();
+ const file=async()=>{const body=await fetch('fixtures/synthetic-connection-qr.png').then(reply=>reply.blob()),data=new DataTransfer();data.items.add(new File([body],'synthetic-qr.png',{type:'image/png'}));const input=document.querySelector('.gm-qr-dialog input');input.files=data.files;input.dispatchEvent(new Event('change'));};
+ try{
+  await theme;let decoded;gmsshReadConnectionQR({onResult:value=>decoded=value});assert(reads===0,'打开扫码窗口不会自动开启摄像头');assert(document.querySelector('.gm-qr-dialog').textContent.includes('选择二维码图片'),'摄像头和二维码图片入口都可用');await file();for(let i=0;i<50&&!decoded;i++)await settle();
+  const expected=await fetch('fixtures/synthetic-connection-qr.json').then(reply=>reply.json());assert(decoded===expected.text,'Windows 编码器生成的 PNG 可解出原始通用配置文本');assert(!document.querySelector('.gm-qr-dialog'),'成功识别后关闭扫码窗口，交给正常接入预览');
+  cameraMode='ready';gmsshReadConnectionQR({onResult(){throw Error('unexpected camera result');}});click('开始摄像头');await settle();assert(reads===1,'摄像头仅在主动点击后请求');click('取消');assert(stops===1,'关闭扫码窗口停止全部摄像头轨道');
+  cameraMode='slow';gmsshReadConnectionQR({onResult(){}});click('开始摄像头');await settle();click('取消');releaseCamera();await settle();assert(stops===2&&!document.querySelector('.gm-qr-dialog'),'取消后迟到的摄像头请求也会停止，不重新打开画面');
+  cameraMode='denied';gmsshReadConnectionQR({onResult(){}});click('开始摄像头');await settle();assert(document.querySelector('.gm-qr-dialog [role=status]').textContent.includes('二维码图片'),'未授权摄像头时保留图片识别入口');click('取消');
+  const original=window.jsQR;window.jsQR=()=>({data:'https://untrusted.invalid/'});let accepted=false;gmsshReadConnectionQR({onResult(){accepted=true;}});await file();for(let i=0;i<30&&!document.querySelector('.gm-qr-dialog [role=status]').textContent.includes('不是 GMSSH');i++)await settle();window.jsQR=original;assert(!accepted&&document.querySelector('.gm-qr-dialog [role=status]').textContent.includes('不是 GMSSH'),'无关链接不会自动打开或进入接入流程');click('取消');
+  gmsshReadConnectionQR({onResult(){}});const rect=document.querySelector('.gm-qr-dialog').getBoundingClientRect();assert(rect.left>=0&&rect.right<=innerWidth+1&&rect.bottom<=innerHeight+1,'扫码窗口保持在当前视口范围内');click('取消');
+  result.textContent=checks.join('\n')+'\n全部通过';
+ }catch(error){window.gmsshQRReader?.close();result.textContent=checks.join('\n')+'\nFAIL '+error.message;}
+};
+</script></html>

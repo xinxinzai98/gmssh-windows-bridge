@@ -43,6 +43,8 @@ async function launch({ monitoring = true, failure, terminal = false, keychain =
       if (name === 'node:child_process') return { spawn };
       if (name === 'node:fs') return { readFileSync: () => '/* synthetic page entry */' };
       if (name === './launcher-config.json') return config;
+      if (name === './device-backup.cjs') return require('../gmssh_windows_bridge/device-backup.cjs');
+      if (name === './readonly-tools.cjs') return require('../gmssh_windows_bridge/readonly-tools.cjs');
       if (name === './pairing.cjs') {
         const module=require('../gmssh_windows_bridge/pairing.cjs');
         if(!adopted)return module;
@@ -107,7 +109,7 @@ test('page injection returns a value Electron can clone across processes', async
   contents.getURL=()=> 'file:///synthetic/app.asar/dist/index.html#/home';
   contents.send=()=>{};
   contents.executeJavaScript=async code=>{
-    value=vm.runInNewContext(code,{installWindowsDesktopEntry:()=>({open(){}}),installWindowsMachinePolicy:()=>{},installGMSSHHome:()=>({refresh(){}})});
+    value=vm.runInNewContext(code,{window:{},installWindowsDesktopEntry:()=>({open(){}}),installWindowsMachinePolicy:()=>{},installGMSSHHome:()=>({refresh(){}})});
     structuredClone(value);
   };
   result.app.emit('browser-window-created',{}, {webContents:contents}); contents.emit('did-finish-load');
@@ -165,6 +167,14 @@ test('copies only an address requested by the trusted native home page', async (
   result.app.emit('will-quit');
 });
 
+test('read-only tool IPC rejects remote pages before querying any device',async()=>{
+  const result=await launch();let delegated=0;
+  result.ipcMain.handle('render-to-main',async()=>{delegated++;return {multiPort:5000};});
+  const handler=result.handlers.get('render-to-main');
+  const reply=await handler({sender:{getURL:()=> 'https://untrusted.invalid/'}},{type:'gmssh-tools-query',data:{machineId:'1'.repeat(32),tool:'services',options:{limit:50,search:'',sort:'name'}}});
+  assert.equal(reply.status,'error');assert.equal(reply.code,'UNTRUSTED_PAGE');assert.equal(delegated,0);result.app.emit('will-quit');
+});
+
 test('starts an empty controller without a remote target, and restricts enrollment IPC to its native home',async()=>{
   const result=await launch({monitoring:false,pairingOnly:true});
   assert.equal(result.imported,true);assert.equal(result.children.length,1);
@@ -184,6 +194,7 @@ test('untrusted pages cannot read enrollment clipboard, and invalid clipboard co
   const handler=result.handlers.get('render-to-main');
   for(const url of ['https://untrusted.invalid/','http://127.0.0.1:22256/']) {
     assert.equal((await handler({sender:{getURL:()=>url}},{type:'gmssh-pair-paste'})).status,'error');
+    for(const type of ['gmssh-backup-list','gmssh-backup-open','gmssh-backup-export','gmssh-backup-preview','gmssh-backup-import','gmssh-backup-clear'])assert.equal((await handler({sender:{getURL:()=>url}},{type,data:{ids:['1'.repeat(32)],password:'synthetic-only'}})).status,'error');
     for(const type of ['gmssh-pair-manual','gmssh-pair-edit','gmssh-pair-text'])assert.equal((await handler({sender:{getURL:()=>url}},{type,data:{target:'2001:db8::42',machineId:'1'.repeat(32),text:'synthetic-code'}})).status,'error');
   }
   assert.equal(result.clipboardReads(),0);

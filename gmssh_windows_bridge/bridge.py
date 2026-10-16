@@ -137,6 +137,9 @@ class Session(paramiko.ServerInterface):
                            allow_agent=False, look_for_keys=False)
         except (paramiko.SSHException, OSError) as exc:
             remote.close()
+            pool = getattr(self.config, "desktop_sessions", None)
+            if pool is not None and hasattr(pool, "record_failure"):
+                pool.record_failure(type(exc).__name__)
             LOG.warning("Upstream connection failed (%s)", type(exc).__name__)
             return paramiko.AUTH_FAILED
         if self.remote:

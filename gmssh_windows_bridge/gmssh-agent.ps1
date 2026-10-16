@@ -151,8 +151,9 @@ $connectStatus = New-AgentLabel $connectCard '正在读取…' 18 45 164 27
 $connectStatus.Font = New-Object Drawing.Font('Segoe UI', 13, [Drawing.FontStyle]::Bold)
 $passwordLabel = if ($state.unifiedPassword) { '修改连接密码' } else { '修改桌面密码' }
 $copyLabel = if ($state.unifiedPassword) { '复制连接码' } else { '复制连接信息' }
-$copy = New-AgentButton $panel $copyLabel 24 344 288 42 $true
-$change = New-AgentButton $panel $passwordLabel 328 344 288 42
+$copy = New-AgentButton $panel $copyLabel 24 344 184 42 $true
+$share = New-AgentButton $panel '二维码分享' 220 344 184 42
+$change = New-AgentButton $panel $passwordLabel 416 344 200 42
 $capabilityText = if ($state.unifiedPassword) { "连接码可反复使用，仅交给信任的人。`r`n修改连接密码或重置连接码后，旧码失效。" } else { "键鼠、文本剪贴板通过桌面端；文件通过 SSH。`r`n可用性以控制端连接为准。" }
 $capabilityNote = New-AgentLabel $panel $capabilityText 24 394 592 36
 $capabilityNote.ForeColor = $muted
@@ -242,6 +243,7 @@ $password = $menu.Items.Add($passwordLabel); $password.Add_Click({ Invoke-AgentA
 if ($state.unifiedPassword) { $resetCode = $menu.Items.Add('重置连接码'); $resetCode.Add_Click({ Invoke-AgentAction ResetCode }) }
 $publicCopy = $menu.Items.Add('复制普通连接信息（不含密码）')
 $publicCopy.Add_Click({ try { [Windows.Forms.Clipboard]::SetText(((Get-GMSSHConnectionInfo) | ConvertTo-Json -Depth 5)); Add-AgentActivity '公开连接信息已复制，不含连接码或密码。' } catch { Add-AgentActivity '公开连接信息无法复制。' } })
+$qrMenu = $menu.Items.Add('二维码分享'); $qrMenu.Add_Click({ Show-ConnectionQR })
 if ($state.managedAccountSid -and -not $state.unifiedPassword) {
     $sshPassword = $menu.Items.Add('修改 SSH 密码'); $sshPassword.Add_Click({ Invoke-AgentAction SSHPassword })
     $sshChange = New-AgentButton $sshCard '修改 SSH 密码' 160 48 110 28
@@ -257,6 +259,54 @@ $exit = $menu.Items.Add('退出托盘（服务继续运行）'); $exit.Add_Click
 $tray.Add_DoubleClick({ Show-Panel })
 $panel.Add_FormClosing({ param($sender,$event); $event.Cancel = $true; $panel.Hide() })
 $change.Add_Click({ Invoke-AgentAction Password })
+function Show-ConnectionQR {
+    $form = $null; $picture = $null; $stream = $null; $bytes = $null; $image = $null; $code = $null
+    try {
+        if ($state.unifiedPassword) {
+            try { $code = Get-GMSSHConnectCode $root $dataRoot }
+            catch { if (-not (Invoke-AgentAction EnableCode)) { return }; $code = Get-GMSSHConnectCode $root $dataRoot }
+        } else { $code = (Get-GMSSHConnectionInfo) | ConvertTo-Json -Depth 5 -Compress }
+        $encoded = Invoke-GMSSHConnectHelper -ProgramRoot $root -DataRoot $dataRoot -Operation qr -InputJson (@{text=$code} | ConvertTo-Json -Compress)
+        $bytes = [Convert]::FromBase64String($encoded)
+        $stream = [IO.MemoryStream]::new($bytes,$false)
+        $image = [Drawing.Image]::FromStream($stream)
+        $form = New-Object Windows.Forms.Form
+        $form.Text = 'GMSSH Windows · 二维码分享'; $form.ClientSize = New-Object Drawing.Size(560,716)
+        $form.StartPosition = 'CenterParent'; $form.FormBorderStyle = 'FixedDialog'; $form.MaximizeBox = $false
+        $form.BackColor = $background; $form.ForeColor = [Drawing.Color]::White
+        if ($brandIcon) { $form.Icon = $brandIcon }
+        $heading = New-AgentLabel $form '扫描二维码，添加这台电脑' 24 16 512 32
+        $heading.Font = New-Object Drawing.Font('Segoe UI',16,[Drawing.FontStyle]::Bold)
+        $device = New-AgentLabel $form ($state.computer+' · '+$state.username) 24 54 512 24
+        $device.ForeColor = $muted
+        $picture = New-Object Windows.Forms.PictureBox
+        $picture.SetBounds(24,90,512,512); $picture.SizeMode = 'Zoom'; $picture.BackColor = [Drawing.Color]::White
+        $picture.Image = New-Object Drawing.Bitmap($image); $form.Controls.Add($picture)
+        $description = if ($state.unifiedPassword) { '二维码等同长效连接码，只分享给可信任的人。改密码或重置连接码后，旧二维码失效。' } else { '二维码包含公开连接配置，不含密码。管理端识别后需输入现有 SSH 密码。' }
+        $note = New-AgentLabel $form $description 24 612 512 40; $note.ForeColor = $muted
+        $copyImage = New-AgentButton $form '复制二维码' 24 662 164 34 $true
+        $saveImage = New-AgentButton $form '保存图片' 200 662 164 34
+        $done = New-AgentButton $form '关闭' 376 662 160 34
+        $copyImage.Add_Click({ [Windows.Forms.Clipboard]::SetImage($picture.Image) })
+        $saveImage.Add_Click({
+            $save = New-Object Windows.Forms.SaveFileDialog
+            try {
+                $save.Title = '保存 GMSSH 连接二维码'; $save.Filter = 'PNG 图片 (*.png)|*.png'; $save.FileName = 'GMSSH-connection-QR.png'
+                if ($save.ShowDialog($form) -eq [Windows.Forms.DialogResult]::OK) { $picture.Image.Save($save.FileName,[Drawing.Imaging.ImageFormat]::Png) }
+            } finally { $save.Dispose() }
+        })
+        $done.Add_Click({ $form.Close() }); $form.CancelButton = $done
+        Add-AgentActivity '二维码已在本机生成，可用管理端扫描或识别图片。'
+        [void]$form.ShowDialog($panel)
+    } catch {
+        [void][Windows.Forms.MessageBox]::Show('二维码暂不可用，或连接信息过长。请使用复制连接码／连接信息，必要时运行升级 / 修复。','GMSSH Windows')
+    } finally {
+        if ($picture -and $picture.Image) { $picture.Image.Dispose() }
+        if ($form) { $form.Dispose() }; if ($image) { $image.Dispose() }; if ($stream) { $stream.Dispose() }
+        if ($bytes) { [Array]::Clear($bytes,0,$bytes.Length) }; $code = $null; $encoded = $null
+    }
+}
+$share.Add_Click({ Show-ConnectionQR })
 $copy.Add_Click({
     try {
         if ($state.unifiedPassword) {

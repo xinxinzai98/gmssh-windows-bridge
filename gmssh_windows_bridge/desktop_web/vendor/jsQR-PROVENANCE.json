@@ -1,0 +1,8 @@
+{
+  "repository": "https://github.com/cozmo/jsQR",
+  "commit": "8e6a036beafa7053dd44b1b76ac578d22b1b3311",
+  "version": "1.4.0",
+  "license": "Apache-2.0",
+  "sha256": "3325b0888fa4745c4e6940897d8c4f426fbaae76901fcbfe1871a04e90a51655",
+  "changes": "Unmodified upstream dist/jsQR.js"
+}

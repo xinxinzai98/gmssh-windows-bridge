@@ -32,6 +32,9 @@ outputs/
 *host_key
 *host_key.pub
 GMSSH-connection*.json
+GMSSH-connection-QR*.png
+GMSSH-devices-*.json
+*.gmsshbackup
 GMSSH-readiness*.json
 catalog.json
 connection.json

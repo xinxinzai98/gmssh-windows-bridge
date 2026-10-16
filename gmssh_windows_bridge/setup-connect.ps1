@@ -24,7 +24,7 @@ function Get-GMSSHConnectState([string]$DataRoot) {
 }
 
 function Invoke-GMSSHConnectHelper {
-    param([string]$ProgramRoot,[string]$DataRoot,[ValidateSet('init','code','reset','revoke','status')][string]$Operation,[string]$InputJson)
+    param([string]$ProgramRoot,[string]$DataRoot,[ValidateSet('init','code','reset','revoke','status','qr')][string]$Operation,[string]$InputJson)
     $file = Get-GMSSHConnectHelper $ProgramRoot
     $directory = [IO.Path]::GetFullPath($DataRoot)
     if ($directory -match '["\x00-\x1f]') { throw '接入目录无效。' }

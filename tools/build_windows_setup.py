@@ -95,6 +95,8 @@ def build(output, installer=None, controller="LocalSubnet", openssh=None, engine
         for file in (source / 'third_party').iterdir():
             if not monitor_only or file.name == 'Go-LICENSE.txt':
                 bundle.write(file, 'third-party-licenses/' + file.name)
+                if file.name == 'go-qrcode-MIT.txt':
+                    bundle.write(file, 'go-qrcode-LICENSE.txt')
     with zipfile.ZipFile(output) as bundle:
         if bundle.testzip() is not None:
             raise ValueError("bundle integrity check failed")

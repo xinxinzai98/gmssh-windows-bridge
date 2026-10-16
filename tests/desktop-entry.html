@@ -74,9 +74,15 @@ document.querySelector('#run').onclick = async () => {
     home.select('synthetic-linux');document.querySelector('[data-gmssh-row="synthetic-windows"] button[title="更多操作"]').click();await settle();
     const deviceMenu=document.querySelector('.gm-device-context');
     assert(deviceMenu.textContent.includes('设备详情')&&deviceMenu.textContent.includes('复制 IP 地址')&&deviceMenu.textContent.includes('电源操作'),'每行更多菜单包含详情、地址复制与 Windows 电源入口');
-    [...deviceMenu.querySelectorAll('button')].find(button=>button.textContent==='设备详情').click();await settle();
+    const readonlyCalls=[],savedTools=window.gmsshToolsController;window.gmsshToolsController={open:(id,tool)=>readonlyCalls.push({id,tool})};
+    [...deviceMenu.querySelectorAll('button')].find(button=>button.textContent==='连接诊断').click();
+    assert(readonlyCalls[0].id==='synthetic-windows'&&readonlyCalls[0].tool==='diagnostics','更多菜单的连接诊断只定位所选设备');
+    document.querySelector('[data-gmssh-row="synthetic-windows"] button[title="更多操作"]').click();await settle();
+    [...document.querySelector('.gm-device-context').querySelectorAll('button')].find(button=>button.textContent==='设备详情').click();await settle();
     const detailsDialog=document.querySelector('.gm-device-dialog'),drawer=detailsDialog.querySelector('.gm-device-details');
     assert(detailsDialog.open&&getComputedStyle(drawer).display!=='none'&&drawer.querySelector('.gm-copy-address')&&drawer.textContent.includes('电源'),'详情抽屉在窄窗口仍保留地址复制与电源操作');
+    [...drawer.querySelectorAll('button')].find(button=>button.textContent==='系统工具').click();
+    assert(readonlyCalls[1].id==='synthetic-windows'&&readonlyCalls[1].tool==='processes','设备详情的系统工具沿用同一个设备 ID');window.gmsshToolsController=savedTools;
     assert(document.querySelector('#gmssh-machine-workspace .gm-device-details h2').textContent==='synthetic-windows','从更多打开详情会选中该设备，状态采集不会留在上一台设备');
     const drawerBounds=detailsDialog.getBoundingClientRect();assert(drawerBounds.left>=0&&drawerBounds.right<=innerWidth&&drawerBounds.bottom<=innerHeight,'详情抽屉保持在当前窗口范围内');
     detailsDialog.querySelector('.gm-device-dialog-head button').click();await settle();

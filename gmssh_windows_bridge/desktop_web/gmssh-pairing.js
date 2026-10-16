@@ -68,7 +68,7 @@ window.installGMSSHPairing = function () {
         <button type="button" data-pair="manual" aria-pressed="false">${icon('<path d="m16 3 5 5-12 12-6 1 1-6zM14 5l5 5"/>')}手动填写</button>
       </div>
       <div class="gm-pair-intro" data-pair="intro">
-        ${clipboard}<div><strong>复制连接码，一步接入</strong><p>在服务端复制连接码后，点击上方按钮，<br>或直接在下方粘贴，自动填写连接信息。</p><small>连接码长期有效；也可拖入连接文件或手动填写地址。</small><div class="gm-pair-code-entry"><input type="password" data-pair="code" autocomplete="off" spellcheck="false" aria-label="连接码" placeholder="在此粘贴连接码"><button type="button" data-pair="parse">识别</button></div></div>
+        ${clipboard}<div><strong>复制连接码，一步接入</strong><p>在服务端复制连接码后，点击上方按钮，<br>或直接在下方粘贴，自动填写连接信息。</p><small>连接码长期有效；也可扫码、拖入连接文件或手动填写。</small><div class="gm-pair-code-entry"><input type="password" data-pair="code" autocomplete="off" spellcheck="false" aria-label="连接码" placeholder="在此粘贴连接码"><button type="button" data-pair="parse">识别</button><button type="button" data-pair="qr" title="摄像头扫码或识别二维码图片">扫码</button></div></div>
       </div>
       <section data-pair="manual-fields" hidden>
         <label><span>设备名称</span><input data-pair="manual-computer" value="Windows-PC" maxlength="63" autocomplete="off"></label>
@@ -113,7 +113,7 @@ window.installGMSSHPairing = function () {
   };
   function lock(value){busy=value;for(const input of panel.querySelectorAll('input,select,button'))input.disabled=value;for(const button of platforms?.querySelectorAll('button')||[])button.disabled=value;update();}
   function selectSource(name){for(const source of ['paste','file','manual'])field(source).setAttribute('aria-pressed',String(source===name));field('intro').hidden=!!preview||name==='manual';}
-  function clear(){sourceEpoch++;field('password').value=field('code').value='';preview=undefined;field('preview').hidden=true;field('manual-fields').hidden=true;selectSource('paste');status('');update();void invoke('gmssh-pair-clear').catch(()=>{});}
+  function clear(){sourceEpoch++;window.gmsshQRReader?.close();field('password').value=field('code').value='';preview=undefined;field('preview').hidden=true;field('manual-fields').hidden=true;selectSource('paste');status('');update();void invoke('gmssh-pair-clear').catch(()=>{});}
   function close(){if(busy)return;clear();if(nativeHost?.classList.contains('gm-add-windows'))nativeHost.querySelector('.n-dialog__close').click();else dialog.close();}
   const invoke=(type,data)=>window.electronAPI.invoke('render-to-main',{type,data});
   function showPreview(reply){
@@ -163,6 +163,7 @@ window.installGMSSHPairing = function () {
   }
   field('paste').onclick=()=>chooseSource('gmssh-pair-paste');
   const parseText=text=>{if(busy)return;field('code').value='';void chooseSource('gmssh-pair-text',{text});};
+  field('qr').onclick=()=>{if(busy)return;if(typeof window.gmsshReadConnectionQR!=='function'){status('二维码组件不可用，请使用粘贴连接码。');return;}const run=sourceEpoch;window.gmsshReadConnectionQR({onResult:text=>{if(!disposed&&run===sourceEpoch)parseText(text);}});};
   field('parse').onclick=()=>parseText(field('code').value);
   field('code').onpaste=event=>{const text=event.clipboardData?.getData('text/plain');if(text){event.preventDefault();parseText(text);}};
   field('code').onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();parseText(field('code').value);}};

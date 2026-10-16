@@ -223,6 +223,7 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
     contextMenu.style.cssText='position:fixed;inset:auto;margin:0;padding:6px;background:#252528;color:#eee;border:1px solid #ffffff24;border-radius:8px;box-shadow:0 8px 32px #0008;';
     const item=(text,iconName,callback,disabled=false)=>action(text,iconName,()=>{contextMenu.hidePopover();callback();},false,disabled);
     contextMenu.append(item('设备详情','monitor',()=>openDetails(record.id)),item('复制 IP 地址','copy',()=>void copyAddress(record.address),record.address==='—'||/[＊*]/.test(record.address)));
+    contextMenu.append(item('连接诊断','activity',()=>window.gmsshToolsController?.open(record.id,'diagnostics')),item('系统工具','gear',()=>window.gmsshToolsController?.open(record.id,'processes')));
     if(record.windows){
       contextMenu.append(item('电源操作','power',()=>invoke(record,'power'),!record.desktop||record.desktop.disabled));
       if(window.gmsshPairingController?.edit)contextMenu.append(item('编辑连接地址','gear',()=>window.gmsshPairingController.edit(record.id)));
@@ -253,6 +254,7 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
     pane.append(action('打开桌面','monitor',()=>invoke(record,'desktop'),true,!record.desktop||record.desktop.disabled));
     const pair=make('div','gm-detail-actions');pair.append(action('终端','terminal-window',()=>invoke(record,'terminal'),false,!record.terminal||record.terminal.disabled),action('文件互传','arrows-left-right',()=>invoke(record,'files'),false,!record.desktop||record.desktop.disabled));pane.append(pair);
     if(record.windows)pane.append(action('电源','power',()=>invoke(record,'power'),false,!record.desktop||record.desktop.disabled));
+    const tools=make('div','gm-detail-actions');tools.append(action('连接诊断','activity',()=>window.gmsshToolsController?.open(record.id,'diagnostics')),action('系统工具','gear',()=>window.gmsshToolsController?.open(record.id,'processes')));pane.append(tools);
     pane.append(make('h3','','连接信息'),make('p','gm-muted',record.latency||'状态未知'),make('p','gm-muted',record.note||'—'),make('h3','','资源使用'));
     ['CPU','内存','磁盘'].forEach((name,index)=>{const line=make('div','gm-detail-metric');line.append(labelled('span',name,['cpu','memory','hard-drive'][index]),meter(record.metrics[index],index));pane.append(line);});
     pane.append(make('h3','','网络与设备'));

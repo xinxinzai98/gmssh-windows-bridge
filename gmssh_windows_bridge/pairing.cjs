@@ -7,7 +7,7 @@ const {spawn} = require('node:child_process');
 const {request:requestHttp} = require('node:http');
 
 function loopbackRequest(port,endpoint,data) {
-  if(!Number.isInteger(port)||port<1||port>65535||!['/node/list','/node/detail','/node/test','/node/add','/node/edit'].includes(endpoint))return Promise.reject(Error('GMSSH 本地服务尚未就绪。'));
+  if(!Number.isInteger(port)||port<1||port>65535||!['/node/list','/node/detail','/node/test','/node/add','/node/edit','/group/list','/group/add'].includes(endpoint))return Promise.reject(Error('GMSSH 本地服务尚未就绪。'));
   return new Promise((resolve,reject)=>{
     const body=JSON.stringify(data);
     const request=requestHttp({hostname:'127.0.0.1',port,path:endpoint,method:'POST',agent:false,headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(body)}},response=>{
@@ -152,6 +152,48 @@ class PairingManager {
     const legacy=this.legacy.find(value=>value.machineId===machineId);
     if(!legacy?.sshHostPublicKey||!legacy.monitor)throw Error('此设备缺少可编辑的已核验连接信息，请导入连接文件。');
     return this.inspect(JSON.stringify({schema:1,computer:'Windows-PC',username:legacy.monitor.username,sshPort:legacy.monitor.targetPort,addresses:[legacy.target],sshHostPublicKey:legacy.sshHostPublicKey,sshHostFingerprint:legacy.fingerprint,desktopAuth:'manual'}));
+  }
+
+  async exportConnection(machineId) {
+    const record=this.records.find(value=>value.machineId===machineId);
+    const legacy=this.legacy.find(value=>value.machineId===machineId);
+    if(!record&&(!legacy?.sshHostPublicKey||!legacy.monitor))throw Error('此 Windows 设备缺少可迁移的主机身份。');
+    const source=record?record.connection:JSON.stringify({schema:1,computer:legacy.label||'Windows-PC',username:legacy.monitor.username,sshPort:legacy.monitor.targetPort,addresses:[legacy.target],sshHostPublicKey:legacy.sshHostPublicKey,sshHostFingerprint:legacy.fingerprint,desktopAuth:'manual'});
+    const connection=await this.request({operation:'inspect',connection:source});
+    if(connection.fromCode||connection.connectionText)throw Error('备份不能保存长效连接码，请使用已接入的设备配置。');
+    return {connection:connectionText(connection),target:record?.target||legacy.target};
+  }
+
+  // Restore saved configuration while offline. No authentication or remote provisioning runs here.
+  async importConnection(item,credentials,{groupId='',rememberDesktop=false}={}) {
+    const connection=await this.request({operation:'inspect',connection:item.windows.connection}),target=item.windows.target;
+    if(connection.fromCode||connection.username!==item.username||connection.sshPort!==item.port||!connection.addresses.includes(target))throw Error('备份中的 Windows 主机身份不一致。');
+    const native=await this.nativeRecords(),existing=this.existing(connection);
+    if(existing&&native.some(node=>node.id===existing.machineId))throw Error('Windows 设备已存在，已保留原连接。');
+    let record=this.records.find(value=>value.id===connection.id);
+    if(record&&record.target!==target)throw Error('此 Windows 设备已有不同的接入记录。');
+    if(record&&record.machineId&&!native.some(node=>node.id===record.machineId)){record.machineId=null;record.name=item.name;this.save();}
+    if(!record){
+      if(this.records.length>=50)throw Error('此版本最多管理 50 台 Windows 电脑。');
+      const reserved=new Set([...this.reserved,...native.filter(value=>['127.0.0.1','localhost'].includes(value.ip)).map(value=>Number(value.port)),...this.legacy.flatMap(value=>[value.port,value.monitor?.port]),...this.records.flatMap(value=>[value.monitorPort,value.desktopPort])]);
+      record={id:connection.id,connection:connectionText(connection),public:connection,target,name:item.name,monitorPort:await this.port(reserved),desktopPort:await this.port(reserved),machineId:null};
+      this.records.push(record);try{this.save();}catch(error){this.records.pop();throw error;}
+    }
+    await this.start(record);
+    const match=node=>['127.0.0.1','localhost'].includes(node?.ip)&&Number(node.port)===record.monitorPort&&node.userName===connection.username&&/^[a-f0-9]{32}$/.test(node.id);
+    let node=native.find(match);
+    if(!node){
+      const data={name:item.name,ip:'127.0.0.1',port:record.monitorPort,userName:connection.username,authType:'pass',authValue:credentials.authValue,groupId,desc:item.notes||'',sudoPolicy:'skip'};
+      try{const reply=await this.api('/node/add',data);if([0,200].includes(reply.code)&&/^[a-f0-9]{32}$/.test(reply.data?.id))node={id:reply.data.id};}catch{}
+      finally{data.authValue='';}
+      if(!node)node=(await this.nativeRecords()).find(match);
+      if(!node)throw Error('GMSSH 未确认保存 Windows 配置，请保留备份并重试。');
+    }
+    const detail=await this.api('/node/detail',{id:node.id});
+    if(![0,200].includes(detail.code)||!match(detail.data)||detail.data.id!==node.id||detail.data.authType!=='pass'||detail.data.name!==item.name||detail.data.sudoPolicy!==undefined&&detail.data.sudoPolicy!=='skip')throw Error('Windows 配置未通过回读，导入记录已保留供重试。');
+    record.machineId=node.id;this.save();
+    if(connection.desktopAuth==='shared-ssh')this.queueDesktopAuth(node.id,credentials.authValue,rememberDesktop);
+    return node.id;
   }
 
   async replaceTarget(existing,connection,target,password,rememberDesktop) {
