@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Develop 0.4.0a13 locally: clarify existing-device enrollment and preserve its displayed name; add masked direct code paste and public connection-file drag-in.
+- Probe the authenticated remote SSH TCP endpoint instead of presenting loopback bridge latency; keep unknown and failed collection states explicit.
+- Add a scrollable device-details dialog and complete per-device actions for narrow windows.
+- Add multiple-file and folder upload, drag-in, transfer tasks, progress, cancellation, conflict rename/retry, batch selection and bounded folder ZIP downloads without overwriting existing files.
+- Commit Chinese input-method text once, support explicit local text paste, and retain remote Ctrl+V clipboard behavior.
+- Report SSH, desktop and connection-code service health separately; inspect the pinned local TLS endpoint and encrypted store without account-login attempts.
 - Align Windows enrollment fields, keep address and SSH port on one row, group the three input methods with icons, and keep the current step's action outside the scrolling form.
 - Put Linux and Windows enrollment inside the native plus-button Add Machine dialog; remove the separate Windows toolbar button and preserve the original Linux form, tests and advanced settings.
 - Clear temporary Windows credentials when changing platforms or closing the native dialog; keep a single modal and block dismissal while an enrollment operation is pending.

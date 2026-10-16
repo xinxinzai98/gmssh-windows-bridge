@@ -121,7 +121,8 @@ test('refreshes a changed password on the exact existing native record and hands
   current.manager.takeDesktopAuth(first.machineId);
   const before=fs.readFileSync(path.join(root,'catalog.json'),'utf8');
   options.acceptedPassword='synthetic-rotated-secret';
-  await current.manager.inspect(JSON.stringify(shared));
+  const preview=await current.manager.inspect(JSON.stringify(shared));
+  assert.equal(preview.existing.name,'Lab desktop');
   const result=await current.manager.connect({id:fixture.id,target:fixture.addresses[0],name:'Ignored rename',password:options.acceptedPassword,refreshPassword:true,rememberDesktop:true});
   assert.equal(result.machineId,first.machineId);assert.equal(result.credentialsUpdated,true);assert.equal(current.adds(),1);
   assert.equal(current.records[0].name,'Lab desktop');assert.equal(current.starts.length,1);

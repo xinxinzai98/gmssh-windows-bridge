@@ -137,15 +137,18 @@ $role = if ($state.accountRole -eq 'Administrator') { '管理员' } else { '已�
 $accountLabel = New-AgentLabel $machine ($state.username + '（' + $role + '）') 120 85 454 22
 $passwordNote = if ($state.unifiedPassword) { 'SSH 与桌面使用同一连接密码' } else { 'SSH 与桌面使用各自的密码' }
 $passwordHint = New-AgentLabel $machine $passwordNote 18 114 556 20; $passwordHint.ForeColor = $muted
-$sshCard = New-AgentCard 24 240 288 92
-$sshTitle = New-AgentLabel $sshCard 'SSH 服务' 18 12 150 24
+$sshCard = New-AgentCard 24 240 184 92
+$sshTitle = New-AgentLabel $sshCard 'SSH 服务 · TCP 22' 18 12 150 24
 $sshStatus = New-AgentLabel $sshCard '正在读取…' 18 45 150 27
 $sshStatus.Font = New-Object Drawing.Font('Segoe UI', 13, [Drawing.FontStyle]::Bold)
-$sshPort = New-AgentLabel $sshCard 'TCP 22' 175 14 95 22; $sshPort.ForeColor = $muted
-$desktopCard = New-AgentCard 328 240 288 92
+$desktopCard = New-AgentCard 220 240 184 92
 $desktopTitle = New-AgentLabel $desktopCard '桌面服务' 18 12 150 24
-$desktopStatus = New-AgentLabel $desktopCard '正在读取…' 18 45 252 27
+$desktopStatus = New-AgentLabel $desktopCard '正在读取…' 18 45 150 27
 $desktopStatus.Font = New-Object Drawing.Font('Segoe UI', 13, [Drawing.FontStyle]::Bold)
+$connectCard = New-AgentCard 416 240 200 92
+$connectTitle = New-AgentLabel $connectCard '连接码服务' 18 12 164 24
+$connectStatus = New-AgentLabel $connectCard '正在读取…' 18 45 164 27
+$connectStatus.Font = New-Object Drawing.Font('Segoe UI', 13, [Drawing.FontStyle]::Bold)
 $passwordLabel = if ($state.unifiedPassword) { '修改连接密码' } else { '修改桌面密码' }
 $copyLabel = if ($state.unifiedPassword) { '复制连接码' } else { '复制连接信息' }
 $copy = New-AgentButton $panel $copyLabel 24 344 288 42 $true
@@ -186,13 +189,19 @@ function Refresh-Status {
         $addressesLabel.Text = if ($addresses) { $addresses } else { '未发现可用的 IPv4 地址' }
         $tooltip.SetToolTip($addressesLabel, $addressesLabel.Text)
         Set-ServiceLabel $sshStatus $ssh; Set-ServiceLabel $desktopStatus $desktop
-        $ready = $ssh.Status -eq 'Running' -and $desktop.Status -eq 'Running'
-        $overall.Text = if ($ready) { '服务运行中' } else { '服务未就绪' }
+        $codeHealth = if (-not $state.unifiedPassword) { [pscustomobject]@{ready=$true;state='手动接入';detail='此安装保留手动连接'} }
+            elseif (Get-Command Get-GMSSHConnectHealth -ErrorAction SilentlyContinue) { Get-GMSSHConnectHealth $root $dataRoot }
+            else { [pscustomobject]@{ready=$false;state='组件待修复';detail='请运行本版本的升级 / 修复以补齐连接码组件'} }
+        $connectStatus.Text = $codeHealth.state
+        $connectStatus.ForeColor = if ($codeHealth.ready) { $online } else { $warning }
+        $tooltip.SetToolTip($connectStatus,$codeHealth.detail)
+        $ready = $ssh.Status -eq 'Running' -and $desktop.Status -eq 'Running' -and $codeHealth.ready
+        $overall.Text = if ($ready) { '服务运行中' } elseif ($codeHealth.state -eq '未启用') { '连接码待启用' } else { '部分服务未就绪' }
         $overall.ForeColor = if ($ready) { $online } else { $warning }
         $tray.Text = 'GMSSH Windows · ' + $overall.Text
-        $startButton.Enabled = $start.Enabled = [bool]($ssh -and $desktop -and -not $ready)
-        $stopButton.Enabled = $stop.Enabled = [bool]($ssh -and $desktop -and ($ssh.Status -eq 'Running' -or $desktop.Status -eq 'Running'))
-        $current = 'SSH：' + $sshStatus.Text + '；桌面：' + $desktopStatus.Text + '。'
+        $startButton.Enabled = $start.Enabled = [bool]($ssh -and $desktop -and ($ssh.Status -ne 'Running' -or $desktop.Status -ne 'Running' -or $codeHealth.state -eq '未就绪'))
+        $stopButton.Enabled = $stop.Enabled = [bool]($ssh -and $desktop -and ($ssh.Status -eq 'Running' -or $desktop.Status -eq 'Running' -or ($state.unifiedPassword -and $codeHealth.ready)))
+        $current = 'SSH：' + $sshStatus.Text + '；桌面：' + $desktopStatus.Text + '；连接码：' + $connectStatus.Text + '。'
         if ($current -cne $script:lastServiceStatus) { Add-AgentActivity $current; $script:lastServiceStatus = $current }
         $script:lastStatusError = ''
     } catch {

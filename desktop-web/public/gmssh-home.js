@@ -60,7 +60,7 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
   const byId=new Map(connections.filter(device=>device.machineId).map(device=>[device.machineId,device]));
   const style = document.createElement('style'); style.textContent = css; document.head.append(style);
   let root, host, selected, fingerprint = '', timer, noticeTimer, disposed = false, infoBusy = false, infoFrame, infoReady, infoOrigin, infoRequestId = 0, cancelInfo, filesTimer, contextMenu;
-  const metadata = new Map(), systemInfo = new Map(), scrollPositions = {list:{top:0,left:0},card:{top:0,left:0}};
+  const metadata = new Map(), systemInfo = new Map(), currentRecords = new Map(), scrollPositions = {list:{top:0,left:0},card:{top:0,left:0}};
   const fitWorkspace = () => { if (root?.getClientRects().length) root.style.height = Math.max(0, window.innerHeight - Math.max(0, root.getBoundingClientRect().top)) + 'px'; };
   const make = (tag, className, text) => { const node = document.createElement(tag); node.className = className || ''; if (text !== undefined) node.textContent = text; return node; };
   const icon = name => { const node = make('img', 'gm-ui-icon'); node.src = new URL('ui-icons/' + name + '.svg', base).href; node.alt = ''; return node; };
@@ -69,10 +69,23 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
     const button = make('button', 'gm-ui-button' + (primary ? ' primary' : ''), text);
     button.type = 'button'; button.prepend(icon(name)); button.disabled = disabled; button.onclick = callback; return button;
   };
+  const detailsDialog=make('dialog','gm-device-dialog');detailsDialog.setAttribute('aria-label','设备详情');
+  const dialogHeader=make('div','gm-device-dialog-head');dialogHeader.append(make('strong','','设备详情'),action('关闭','x',()=>detailsDialog.close()));
+  detailsDialog.append(dialogHeader);document.body.append(detailsDialog);let dialogDeviceId;
+  detailsDialog.addEventListener('close',()=>{detailsDialog.querySelector('.gm-device-details')?.remove();detailsDialog.querySelector('.gm-home-status')?.remove();});
+  function refreshDetailsDialog() {
+    if(!detailsDialog.open)return;
+    const record=currentRecords.get(dialogDeviceId);if(!record){detailsDialog.close();return;}
+    const previous=detailsDialog.querySelector('.gm-device-details'),scroll=previous?.scrollTop||0,active=document.activeElement;
+    const label=previous?.contains(active)?active.getAttribute('aria-label')||active.textContent:null;
+    const pane=detailPane(record);if(previous)previous.replaceWith(pane);else detailsDialog.append(pane);pane.scrollTop=scroll;
+    if(label)[...pane.querySelectorAll('button')].find(button=>(button.getAttribute('aria-label')||button.textContent)===label)?.focus({preventScroll:true});
+  }
+  function openDetails(id) {dialogDeviceId=selected=id;fingerprint='';render();if(!detailsDialog.open)detailsDialog.showModal();refreshDetailsDialog();}
   function notify(text) {
     if (!root) return;
-    let notice = root.querySelector('.gm-home-status');
-    if (!notice) { notice = make('div', 'gm-home-status'); notice.setAttribute('role', 'status'); root.append(notice); }
+    root.querySelector('.gm-home-status')?.remove();detailsDialog.querySelector('.gm-home-status')?.remove();
+    const notice = make('div', 'gm-home-status'); notice.setAttribute('role', 'status'); (detailsDialog.open?detailsDialog:root).append(notice);
     clearTimeout(noticeTimer); notice.textContent = text; notice.hidden = false;
     noticeTimer = setTimeout(() => { notice.hidden = true; }, 3000);
   }
@@ -116,18 +129,21 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
     const cpuText = node.querySelector('.machine-progress')?.textContent || '';
     const cores = cpuText.match(/(\d+)\s*核/)?.[1];
     if (metrics[0]?.includes('核')) metrics[0] = metrics[0].match(/[\d.]+\s*%/)?.[0] || '—';
-    const latency = get('[class~="h-[22px]"][class~="rounded-full"]') || get('.machine-latency-badge') || get('.windows-card-badge');
+    const nativeLatency = get('[class~="h-[22px]"][class~="rounded-full"]') || get('.machine-latency-badge') || get('.windows-card-badge');
     const desktop = node.querySelector('[data-machine-action="desktop"]'), terminal = node.querySelector('[data-machine-action="terminal"]');
     // Read only public configuration fields; never copy native connection credentials.
     const info = {...metadata.get(id), ...models.get(id), ...systemInfo.get(id)};
+    const connection=info.connection;
+    const latency=!windows?nativeLatency:info.unavailable?'采集异常':connection?.state==='disconnected'?'连接已断开':connection?.state==='connected'?
+      Number.isFinite(connection.latencyMs)?(connection.latencyMs<1?'＜1ms':Math.round(connection.latencyMs)+'ms'):'已连接 · 延迟待测':'状态待确认';
     return { node, id, windows, binding, name, address, metrics, latency, desktop, terminal, info, cores:info.cores || info.cpuCores || cores,
       image: node.querySelector('.machine-icon-img')?.getAttribute('src'), note: get('.machine-note') || get('.windows-card-note') };
   };
   function status(record) {
-    const delay = record.latency.match(/([\d.]+)\s*ms/i), offline = /离线|重启/.test(record.latency);
-    const tone = offline ? 'offline' : delay ? Number(delay[1]) <= 100 ? 'good' : Number(delay[1]) <= 300 ? 'medium' : 'high' : /在线/.test(record.latency) ? 'good' : 'unknown';
+    const delay = record.latency.match(/([\d.]+)\s*ms/i), offline = /离线|重启|已断开/.test(record.latency);
+    const tone = offline ? 'offline' : /异常/.test(record.latency)?'medium':delay ? Number(delay[1]) <= 100 ? 'good' : Number(delay[1]) <= 300 ? 'medium' : 'high' : /在线|已连接/.test(record.latency) ? 'good' : 'unknown';
     const text = record.latency || '状态未知', dot = make('span', 'gm-status-dot ' + tone);
-    dot.title = (record.windows && delay ? '本机桥延迟 · ' : '') + text;
+    dot.title = (record.windows && delay ? '到设备 SSH 端口的 TCP 延迟 · ' : '') + text;
     dot.setAttribute('role','img'); dot.setAttribute('aria-label',dot.title); return dot;
   }
   function configuration(record) {
@@ -162,6 +178,7 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
     void open();
   }
   function invoke(record, type) {
+    const current=currentRecords.get(record.id);if(!current){notify('设备列表已变化，请重新选择这台设备。');return;}record=current;
     if (type === 'terminal') { record.terminal?.click(); return; }
     record.desktop?.click();
     if (type === 'files' && !record.windows) { openLinuxFiles(record); return; }
@@ -195,7 +212,27 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
       const button=action('',name,event=>{event.stopPropagation();selected=record.id;invoke(record,kind);},kind==='desktop',disabled);
       button.title=title;button.setAttribute('aria-label',record.name+' · '+title);controls.append(button);
     }
+    const more=action('','dots-three',event=>{event.stopPropagation();const box=event.currentTarget.getBoundingClientRect();showDeviceMenu(record,box.right,box.bottom);});
+    more.title='更多操作';more.setAttribute('aria-label',record.name+' · 更多操作');controls.append(more);
     return controls;
+  }
+  function showDeviceMenu(record,x,y) {
+    record=currentRecords.get(record.id)||record;
+    const nativeMenu=()=>{const current=currentRecords.get(record.id);if(!current){notify('设备列表已变化，请重新选择这台设备。');return;}current.node.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,button:2,clientX:x,clientY:y}));};
+    contextMenu?.remove();contextMenu=make('div','gm-device-context');contextMenu.setAttribute('popover','auto');
+    contextMenu.style.cssText='position:fixed;inset:auto;margin:0;padding:6px;background:#252528;color:#eee;border:1px solid #ffffff24;border-radius:8px;box-shadow:0 8px 32px #0008;';
+    const item=(text,iconName,callback,disabled=false)=>action(text,iconName,()=>{contextMenu.hidePopover();callback();},false,disabled);
+    contextMenu.append(item('设备详情','monitor',()=>openDetails(record.id)),item('复制 IP 地址','copy',()=>void copyAddress(record.address),record.address==='—'||/[＊*]/.test(record.address)));
+    if(record.windows){
+      contextMenu.append(item('电源操作','power',()=>invoke(record,'power'),!record.desktop||record.desktop.disabled));
+      if(window.gmsshPairingController?.edit)contextMenu.append(item('编辑连接地址','gear',()=>window.gmsshPairingController.edit(record.id)));
+    }
+    contextMenu.append(item('机器设置和其他操作','dots-three',nativeMenu));
+    for(const button of contextMenu.children)button.style.cssText='display:flex;width:100%;margin:2px 0;justify-content:flex-start;';
+    document.body.append(contextMenu);contextMenu.showPopover();
+    contextMenu.style.left=Math.max(8,Math.min(x,innerWidth-contextMenu.offsetWidth-8))+'px';
+    contextMenu.style.top=Math.max(8,Math.min(y,innerHeight-contextMenu.offsetHeight-8))+'px';
+    contextMenu.querySelector('button')?.focus();
   }
   function selectRecord(row, record) {
     row.dataset.gmsshRow=record.id;row.tabIndex=0;row.classList.toggle('selected',record.id===selected);
@@ -203,17 +240,44 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
     const context=event=>{event.preventDefault();event.stopPropagation?.();selected=record.id;fingerprint='';render();
       const nativeMenu=()=>record.node.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,button:2,clientX:event.clientX,clientY:event.clientY}));
       if(!record.windows||!window.gmsshPairingController?.edit){nativeMenu();return;}
-      contextMenu?.remove();contextMenu=make('div','gm-device-context');contextMenu.setAttribute('popover','auto');
-      contextMenu.style.cssText='position:fixed;inset:auto;margin:0;padding:6px;background:#252528;color:#eee;border:1px solid #ffffff24;border-radius:8px;box-shadow:0 8px 32px #0008;';
-      const item=(text,iconName,callback)=>action(text,iconName,()=>{contextMenu.hidePopover();callback();});
-      contextMenu.append(item('编辑连接地址','gear',()=>window.gmsshPairingController.edit(record.id)),item('机器设置和其他操作','dots-three',nativeMenu));
-      for(const button of contextMenu.children)button.style.cssText='display:flex;width:100%;margin:2px 0;justify-content:flex-start;';
-      document.body.append(contextMenu);contextMenu.showPopover();
-      contextMenu.style.left=Math.max(8,Math.min(event.clientX,innerWidth-contextMenu.offsetWidth-8))+'px';
-      contextMenu.style.top=Math.max(8,Math.min(event.clientY,innerHeight-contextMenu.offsetHeight-8))+'px';};
+      showDeviceMenu(record,event.clientX,event.clientY);};
     row.oncontextmenu=context;
     row.onkeydown=event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();select();}
       else if(event.key==='ContextMenu'||event.key==='F10'&&event.shiftKey){const box=row.getBoundingClientRect();context({preventDefault:()=>event.preventDefault(),clientX:box.left+20,clientY:box.top+20});}};
+  }
+  function detailPane(record) {
+    const pane=make('aside','gm-device-details');
+    const logo=make('img','gm-brand');logo.src=new URL(record.windows?'ui-icons/windows.svg':'brand/gmssh.png',base).href;logo.alt=record.windows?'Windows':'GMSSH';pane.append(logo);
+    const title=make('h2','');title.append(status(record),make('span','',record.name));title.title=configuration(record);pane.append(title);
+    const address=action(record.address,'copy',()=>void copyAddress(record.address),false,record.address==='—'||/[＊*]/.test(record.address));address.classList.add('gm-copy-address');address.title=record.address+' · 点击复制 IP 地址';address.setAttribute('aria-label','复制 IP 地址 '+record.address);pane.append(address);
+    pane.append(action('打开桌面','monitor',()=>invoke(record,'desktop'),true,!record.desktop||record.desktop.disabled));
+    const pair=make('div','gm-detail-actions');pair.append(action('终端','terminal-window',()=>invoke(record,'terminal'),false,!record.terminal||record.terminal.disabled),action('文件互传','arrows-left-right',()=>invoke(record,'files'),false,!record.desktop||record.desktop.disabled));pane.append(pair);
+    if(record.windows)pane.append(action('电源','power',()=>invoke(record,'power'),false,!record.desktop||record.desktop.disabled));
+    pane.append(make('h3','','连接信息'),make('p','gm-muted',record.latency||'状态未知'),make('p','gm-muted',record.note||'—'),make('h3','','资源使用'));
+    ['CPU','内存','磁盘'].forEach((name,index)=>{const line=make('div','gm-detail-metric');line.append(labelled('span',name,['cpu','memory','hard-drive'][index]),meter(record.metrics[index],index));pane.append(line);});
+    pane.append(make('h3','','网络与设备'));
+    const info=record.info;
+    const item=(name,value)=>{const line=make('p','gm-info-row');line.append(make('span','gm-muted',name),make('span','',String(value)));pane.append(line);};
+    item('SSH 端口',record.windows?record.binding.targetPort||22:info.port||'—');
+    if(info.publicIp&&info.publicIp!=='UnKnown')item('公网地址',info.publicIp);
+    if(info.os||info.osName)item('系统',info.os||info.osName);
+    if(info.cpu||record.cores)item('处理器',info.cpu||record.cores+' 逻辑核');
+    if(Number.isFinite(info.uptime))item('运行时间',Math.floor(info.uptime/86400)+' 天 '+Math.floor(info.uptime%86400/3600)+' 小时');
+    else if(info.runTime&&info.runTime!=='-')item('运行时间',info.runTime);
+    if(Number.isFinite(info.processes))item('进程',info.processes);
+    else if(Number.isFinite(info.processNum))item(Number.isFinite(info.activeProcessNum)?'活动 / 总进程':'进程',Number.isFinite(info.activeProcessNum)?info.activeProcessNum+' / '+info.processNum:info.processNum);
+    for(const network of Array.isArray(info.network)?info.network:[]){const box=make('div','gm-network');box.append(make('strong','',network.name),make('small','gm-muted',(network.addresses||[]).join(' · ')),make('small','gm-muted','链路 '+(Number(network.speed)>0?(network.speed/1e9>=1?(network.speed/1e9).toFixed(1)+' Gbps':Math.round(network.speed/1e6)+' Mbps'):'—')));
+      const previous=info.previous?.network?.find(value=>value.name===network.name),seconds=(info.sampledAt-(info.previous?.sampledAt||info.sampledAt))/1000;
+      const rate=previous&&seconds>0&&network.received>=previous.received&&network.sent>=previous.sent;
+      const traffic=make('small','',rate?'↓ '+size((network.received-previous.received)/seconds)+'/s  ↑ '+size((network.sent-previous.sent)/seconds)+'/s':'已接收 '+size(network.received)+' · 已发送 '+size(network.sent));traffic.title=rate?'最近 '+Math.round(seconds)+' 秒的平均速率':'网卡启动以来的累计流量';box.append(traffic);pane.append(box);}
+    if(record.windows&&!info.network)pane.append(make('p','gm-muted',info.unavailable?'配置与网络信息暂不可用，会自动重试。':'正在读取配置与网络信息…'));
+    if(info.sampledAt)pane.append(make('small','gm-muted',(info.unavailable?'本次采集失败，上次更新 ':'更新于 ')+new Date(info.sampledAt).toLocaleTimeString()));
+    else if(Number.isFinite(info.lastUpdateTime)&&info.lastUpdateTime>0)pane.append(make('small','gm-muted','更新于 '+new Date(info.lastUpdateTime*1000).toLocaleTimeString()));
+    if(Array.isArray(info.disks)&&info.disks.length&&(!record.windows||info.disks.length>1)){
+      pane.append(make('h3','','磁盘分区'));
+      for(const disk of info.disks)item(disk.name+(disk.filesystem?' '+disk.filesystem:''),size(Number.isFinite(disk.used)?disk.used:disk.total-disk.free)+' / '+size(disk.total));
+    }
+    return pane;
   }
   function render() {
     if (disposed) return;
@@ -221,8 +285,9 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
     const nativeLogo=document.querySelector('.tabs-home img');
     if(nativeLogo && !nativeLogo.hasAttribute('data-gmssh-brand')){nativeLogo.src=new URL('brand/gmssh.png',base).href;nativeLogo.setAttribute('data-gmssh-brand','');}
     const cards=nativeCards(), source=document.querySelector('.machine-body') || document.querySelector('.machine-card-scroll') || cards.find(node=>node.classList.contains('list-item-group'))?.parentElement?.parentElement;
-    if(!source||!cards.length){root?.remove();host?.classList.remove('gm-native-source');root=host=undefined;return;}
+    if(!source||!cards.length){currentRecords.clear();if(detailsDialog.open)detailsDialog.close();root?.remove();host?.classList.remove('gm-native-source');root=host=undefined;return;}
     const models=nativeModels(cards),records=cards.map(node=>details(node,models)),mode=localStorage.getItem('GmsshMachineView')==='card'?'card':'list';
+    currentRecords.clear();for(const record of records)currentRecords.set(record.id,record);
     const next=JSON.stringify([mode,records.map(({id,windows,image,name,address,metrics,latency,note,desktop,terminal,info,cores})=>[id,windows,image,name,address,metrics,latency,note,desktop?.disabled,terminal?.disabled,info,cores]),selected]);
     if(next===fingerprint&&root?.isConnected)return;
     observer.disconnect();
@@ -253,39 +318,10 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
         list.replaceChildren(grid);
       }
       if(!list.isConnected)root.append(list);
-      const record=records.find(record=>record.id===selected),pane=make('aside','gm-device-details');
-      const logo=make('img','gm-brand');logo.src=new URL(record.windows?'ui-icons/windows.svg':'brand/gmssh.png',base).href;logo.alt=record.windows?'Windows':'GMSSH';pane.append(logo);
-      const title=make('h2','');title.append(status(record),make('span','',record.name));title.title=configuration(record);pane.append(title);
-      const address=action(record.address,'copy',()=>void copyAddress(record.address),false,record.address==='—'||/[＊*]/.test(record.address));address.classList.add('gm-copy-address');address.title=record.address+' · 点击复制 IP 地址';address.setAttribute('aria-label','复制 IP 地址 '+record.address);pane.append(address);
-      pane.append(action('打开桌面','monitor',()=>invoke(record,'desktop'),true,!record.desktop||record.desktop.disabled));
-      const pair=make('div','gm-detail-actions');pair.append(action('终端','terminal-window',()=>invoke(record,'terminal'),false,!record.terminal||record.terminal.disabled),action('文件互传','arrows-left-right',()=>invoke(record,'files'),false,!record.desktop||record.desktop.disabled));pane.append(pair);
-      if(record.windows)pane.append(action('电源','power',()=>invoke(record,'power'),false,!record.desktop||record.desktop.disabled));
-      pane.append(make('h3','','连接信息'),make('p','gm-muted',record.latency||'状态未知'),make('p','gm-muted',record.note||'—'),make('h3','','资源使用'));
-      ['CPU','内存','磁盘'].forEach((name,index)=>{const line=make('div','gm-detail-metric');line.append(labelled('span',name,['cpu','memory','hard-drive'][index]),meter(record.metrics[index],index));pane.append(line);});
-      pane.append(make('h3','','网络与设备'));
-      const info=record.info;
-      const item=(name,value)=>{const line=make('p','gm-info-row');line.append(make('span','gm-muted',name),make('span','',String(value)));pane.append(line);};
-      item('SSH 端口',record.windows?record.binding.targetPort||22:info.port||'—');
-      if(info.publicIp&&info.publicIp!=='UnKnown')item('公网地址',info.publicIp);
-      if(info.os||info.osName)item('系统',info.os||info.osName);
-      if(info.cpu||record.cores)item('处理器',info.cpu||record.cores+' 逻辑核');
-      if(Number.isFinite(info.uptime))item('运行时间',Math.floor(info.uptime/86400)+' 天 '+Math.floor(info.uptime%86400/3600)+' 小时');
-      else if(info.runTime&&info.runTime!=='-')item('运行时间',info.runTime);
-      if(Number.isFinite(info.processes))item('进程',info.processes);
-      else if(Number.isFinite(info.processNum))item(Number.isFinite(info.activeProcessNum)?'活动 / 总进程':'进程',Number.isFinite(info.activeProcessNum)?info.activeProcessNum+' / '+info.processNum:info.processNum);
-      for(const network of Array.isArray(info.network)?info.network:[]){const box=make('div','gm-network');box.append(make('strong','',network.name),make('small','gm-muted',(network.addresses||[]).join(' · ')),make('small','gm-muted','链路 '+(Number(network.speed)>0?(network.speed/1e9>=1?(network.speed/1e9).toFixed(1)+' Gbps':Math.round(network.speed/1e6)+' Mbps'):'—')));
-        const previous=info.previous?.network?.find(value=>value.name===network.name),seconds=(info.sampledAt-(info.previous?.sampledAt||info.sampledAt))/1000;
-        const rate=previous&&seconds>0&&network.received>=previous.received&&network.sent>=previous.sent;
-        const traffic=make('small','',rate?'↓ '+size((network.received-previous.received)/seconds)+'/s  ↑ '+size((network.sent-previous.sent)/seconds)+'/s':'已接收 '+size(network.received)+' · 已发送 '+size(network.sent));traffic.title=rate?'最近 '+Math.round(seconds)+' 秒的平均速率':'网卡启动以来的累计流量';box.append(traffic);pane.append(box);}
-      if(record.windows&&!info.network)pane.append(make('p','gm-muted',info.unavailable?'配置与网络信息暂不可用，会自动重试。':'正在读取配置与网络信息…'));
-      if(info.sampledAt)pane.append(make('small','gm-muted',(info.unavailable?'本次采集失败，上次更新 ':'更新于 ')+new Date(info.sampledAt).toLocaleTimeString()));
-      else if(Number.isFinite(info.lastUpdateTime)&&info.lastUpdateTime>0)pane.append(make('small','gm-muted','更新于 '+new Date(info.lastUpdateTime*1000).toLocaleTimeString()));
-      if(Array.isArray(info.disks)&&info.disks.length&&(!record.windows||info.disks.length>1)){
-        pane.append(make('h3','','磁盘分区'));
-        for(const disk of info.disks)item(disk.name+(disk.filesystem?' '+disk.filesystem:''),size(Number.isFinite(disk.used)?disk.used:disk.total-disk.free)+' / '+size(disk.total));
-      }
+      const pane=detailPane(records.find(record=>record.id===selected));
       if(previousPane)previousPane.replaceWith(pane);else root.append(pane);
       fitWorkspace();list.scrollTop=scrollPositions[mode].top;list.scrollLeft=scrollPositions[mode].left;pane.scrollTop=paneScroll;
+      refreshDetailsDialog();
     } finally {observer.observe(document.body,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['hidden','class','disabled','src']});}
     if(byId.has(selected)&&!systemInfo.has(selected))void refreshSystemInfo();
   }
@@ -326,6 +362,6 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
   observer.observe(document.body,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['hidden','class','disabled','src']});render();
   window.addEventListener('resize',fitWorkspace);void loadNativeMetadata();void refreshSystemInfo();
   const infoInterval=setInterval(refreshSystemInfo,30000);
-  window.removeGMSSHHome=()=>{disposed=true;observer.disconnect();clearTimeout(timer);clearTimeout(noticeTimer);clearTimeout(filesTimer);clearInterval(infoInterval);cancelInfo?.();infoFrame?.remove();contextMenu?.remove();window.removeEventListener('resize',fitWorkspace);root?.remove();host?.classList.remove('gm-native-source');style.remove();};
+  window.removeGMSSHHome=()=>{disposed=true;observer.disconnect();clearTimeout(timer);clearTimeout(noticeTimer);clearTimeout(filesTimer);clearInterval(infoInterval);cancelInfo?.();infoFrame?.remove();contextMenu?.remove();detailsDialog.remove();window.removeEventListener('resize',fitWorkspace);root?.remove();host?.classList.remove('gm-native-source');style.remove();};
   return {refresh:render,select(id){selected=id;fingerprint='';render();},remove:window.removeGMSSHHome};
 };

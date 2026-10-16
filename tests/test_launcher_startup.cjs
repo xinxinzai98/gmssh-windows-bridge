@@ -184,13 +184,17 @@ test('untrusted pages cannot read enrollment clipboard, and invalid clipboard co
   const handler=result.handlers.get('render-to-main');
   for(const url of ['https://untrusted.invalid/','http://127.0.0.1:22256/']) {
     assert.equal((await handler({sender:{getURL:()=>url}},{type:'gmssh-pair-paste'})).status,'error');
-    for(const type of ['gmssh-pair-manual','gmssh-pair-edit'])assert.equal((await handler({sender:{getURL:()=>url}},{type,data:{target:'2001:db8::42',machineId:'1'.repeat(32)}})).status,'error');
+    for(const type of ['gmssh-pair-manual','gmssh-pair-edit','gmssh-pair-text'])assert.equal((await handler({sender:{getURL:()=>url}},{type,data:{target:'2001:db8::42',machineId:'1'.repeat(32),text:'synthetic-code'}})).status,'error');
   }
   assert.equal(result.clipboardReads(),0);
   const event={sender:{getURL:()=> 'file:///synthetic/app.asar/dist/index.html#/home'}};
   const reply=await handler(event,{type:'gmssh-pair-paste'});
   assert.equal(reply.status,'error');assert.equal(result.clipboardReads(),1);
   assert.ok(!JSON.stringify(reply).includes('synthetic-clipboard-credential'));
+  const typed={type:'gmssh-pair-text',data:{text:secret}};
+  const typedReply=await handler(event,typed);
+  assert.equal(typedReply.status,'error');assert.equal(typed.data.text,undefined);
+  assert.ok(!JSON.stringify(typedReply).includes('synthetic-clipboard-credential'));
   assert.equal((await handler(event,{type:'gmssh-pair-clear'})).status,'ok');
   result.app.emit('will-quit');
 });

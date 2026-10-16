@@ -134,7 +134,7 @@ class PairingManager {
     const timer=setTimeout(()=>{if(this.initialAuth.get(machineId)===value)this.initialAuth.delete(machineId);},120000);timer.unref?.();
   }
   existing(connection) {
-    return [...this.records.filter(value=>value.machineId).map(value=>({machineId:value.machineId,target:value.target,fingerprint:value.public.sshHostFingerprint,username:value.public.username,sshPort:value.public.sshPort,monitorPort:value.monitorPort})),
+    return [...this.records.filter(value=>value.machineId).map(value=>({machineId:value.machineId,name:value.name,target:value.target,fingerprint:value.public.sshHostFingerprint,username:value.public.username,sshPort:value.public.sshPort,monitorPort:value.monitorPort})),
       ...this.legacy.map(value=>({machineId:value.machineId,target:value.target,fingerprint:value.fingerprint,username:value.monitor?.username,sshPort:value.monitor?.targetPort,monitorPort:value.monitor?.port}))]
       .find(value=>value.machineId&&value.fingerprint===connection.sshHostFingerprint&&value.username===connection.username&&value.sshPort===connection.sshPort);
   }

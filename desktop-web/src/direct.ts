@@ -166,8 +166,8 @@ export class DirectClient {
   }
   mouse(event: MouseEvent): void { if (this.connected) { const display=this.#displays[this.#display]; this.#send({ mouseEvent: (event.mask&7)===3 ? event : {...event,x:event.x+(display?.x||0),y:event.y+(display?.y||0)} }); } }
   key(event: KeyEvent): void { if (this.connected) this.#send({ keyEvent: event }); }
-  text(text:string):void { if(new TextEncoder().encode(text).length>8192)throw Error('单次文本输入暂限8 KB。');if(this.connected)this.#send({keyEvent:{seq:text,mode:KeyboardMode.Legacy}}); }
-  clipboard(text:string):void { const content=utf8.encode(text);if(content.length>8192)throw Error('单次发送剪贴板暂限8 KB。');if(this.connected)this.#send({clipboard:{content,format:ClipboardFormat.Text,compress:false}}); }
+  text(text:string):void { if(new TextEncoder().encode(text).length>8192)throw Error('单次文本输入暂限 8 KiB。');if(this.connected)this.#send({keyEvent:{seq:text,mode:KeyboardMode.Legacy}}); }
+  clipboard(text:string):void { const content=utf8.encode(text);if(content.length>8192)throw Error('单次发送剪贴板暂限 8 KiB。');if(this.connected)this.#send({clipboard:{content,format:ClipboardFormat.Text,compress:false}}); }
   shortcut(name:string):void {
     const base={down:false,press:true,modifiers:[] as ControlKey[],mode:KeyboardMode.Legacy};
     if(name==='ctrl-alt-del') this.key({...base,controlKey:ControlKey.CtrlAltDel});

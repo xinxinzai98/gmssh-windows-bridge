@@ -171,7 +171,7 @@ try {
     if ($desktopSaved) { $exportHint = '桌面上已生成 GMSSH-connection.json 和 GMSSH-readiness.json。也可从系统托盘复制连接信息。' }
     Remove-Item $progressFile
     Add-Type -AssemblyName System.Windows.Forms
-    $credentialNote = if ($dedicated) { '账号：gmssh（管理员）。打开 GMSSH 托盘，点「复制连接码」；在 Mac 的「接入 Windows」中点「粘贴连接码」并添加。也可手动填写。连接码不自动过期，请按密码保管。' } else { '使用现有 Windows 账号密码添加机器。' }
+    $credentialNote = if ($dedicated) { '账号：gmssh（管理员）。打开 GMSSH 托盘，点「复制连接码」；在 Mac 点加号 →「添加机器」→「Windows」，粘贴连接码后连接。也可手动填写。连接码长期有效，请按密码保管。' } else { '使用现有 Windows 账号密码添加机器。' }
     $resultTitle = if ($readiness.readyToPair) { '安装完成 · 本机自检通过' } else { '组件已安装 · 有项目需要检查' }
     [void][Windows.Forms.MessageBox]::Show(("$credentialNote$connectWarning`r`n`r`n" + (Format-GMSSHReadiness $readiness) + "`r`n`r`n" + $exportHint + "`r`n连接文件交给控制端管理员完成首次添加；这两个文件不含密码。"), ('GMSSH Windows · ' + $resultTitle))
 } catch {

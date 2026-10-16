@@ -34,7 +34,7 @@ autoUpdater.checkForUpdates = () => {};
 autoUpdater.quitAndInstall = () => {};
 const handle = ipcMain.handle.bind(ipcMain);
 ipcMain.handle = (channel, listener) => handle(channel, channel === 'render-to-main' ? async (event, request, ...args) => {
-  if (['gmssh-pair-file','gmssh-pair-paste','gmssh-pair-manual','gmssh-pair-edit','gmssh-pair-clear','gmssh-pair-connect','gmssh-pair-desktop-auth'].includes(request?.type)) {
+  if (['gmssh-pair-file','gmssh-pair-paste','gmssh-pair-text','gmssh-pair-manual','gmssh-pair-edit','gmssh-pair-clear','gmssh-pair-connect','gmssh-pair-desktop-auth'].includes(request?.type)) {
     if (event.sender?.getURL().split('#')[0] !== indexUrl || !pairingAvailable) return {status:'error',message:'接入向导暂不可用，请检查本地连接配置。'};
     try {
       if(request.type==='gmssh-pair-desktop-auth')return {status:'ok',data:typeof request.data?.machineId==='string'?pairing.takeDesktopAuth(request.data.machineId):null};
@@ -45,6 +45,12 @@ ipcMain.handle = (channel, listener) => handle(channel, channel === 'render-to-m
         return {status:'ok',data:await pairing.manual({target,port,computer,username,sharedPassword})};
       }
       if(request.type==='gmssh-pair-edit')return {status:'ok',data:await pairing.edit(request.data?.machineId)};
+      if(request.type==='gmssh-pair-text'){
+        const text=request.data?.text;
+        if(pairing.busy)throw Error('正在接入，请等待当前操作完成。');
+        if(typeof text!=='string'||!text.trim()||Buffer.byteLength(text)>65536)throw Error('请粘贴有效连接码，或选择不超过 64 KB 的连接文件。');
+        return {status:'ok',data:await pairing.inspect(text)};
+      }
       if(request.type==='gmssh-pair-paste'){
         if(pairing.busy)throw Error('正在接入，请等待当前操作完成。');
         const text=clipboard.readText();
@@ -65,7 +71,7 @@ ipcMain.handle = (channel, listener) => handle(channel, channel === 'render-to-m
       if(!request.data||typeof request.data!=='object'||Array.isArray(request.data))throw Error('接入信息格式无效。');
       return {status:'ok',data:await pairing.connect(request.data)};
     } catch(error) {return {status:'error',message:error instanceof Error?error.message:'接入未完成，请重新核对连接信息。'};}
-    finally {if(request?.data&&typeof request.data==='object')delete request.data.password;}
+    finally {if(request?.data&&typeof request.data==='object'){delete request.data.password;delete request.data.text;}}
   }
   if (request?.type === 'gmssh-copy-address') {
     const address = request.data;

@@ -6,6 +6,7 @@ import stat
 import threading
 import unittest
 import urllib.request
+import zipfile
 from contextlib import redirect_stdout
 from collections import deque
 from types import SimpleNamespace
@@ -15,7 +16,7 @@ from gmssh_windows_bridge.desktop import MAX_INPUT, MonitorDesktopPool, create_s
 from gmssh_windows_bridge.desktop_operations import (
     DRIVE_COMMAND, DRIVE_SCRIPT, SYSTEM_COMMAND, SYSTEM_SCRIPT, MAX_CHUNK, MAX_CONTROL, MAX_ENTRIES, MAX_FILE,
     POWER_COMMANDS, OperationError, OperationsSession, SSHPoolUnavailable,
-    decode_request, handle_operations, normalize_path, run_command, validate_name, wake_settings,
+    connection_health, decode_request, handle_operations, normalize_path, run_command, validate_name, wake_settings,
 )
 
 
@@ -34,10 +35,14 @@ class MemorySFTP:
     def __init__(self):
         self.data = {"C:/测试 目录/original.txt": b"original", "C:/测试 目录/.gmssh-upload-existing.part": b"keep"}
         self.opened, self.removed, self.renamed = [], [], []
+        self.directories = {'C:/', 'C:/测试 目录'}
+        self.links = set()
         self.closed = False
 
     def stat(self, path):
-        if path in {"C:/", "C:/测试 目录"}:
+        if path in self.links:
+            return SimpleNamespace(st_mode=stat.S_IFLNK, st_size=0, st_mtime=10)
+        if path in self.directories:
             return SimpleNamespace(st_mode=stat.S_IFDIR, st_size=0, st_mtime=10)
         if path not in self.data:
             raise FileNotFoundError(errno.ENOENT, "synthetic private remote path")
@@ -48,7 +53,20 @@ class MemorySFTP:
     def listdir_attr(self, path):
         prefix = path.rstrip("/") + "/"
         return [SimpleNamespace(filename=name[len(prefix):], **vars(self.stat(name)))
-                for name in self.data if name.startswith(prefix)]
+                for name in sorted(set(self.data) | self.directories | self.links)
+                if name.startswith(prefix) and name != path and '/' not in name[len(prefix):]]
+
+    def listdir_iter(self, path, read_aheads=1):
+        return iter(self.listdir_attr(path))
+
+    def mkdir(self, path):
+        if path in self.data or path in self.directories:
+            raise FileExistsError(errno.EEXIST, 'exists')
+        parent = path.rsplit('/', 1)[0]
+        if len(parent) == 2: parent += '/'
+        if parent not in self.directories:
+            raise FileNotFoundError(errno.ENOENT, 'missing parent')
+        self.directories.add(path)
 
     def open(self, path, mode, bufsize=-1):
         self.opened.append((path, mode, bufsize))
@@ -163,7 +181,9 @@ class DesktopOperationsTests(unittest.TestCase):
         with patch("gmssh_windows_bridge.desktop_operations.run_command", return_value=json.dumps(info).encode()) as command:
             session.request({"id": 1, "op": "system-info"})
             command.assert_called_once_with(session.client, SYSTEM_COMMAND, 1)
-            self.assertEqual(ws.replies()[-1], {"id": 1, "ok": True, "info": info})
+            reply = ws.replies()[-1]
+            self.assertEqual({k: v for k, v in reply['info'].items() if k != 'connection'}, info)
+            self.assertEqual(reply['info']['connection'], {'state': 'unknown', 'latencyMs': None})
             with self.assertRaises(OperationError): session.request({"id": 2, "op": "system-info", "command": "ignored"})
             self.assertEqual(command.call_count, 1)
         with patch("gmssh_windows_bridge.desktop_operations.run_command", return_value=b'{"password":"must not be forwarded"}'):
@@ -171,6 +191,54 @@ class DesktopOperationsTests(unittest.TestCase):
         self.assertLess(len(SYSTEM_COMMAND), 7900)
         self.assertIn("Get-NetAdapterStatistics", SYSTEM_SCRIPT)
         self.assertNotIn("Set-", SYSTEM_SCRIPT)
+
+    def test_folder_upload_paths_and_zip_download_preserve_files_and_empty_directories(self):
+        session, ws, sftp = self.make_session()
+        for index, path in enumerate(['C:/测试 目录/新目录', 'C:/测试 目录/新目录/空目录']):
+            session.request({'id': index + 1, 'op': 'mkdir', 'path': path})
+            self.assertTrue(ws.replies()[-1]['created'])
+        session.request({'id': 3, 'op': 'mkdir', 'path': 'C:/测试 目录/新目录'})
+        self.assertFalse(ws.replies()[-1]['created'])
+        sftp.data['C:/测试 目录/新目录/中文.txt'] = '内容'.encode()
+        session.request({'id': 4, 'op': 'download-folder', 'path': 'C:/测试 目录/新目录'})
+        archive_bytes = b''.join(value for value in ws.outgoing if isinstance(value, bytes))
+        with zipfile.ZipFile(io.BytesIO(archive_bytes)) as archive:
+            self.assertEqual(archive.read('新目录/中文.txt'), '内容'.encode())
+            self.assertIn('新目录/空目录/', archive.namelist())
+        self.assertEqual(ws.replies()[-1]['bytes'], len(archive_bytes))
+        for path in ['C:/测试 目录/original.txt', 'C:/../outside']:
+            with self.assertRaises(OperationError): session.request({'id': 5, 'op': 'mkdir', 'path': path})
+        with self.assertRaises(OperationError): session.request({'id': 6, 'op': 'download-folder', 'path': 'C:/'})
+        sftp.links.add('C:/测试 目录/新目录/外部链接')
+        with self.assertRaises(OperationError): session.request({'id': 7, 'op': 'download-folder', 'path': 'C:/测试 目录/新目录'})
+        self.assertEqual(sftp.data['C:/测试 目录/original.txt'], b'original')
+
+    def test_connection_health_measures_only_the_authenticated_remote_tcp_peer(self):
+        transport = SimpleNamespace(is_active=lambda: True, is_authenticated=lambda: True,
+                                    getpeername=lambda: ('2001:db8::42', 2222, 0, 0))
+        client = SimpleNamespace(get_transport=lambda: transport)
+        with patch('gmssh_windows_bridge.desktop_operations.socket.create_connection') as connect, \
+                patch('gmssh_windows_bridge.desktop_operations.time.monotonic', side_effect=[10, 10.012]):
+            self.assertEqual(connection_health(client, 8), {'state': 'connected', 'latencyMs': 12.0})
+            connect.assert_called_once_with(('2001:db8::42', 2222), timeout=2)
+        with patch('gmssh_windows_bridge.desktop_operations.socket.create_connection', side_effect=TimeoutError):
+            self.assertEqual(connection_health(client, 1), {'state': 'connected', 'latencyMs': None})
+        transport.getpeername = lambda: ('127.0.0.1', 22252)
+        with patch('gmssh_windows_bridge.desktop_operations.socket.create_connection') as connect:
+            self.assertEqual(connection_health(client, 1), {'state': 'connected', 'latencyMs': None})
+            connect.assert_not_called()
+        transport.is_authenticated = lambda: False
+        with patch('gmssh_windows_bridge.desktop_operations.socket.create_connection') as connect:
+            self.assertEqual(connection_health(client, 1)['state'], 'disconnected')
+            connect.assert_not_called()
+
+    def test_folder_download_limits_stop_before_large_or_excessive_reads(self):
+        session, _, sftp = self.make_session()
+        sftp.directories.add('C:/测试 目录/样本');sftp.data['C:/测试 目录/样本/a.txt'] = b'abc'
+        for bound in ['MAX_FILE', 'MAX_ENTRIES']:
+            with patch('gmssh_windows_bridge.desktop_operations.' + bound, 1):
+                with self.assertRaises(OperationError): session.request({'id': 20, 'op': 'download-folder', 'path': 'C:/测试 目录/样本'})
+        self.assertEqual(sftp.opened, [])
 
     def test_upload_is_exclusive_acknowledged_and_rename_never_overwrites(self):
         session, ws, sftp = self.make_session()

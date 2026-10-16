@@ -24,7 +24,7 @@ function Get-GMSSHConnectState([string]$DataRoot) {
 }
 
 function Invoke-GMSSHConnectHelper {
-    param([string]$ProgramRoot,[string]$DataRoot,[ValidateSet('init','code','reset','revoke')][string]$Operation,[string]$InputJson)
+    param([string]$ProgramRoot,[string]$DataRoot,[ValidateSet('init','code','reset','revoke','status')][string]$Operation,[string]$InputJson)
     $file = Get-GMSSHConnectHelper $ProgramRoot
     $directory = [IO.Path]::GetFullPath($DataRoot)
     if ($directory -match '["\x00-\x1f]') { throw '接入目录无效。' }
@@ -46,12 +46,33 @@ function Invoke-GMSSHConnectHelper {
             finally { [Array]::Clear($bytes,0,$bytes.Length) }
         }
         $process.StandardInput.Close()
-        if (-not $process.WaitForExit(15000)) { $process.Kill(); throw '一键接入操作超时。' }
+        $waitMilliseconds = if ($Operation -eq 'status') { 3000 } else { 15000 }
+        if (-not $process.WaitForExit($waitMilliseconds)) { $process.Kill(); throw '一键接入操作超时。' }
         $output = $stdout.GetAwaiter().GetResult().Trim()
         [void]$stderr.GetAwaiter().GetResult()
         if ($process.ExitCode -ne 0 -or $output.Length -gt 32768) { throw '一键接入未完成，请检查连接密码或运行升级 / 修复。' }
         $output
     } finally { $InputJson = $null; $process.Dispose() }
+}
+
+function Get-GMSSHConnectHealth {
+    param([string]$ProgramRoot,[string]$DataRoot,[switch]$Wait)
+    try {
+        if (-not (Test-Path -LiteralPath (Join-Path $DataRoot 'private\connect-meta.dat'))) {
+            return [pscustomobject]@{ready=$false;state='未启用';detail='首次使用时点击复制连接码并验证现有密码'}
+        }
+        $deadline = [DateTime]::UtcNow.AddSeconds(6)
+        while ($true) {
+            $ready = $false
+            try { $ready = (Invoke-GMSSHConnectHelper -ProgramRoot $ProgramRoot -DataRoot $DataRoot -Operation status) -ceq 'ready' } catch {}
+            if ($ready) { break }
+            if (-not $Wait -or [DateTime]::UtcNow -ge $deadline) { throw 'Unavailable' }
+            Start-Sleep -Milliseconds 250
+        }
+        [pscustomobject]@{ready=$true;state='运行中';detail='已核对本机 HTTPS 身份和加密凭据存储；密码在实际连接时验证'}
+    } catch {
+        [pscustomobject]@{ready=$false;state='未就绪';detail='检查连接码任务、TCP 22257 和设备身份，必要时运行升级 / 修复'}
+    }
 }
 
 function Set-GMSSHConnectPrivateAccess([string]$DataRoot,[string]$OwnerSid) {

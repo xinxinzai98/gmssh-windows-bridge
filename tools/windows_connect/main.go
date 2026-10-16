@@ -44,6 +44,11 @@ func run() error {
 		return errUnavailable
 	}
 	switch command {
+	case "status":
+		if err = s.status(); err != nil {
+			return err
+		}
+		fmt.Println("ready")
 	case "init":
 		body, err := io.ReadAll(io.LimitReader(os.Stdin, 4097))
 		if err != nil || len(body) > 4096 {

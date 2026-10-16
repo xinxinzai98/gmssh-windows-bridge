@@ -68,6 +68,59 @@ func fixture(t *testing.T) (store, *string) {
 	return s, &password
 }
 
+func TestLoopbackHealthChecksTheStoreWithoutLoginOrCredentialDisclosure(t *testing.T) {
+	s, password := fixture(t)
+	if err := s.initialize(*password); err != nil {
+		t.Fatal(err)
+	}
+	m, _ := s.meta()
+	logins := 0
+	s.validatePassword = func(string, string) error { logins++; return errors.New("health must not log in") }
+	server, _ := testServer(t, s)
+	client, err := s.healthClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.CloseIdleConnections()
+	response, err := client.Get(server.URL + "/v1/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	if response.StatusCode != 200 || string(body) != "{\"schema\":1,\"ready\":true}" || logins != 0 || bytes.Contains(body, []byte(*password)) || bytes.Contains(body, []byte(m.Token)) {
+		t.Fatalf("unexpected health response: status=%d, logins=%d", response.StatusCode, logins)
+	}
+	request := httptest.NewRequest("GET", "https://local/v1/health", nil)
+	request.RemoteAddr = "192.168.250.2:1234"
+	recorder := httptest.NewRecorder()
+	s.handler().ServeHTTP(recorder, request)
+	if recorder.Code != 403 {
+		t.Fatal("LAN peers must not access local health")
+	}
+	path, _ := s.privatePath("connect-password.dat")
+	if err := os.WriteFile(path, []byte("damaged fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	response, err = client.Get(server.URL + "/v1/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != 503 || logins != 0 {
+		t.Fatal("corrupt credentials were reported healthy or caused a login")
+	}
+	other, otherPassword := fixture(t)
+	if err := other.initialize(*otherPassword); err != nil {
+		t.Fatal(err)
+	}
+	otherServer, _ := testServer(t, other)
+	if response, err = client.Get(otherServer.URL + "/v1/health"); err == nil {
+		response.Body.Close()
+		t.Fatal("health client accepted another device certificate")
+	}
+}
+
 func testServer(t *testing.T, s store) (*httptest.Server, *http.Client) {
 	t.Helper()
 	configuration, err := s.tlsConfig()

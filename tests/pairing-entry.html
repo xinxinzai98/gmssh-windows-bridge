@@ -1,7 +1,7 @@
 <!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>Windows 接入向导回归</title>
 <style>*{margin:0;padding:0}body{background:#171719;color:#eee;font:14px system-ui;padding:28px}button{padding:10px;color:#eee;background:#34343a;border:1px solid #555;border-radius:6px;cursor:pointer}.sub-nav{display:flex;padding:14px;background:#232326;margin:20px 0}pre{white-space:pre-wrap;line-height:1.8}.n-dialog{position:fixed;inset:0;margin:auto;width:min(550px,calc(100vw - 32px));max-height:calc(100vh - 40px);box-sizing:border-box;padding:24px;background:#202023;color:#eee;border:1px solid #ffffff24;border-radius:12px;font:14px system-ui}.n-dialog::backdrop{background:#0008}.n-dialog__title{position:relative;font-size:20px;font-weight:600;margin-bottom:20px}.n-dialog__close{position:absolute;right:0;top:-4px}.n-dialog .modal-content label{display:flex;gap:12px;align-items:center;margin:18px 0}.n-dialog .modal-content input{background:#141416;color:#eee;padding:9px;border:1px solid #555;border-radius:6px}.n-dialog__action{margin-top:20px}.modal-footer{display:flex;gap:8px;justify-content:flex-end}</style>
 <h1>Windows 接入向导回归</h1><p>本页使用本机模拟设备和模拟接口，不连接 Windows，不保存真实密码。</p><button id="run">运行检查</button> <button id="preview">查看向导预览</button><pre id="result">待运行</pre>
-<div class="machine-manage"><div class="sub-nav">全部分组 <button class="btn add" aria-label="添加机器">＋</button></div><div class="action-btn"><i class="icon-shuaxin"></i></div><div data-machine-id="11111111111111111111111111111111">模拟电脑</div></div>
+<div class="machine-manage"><div class="sub-nav">全部分组 <button class="btn add" aria-label="添加机器">＋</button></div><div class="action-btn"><i class="icon-shuaxin"></i></div><div data-machine-id="11111111111111111111111111111111"><span class="machine-name"><span class="name-txt">原生卡片名称</span></span></div></div>
 <script src="../desktop-web/public/gmssh-pairing.js?v=alpha12-unified-add"></script><script>
 let nativeTests=0,nativeAdds=0;
 function nativeAdd(title='添加机器'){
@@ -22,7 +22,7 @@ document.getElementById('run').onclick=async()=>{
  const nativeId='1'.repeat(32);
  window.electronAPI={invoke:async(_channel,request)=>{
   if(request.type==='gmssh-pair-clear'){cleared++;return {status:'ok'};}
-  if(request.type==='gmssh-pair-paste')return {status:'ok',data:{...data,fromCode:true,existing:mode==='existing-code'?{machineId:nativeId,target:'192.0.2.42'}:null}};
+  if((request.type==='gmssh-pair-paste'||request.type==='gmssh-pair-text'))return {status:'ok',data:{...data,fromCode:request.type==='gmssh-pair-paste'||request.data.text.startsWith('GMSSH-CONNECT1.'),existing:mode==='existing-code'?{machineId:nativeId,target:'192.0.2.42'}:null}};
   if(request.type==='gmssh-pair-file'&&mode==='pending')return new Promise(resolve=>pendingFile=resolve);
   if(request.type==='gmssh-pair-file')return mode==='cancel'?{status:'cancelled'}:mode==='bad'?{status:'error',message:'连接文件未通过身份检查'}:{status:'ok',data:{...data,existing:mode==='existing'?{machineId:nativeId,target:'192.0.2.42'}:null}};
   if(request.type==='gmssh-pair-edit')return {status:'ok',data:{...data,existing:{machineId:nativeId,target:'192.0.2.42'}}};
@@ -74,7 +74,7 @@ document.getElementById('run').onclick=async()=>{
   field('connect').click();await settle();assert(opens===2&&last.password==='','已有设备沿同一入口打开，不索取新密码');
   await openWindows();field('file').click();await settle();
   field('refresh').checked=true;field('refresh').dispatchEvent(new Event('change'));
-  assert(!field('password-label').hidden&&!field('remember-label').hidden&&field('connect').disabled&&field('connect').textContent==='更新密码并重连','已有设备改密时显式索取新密码，空密码不能提交');
+  assert(!field('password-label').hidden&&!field('remember-label').hidden&&field('connect').disabled&&field('connect').textContent==='保存密码并连接','已有设备改密时显式索取新密码，空密码不能提交');
   field('password').value='synthetic-rotated-secret';field('password').dispatchEvent(new Event('input'));field('connect').click();await settle();
   assert(last.refreshPassword===true&&last.password==='synthetic-rotated-secret'&&closes===1&&opens===3&&!isOpen()&&!field('password').value,'改密成功仅重建原设备桌面，清除输入并保持同一入口');
   await openWindows();mode='code';field('paste').click();await settle();
@@ -82,11 +82,21 @@ document.getElementById('run').onclick=async()=>{
   field('connect').click();await settle();assert(last.password===''&&opens===4&&!isOpen(),'连接码接入不经过网页密码字段');
   await openWindows();mode='existing-code';field('paste').click();await settle();
   assert(field('password-label').hidden&&field('refresh-label').hidden&&!field('connect').disabled,'同设备长效码自动更新原卡片，保留免输入流程');
+  assert(field('name').value==='原生卡片名称'&&field('name').readOnly&&field('connect').textContent==='连接并打开桌面','已有设备显示原名称并保持只读，连接码按钮不会误称修改密码');
   field('connect').click();await settle();assert(last.refreshPassword&&last.password===''&&closes===2&&opens===5,'旧设备粘贴新码后沿原入口重连');
+  await openWindows();mode='code';field('code').value='GMSSH-CONNECT1.synthetic';field('parse').click();await settle();
+  assert(!field('code').value&&field('password-label').hidden&&!field('connect').disabled,'直接粘贴或输入的连接码识别后立即清除输入，沿用免密码流程');
+  field('cancel').click();await settle();
+  await openWindows();const paste=new Event('paste',{bubbles:true,cancelable:true});Object.defineProperty(paste,'clipboardData',{value:{getData:()=> 'GMSSH-CONNECT1.synthetic-pasted'}});field('code').dispatchEvent(paste);await settle();
+  assert(paste.defaultPrevented&&!field('code').value&&field('password-label').hidden,'系统粘贴事件直接识别连接码，原始码不留在输入框');field('cancel').click();await settle();
+  await openWindows();const drop=new Event('drop',{bubbles:true,cancelable:true});Object.defineProperty(drop,'dataTransfer',{value:{files:[new File([JSON.stringify(data)],'connection.json')],types:['Files']}});panel.dispatchEvent(drop);await settle();
+  assert(!field('preview').hidden&&!field('password-label').hidden&&field('computer').textContent==='LAB-PC','拖入公开连接文件进入密码接入，未误当成免密码连接码');field('cancel').click();await settle();
+  await openWindows();let finishRead;const delayed=new Event('drop',{bubbles:true,cancelable:true});Object.defineProperty(delayed,'dataTransfer',{value:{files:[{name:'connection.json',size:2,text:()=>new Promise(resolve=>finishRead=resolve)}],types:['Files']}});panel.dispatchEvent(delayed);field('cancel').click();await settle();finishRead(JSON.stringify(data));await settle();
+  assert(!isOpen()&&field('preview').hidden,'取消窗口后，迟到的文件读取不会重新创建连接预览');
   window.gmsshPairingController.edit(nativeId);await settle();
   assert(field('target').value==='192.0.2.42'&&field('password-label').hidden,'右键编辑载入同一设备的原连接地址');
   field('target').value='[2001:0db8::42]:22';field('target').dispatchEvent(new Event('input'));
-  assert(!field('password-label').hidden&&field('connect').disabled&&field('connect').textContent==='更新地址并重连','填写新的 IPv6 地址会先索取当前密码并标明重连');
+  assert(!field('password-label').hidden&&field('connect').disabled&&field('connect').textContent==='更新地址并连接','填写新的 IPv6 地址会先索取当前密码并标明重连');
   field('password').value='synthetic-secret';field('password').dispatchEvent(new Event('input'));field('connect').click();await settle();
   assert(last.target==='[2001:0db8::42]:22'&&last.id===data.id&&closes===3&&opens===6,'IPv6 地址切换仍更新原卡片并重建对应桌面');
   await openWindows();field('manual').click();

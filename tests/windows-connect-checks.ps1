@@ -73,6 +73,13 @@ try {
         else { Assert ($allowed.Count -eq 0) 'Owner can read the password or TLS private key file' }
         Assert (@($entries | Where-Object { $_.IdentityReference.Value -notin @('S-1-5-18','S-1-5-32-544',$owner) }).Count -eq 0) 'Unrelated principal can read private state'
     }
+    $script:healthStatus = 'ready'
+    function Invoke-GMSSHConnectHelper { param($ProgramRoot,$DataRoot,$Operation,$InputJson); Assert ($Operation -eq 'status') 'Health attempted a mutating helper operation'; $script:healthStatus }
+    $before = $script:changes
+    Assert (Get-GMSSHConnectHealth $program $data).ready 'Healthy connection service was not reported'
+    $script:healthStatus = 'unavailable'
+    Assert (-not (Get-GMSSHConnectHealth $program $data).ready) 'Unavailable connection service was reported ready'
+    Assert ($script:changes -eq $before) 'Health checking changed system configuration'
     Add-Content (Join-Path $program 'gmssh-connect.exe') 'tampered'
     Expect-Blocked { Register-GMSSHConnectTask $program $data } 'Tampered helper was registered'
     function Get-GMSSHConnectionInfo { param($DataRoot); [pscustomobject]@{computer='LAB-PC';addresses=@('192.168.250.2')} }

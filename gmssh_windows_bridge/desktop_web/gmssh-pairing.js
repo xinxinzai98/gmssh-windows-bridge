@@ -29,9 +29,12 @@ window.installGMSSHPairing = function () {
     .gm-pair-panel svg{width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
     .gm-pair-intro{display:flex;align-items:flex-start;gap:14px;padding:18px;background:#ffffff03;border:1px dashed #ffffff24;border-radius:8px}
     .gm-pair-intro>svg{width:30px;height:30px;padding:5px;box-sizing:content-box;color:#a5b4fc;background:#5667ff20;border-radius:10px}
+    .gm-pair-intro>div{min-width:0;flex:1}
     .gm-pair-intro strong{display:block;margin:0 0 6px;font-size:14px;font-weight:600}
     .gm-pair-intro p{margin:0;font-size:12px}
     .gm-pair-intro small{display:block;color:#777782;font-size:11px;margin-top:10px}
+    .gm-pair-code-entry{display:flex;gap:8px;margin-top:14px}.gm-pair-code-entry input{flex:1}.gm-pair-code-entry button{flex:none}
+    .gm-pair-panel.gm-pair-dragging{outline:2px solid #818cf8;outline-offset:-3px}
     .gm-pair-address-row{display:grid;grid-template-columns:minmax(0,1fr) 102px;gap:12px}
     .gm-pair-address-row label{margin:0}
     .gm-pair-address-row .gm-pair-port{grid-template-columns:auto minmax(0,1fr);gap:8px}
@@ -65,7 +68,7 @@ window.installGMSSHPairing = function () {
         <button type="button" data-pair="manual" aria-pressed="false">${icon('<path d="m16 3 5 5-12 12-6 1 1-6zM14 5l5 5"/>')}手动填写</button>
       </div>
       <div class="gm-pair-intro" data-pair="intro">
-        ${clipboard}<div><strong>复制连接码，一步接入</strong><p>在 Windows 服务端点击“复制连接码”，<br>再点击上方“粘贴连接码”，自动填写连接信息。</p><small>也可导入连接文件，或手动填写 IPv4 / IPv6 地址。</small></div>
+        ${clipboard}<div><strong>复制连接码，一步接入</strong><p>在服务端复制连接码后，点击上方按钮，<br>或直接在下方粘贴，自动填写连接信息。</p><small>连接码长期有效；也可拖入连接文件或手动填写地址。</small><div class="gm-pair-code-entry"><input type="password" data-pair="code" autocomplete="off" spellcheck="false" aria-label="连接码" placeholder="在此粘贴连接码"><button type="button" data-pair="parse">识别</button></div></div>
       </div>
       <section data-pair="manual-fields" hidden>
         <label><span>设备名称</span><input data-pair="manual-computer" value="Windows-PC" maxlength="63" autocomplete="off"></label>
@@ -79,15 +82,15 @@ window.installGMSSHPairing = function () {
       <section data-pair="preview" hidden>
         <div class="gm-pair-summary"><strong data-pair="computer"></strong><span data-pair="account"></span><code data-pair="fingerprint"></code></div>
         <p>请核对上方主机指纹与 Windows 服务端一致。</p>
-        <label><span>设备名称</span><input data-pair="name" maxlength="128" autocomplete="off"></label>
+        <label data-pair="name-label"><span>设备名称</span><input data-pair="name" maxlength="128" autocomplete="off"></label>
         <div class="gm-pair-address-row">
           <label><span>连接地址</span><input data-pair="target" list="gm-pair-targets" autocomplete="off" placeholder="IPv4 / IPv6 地址"><datalist id="gm-pair-targets" data-pair="targets"></datalist></label>
           <label class="gm-pair-port"><span>端口</span><input data-pair="port" type="number" readonly aria-label="SSH 端口"></label>
         </div>
-        <label class="gm-pair-remember" data-pair="refresh-label" hidden><input data-pair="refresh" type="checkbox">更新此设备的连接密码</label>
+        <label class="gm-pair-remember" data-pair="refresh-label" hidden><input data-pair="refresh" type="checkbox">更新本机保存的连接密码</label>
         <label data-pair="password-label"><span>连接密码</span><input data-pair="password" type="password" maxlength="1024" autocomplete="off" placeholder="Windows 安装时设置的密码"></label>
         <label class="gm-pair-remember" data-pair="remember-label" hidden><input data-pair="remember" type="checkbox" checked>记住桌面密码（本机钥匙串）</label>
-        <p class="gm-pair-note" data-pair="existing" hidden>此电脑已接入，沿用原卡片。Windows 端改密后，可在这里更新连接密码。</p>
+        <p class="gm-pair-note" data-pair="existing" hidden>此电脑已接入，沿用原卡片与名称。如需更名，请打开机器设置；服务端改密后，可在这里更新本机保存的密码。</p>
       </section>
     </div>
     <div class="gm-pair-footer">
@@ -96,7 +99,7 @@ window.installGMSSHPairing = function () {
     </div>`;
   dialog.append(panel);document.body.append(dialog);
   const field=name=>panel.querySelector('[data-pair="'+name+'"]');
-  let preview,busy=false,disposed=false,nativeHost,nativeBody,platforms,pendingWindows=false;
+  let preview,busy=false,disposed=false,nativeHost,nativeBody,platforms,pendingWindows=false,sourceEpoch=0;
   const status=text=>{field('status').textContent=text;};
   const update=()=>{
     const coded=preview?.fromCode===true,changed=!!preview?.existing&&field('target').value.trim()!==preview.existing.target;
@@ -104,20 +107,23 @@ window.installGMSSHPairing = function () {
     field('refresh-label').hidden=!preview?.existing||coded;
     field('password-label').hidden=coded||(!!preview?.existing&&!refresh);
     field('remember-label').hidden=(!refresh&&!!preview?.existing)||preview?.desktopAuth!=='shared-ssh'||!preview?.canRememberDesktop;
-    field('connect').textContent=changed?'更新地址并重连':preview?.existing?(refresh?'更新密码并重连':'打开已有设备'):'接入并打开桌面';
+    field('connect').textContent=changed?'更新地址并连接':coded?'连接并打开桌面':preview?.existing?(refresh?'保存密码并连接':'打开已有设备'):'接入并打开桌面';
     field('connect').hidden=!preview;field('lookup').hidden=!!preview||field('manual-fields').hidden;
     field('connect').disabled=busy||!preview||!field('target').value.trim()||(!coded&&(!preview.existing||refresh)&&!field('password').value);
   };
   function lock(value){busy=value;for(const input of panel.querySelectorAll('input,select,button'))input.disabled=value;for(const button of platforms?.querySelectorAll('button')||[])button.disabled=value;update();}
   function selectSource(name){for(const source of ['paste','file','manual'])field(source).setAttribute('aria-pressed',String(source===name));field('intro').hidden=!!preview||name==='manual';}
-  function clear(){field('password').value='';preview=undefined;field('preview').hidden=true;field('manual-fields').hidden=true;selectSource('paste');status('');update();void invoke('gmssh-pair-clear').catch(()=>{});}
+  function clear(){sourceEpoch++;field('password').value=field('code').value='';preview=undefined;field('preview').hidden=true;field('manual-fields').hidden=true;selectSource('paste');status('');update();void invoke('gmssh-pair-clear').catch(()=>{});}
   function close(){if(busy)return;clear();if(nativeHost?.classList.contains('gm-add-windows'))nativeHost.querySelector('.n-dialog__close').click();else dialog.close();}
   const invoke=(type,data)=>window.electronAPI.invoke('render-to-main',{type,data});
   function showPreview(reply){
     if(reply?.status!=='ok')throw Error(reply?.message||'连接信息读取失败。');
-    preview=reply.data;field('refresh').checked=false;field('password').value='';field('computer').textContent=preview.computer;
+    preview=reply.data;field('refresh').checked=false;field('password').value=field('code').value='';field('computer').textContent=preview.computer;
     field('account').textContent='SSH 账号 '+preview.username+' · 端口 '+preview.sshPort;
-    field('fingerprint').textContent=preview.sshHostFingerprint;field('name').value=preview.computer;
+    field('fingerprint').textContent=preview.sshHostFingerprint;
+    const native=/^[a-f0-9]{32}$/.test(preview.existing?.machineId||'')?document.querySelector('[data-machine-id="'+preview.existing.machineId+'"]'):null;
+    const existingName=native?.querySelector('.machine-name .name-txt')?.textContent.trim()||native?.querySelector('.windows-card-name')?.textContent.trim()||native?.querySelector('.machine-name')?.textContent.trim()||preview.existing?.name;
+    field('name').value=existingName||preview.computer;field('name').readOnly=!!preview.existing;field('name-label').hidden=!!preview.existing&&!existingName;
     field('targets').replaceChildren(...preview.addresses.map(address=>{const option=document.createElement('option');option.value=address;return option;}));
     field('target').value=preview.existing&&preview.addresses.includes(preview.existing.target)?preview.existing.target:preview.addresses[0];
     field('port').value=String(preview.sshPort);field('existing').hidden=!preview.existing;
@@ -126,12 +132,13 @@ window.installGMSSHPairing = function () {
     status(preview.fromManual?'已读取主机身份，请与 Windows 端指纹核对一致后输入密码连接。':preview.fromCode?'连接码已识别，可直接接入；已有设备沿用原卡片。':preview.existing?'检测到同一设备；可以打开原连接，或填写新的 IPv4 / IPv6 地址。':'连接文件已检查，请核对电脑并输入连接密码。');
   }
   async function chooseSource(type,data){
-    lock(true);status(type==='gmssh-pair-manual'?'正在读取主机公钥…':type==='gmssh-pair-edit'?'正在读取原设备连接…':type==='gmssh-pair-paste'?'正在识别连接码…':'正在读取连接文件…');
+    sourceEpoch++;
+    lock(true);status(type==='gmssh-pair-manual'?'正在读取主机公钥…':type==='gmssh-pair-edit'?'正在读取原设备连接…':type==='gmssh-pair-paste'||type==='gmssh-pair-text'?'正在识别连接信息…':'正在读取连接文件…');
     try{
       const reply=await invoke(type,data);
       if(reply?.status==='cancelled'){status('');return;}
       showPreview(reply);
-    }catch(error){preview=undefined;field('preview').hidden=true;field('password').value='';field('intro').hidden=!field('manual-fields').hidden;status(error.message||'连接信息未通过检查。');}
+    }catch(error){preview=undefined;field('preview').hidden=true;field('password').value=field('code').value='';field('intro').hidden=!field('manual-fields').hidden;status(error.message||'连接信息未通过检查。');}
     finally{lock(false);if(preview&&!preview.existing&&!preview.fromCode)field('password').focus();}
   }
   async function connect(){
@@ -155,7 +162,14 @@ window.installGMSSHPairing = function () {
     finally{lock(false);}
   }
   field('paste').onclick=()=>chooseSource('gmssh-pair-paste');
-  field('manual').onclick=()=>{preview=undefined;field('password').value='';field('preview').hidden=true;field('manual-fields').hidden=false;selectSource('manual');status('先核对主机身份，再输入密码连接。');update();field('manual-target').focus();void invoke('gmssh-pair-clear').catch(()=>{});};
+  const parseText=text=>{if(busy)return;field('code').value='';void chooseSource('gmssh-pair-text',{text});};
+  field('parse').onclick=()=>parseText(field('code').value);
+  field('code').onpaste=event=>{const text=event.clipboardData?.getData('text/plain');if(text){event.preventDefault();parseText(text);}};
+  field('code').onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();parseText(field('code').value);}};
+  panel.ondragover=event=>{if([...event.dataTransfer?.types||[]].includes('Files')){event.preventDefault();if(!busy)panel.classList.add('gm-pair-dragging');}};
+  panel.ondragleave=event=>{if(!panel.contains(event.relatedTarget))panel.classList.remove('gm-pair-dragging');};
+  panel.ondrop=async event=>{event.preventDefault();panel.classList.remove('gm-pair-dragging');if(busy)return;const files=event.dataTransfer?.files;if(files?.length!==1||!files[0].name.toLowerCase().endsWith('.json')||files[0].size>65536){status('请拖入一份不超过 64 KB 的 GMSSH 连接文件。');return;}const epoch=++sourceEpoch;try{const text=await files[0].text();if(!disposed&&epoch===sourceEpoch&&(nativeHost?.classList.contains('gm-add-windows')||dialog.open))parseText(text);}catch{if(!disposed&&epoch===sourceEpoch)status('无法读取连接文件，请重新选择。');}};
+  field('manual').onclick=()=>{sourceEpoch++;preview=undefined;field('password').value='';field('preview').hidden=true;field('manual-fields').hidden=false;selectSource('manual');status('先核对主机身份，再输入密码连接。');update();field('manual-target').focus();void invoke('gmssh-pair-clear').catch(()=>{});};
   field('lookup').onclick=()=>chooseSource('gmssh-pair-manual',{computer:field('manual-computer').value,target:field('manual-target').value,port:Number(field('manual-port').value),username:field('manual-user').value,sharedPassword:field('manual-shared').checked});
   field('target').oninput=update;field('file').onclick=()=>chooseSource('gmssh-pair-file');field('connect').onclick=connect;field('cancel').onclick=close;
   field('password').oninput=update;field('refresh').onchange=()=>{field('password').value='';update();if(field('refresh').checked)field('password').focus();};
@@ -165,7 +179,7 @@ window.installGMSSHPairing = function () {
     if(busy||!nativeHost)return;
     nativeHost.classList.toggle('gm-add-windows',windows);
     for(const button of platforms.children)button.setAttribute('aria-selected',String((button.dataset.platform==='windows')===windows));
-    if(windows){panel.classList.add('gm-pair-embedded');nativeBody.parentElement.append(panel);field('paste').focus();}
+    if(windows){panel.classList.add('gm-pair-embedded');nativeBody.parentElement.append(panel);(field('preview').hidden?field('code'):field('connect')).focus();}
     else{panel.classList.remove('gm-pair-embedded');dialog.append(panel);clear();}
   }
   function gateClose(event){
@@ -186,7 +200,7 @@ window.installGMSSHPairing = function () {
     if(!body||!host.querySelector('.n-dialog__close'))return;
     nativeHost=host;nativeBody=body;body.classList.add('gm-add-native');
     platforms=document.createElement('div');platforms.className='gm-add-platform';platforms.setAttribute('role','tablist');platforms.setAttribute('aria-label','操作系统');
-    for(const [value,name] of [['linux','Linux'],['windows','Windows']]){const button=document.createElement('button');button.type='button';button.dataset.platform=value;button.textContent=name;button.setAttribute('role','tab');button.setAttribute('aria-selected',String(value==='linux'));button.onclick=()=>selectPlatform(value==='windows');platforms.append(button);}
+    for(const [value,name] of [['linux','Linux'],['windows','Windows']]){const button=document.createElement('button');button.type='button';button.dataset.platform=value;button.textContent=name;button.setAttribute('role','tab');button.setAttribute('aria-selected',String(value==='linux'));button.onclick=()=>selectPlatform(value==='windows');button.onkeydown=event=>{if(['ArrowLeft','ArrowRight','Home','End'].includes(event.key)&&!busy){event.preventDefault();const windows=event.key==='End'||event.key!=='Home'&&value==='linux';selectPlatform(windows);platforms.querySelector('[data-platform="'+(windows?'windows':'linux')+'"]').focus();}};platforms.append(button);}
     const title=host.querySelector('.modal-header');title.classList.add('gm-add-title');title.append(platforms);host.addEventListener('click',gateClose,true);
     if(pendingWindows){pendingWindows=false;selectPlatform(true);}
   }

@@ -10,8 +10,10 @@ import re
 import secrets
 import socket
 import stat
+import tempfile
 import time
 import unicodedata
+import zipfile
 from pathlib import Path
 
 import paramiko
@@ -20,6 +22,7 @@ MAX_CONTROL = 8192
 MAX_CHUNK = 65536
 MAX_FILE = 512 * 1024 * 1024
 MAX_ENTRIES = 2000
+MAX_DEPTH = 32
 TRANSFER_TIMEOUT = 600
 # Windows implies /f for any /t > 0; the browser owns its cancelable countdown.
 POWER_COMMANDS = {"restart": "shutdown.exe /r /t 0", "shutdown": "shutdown.exe /s /t 0", "cancel": "shutdown.exe /a"}
@@ -35,6 +38,31 @@ class SSHPoolUnavailable(ValueError):
 
 class OperationError(ValueError):
     pass
+
+
+def connection_health(client, timeout):
+    """Measure the authenticated peer's TCP endpoint, never the loopback bridge."""
+    result = {"state": "unknown", "latencyMs": None}
+    try:
+        transport = client.get_transport()
+        if transport is None or transport.is_active() is False or transport.is_authenticated() is False:
+            return {**result, "state": "disconnected"}
+        if transport.is_active() is not True or transport.is_authenticated() is not True:
+            return result
+        result["state"] = "connected"
+        peer = transport.getpeername()
+        if not isinstance(peer, tuple) or len(peer) < 2 or type(peer[1]) is not int or not 1 <= peer[1] <= 65535:
+            return result
+        parsed = ipaddress.ip_address(peer[0])
+        if parsed.is_loopback or parsed.is_unspecified or parsed.is_multicast:
+            return result
+        address = str(parsed)
+        started = time.monotonic()
+        with socket.create_connection((address, peer[1]), timeout=min(timeout, 2)):
+            result["latencyMs"] = round(max(0, time.monotonic() - started) * 1000, 1)
+    except (AttributeError, OSError, TypeError, ValueError):
+        pass
+    return result
 
 
 def valid_access_token(token):
@@ -174,6 +202,76 @@ class OperationsSession:
                 raise
             return False
 
+    def send_download(self, request_id, source, name, size, deadline):
+        send_reply(self.websocket, request_id, ok=True, name=name, size=size)
+        received = 0
+        while received < size:
+            if time.monotonic() >= deadline:
+                raise OperationError("下载超时，请重试。")
+            chunk = source.read(min(MAX_CHUNK, size - received))
+            if not chunk:
+                raise OperationError("文件在下载过程中发生变化，请重试。")
+            self.websocket.send(chunk)
+            received += len(chunk)
+        if source.read(1):
+            raise OperationError("文件在下载过程中发生变化，请重试。")
+        send_reply(self.websocket, request_id, ok=True, done=True, bytes=received)
+
+    def download_folder(self, request_id, path):
+        if len(path.rstrip('/')) <= 2:
+            raise OperationError("请选择普通文件夹，不支持整盘打包。")
+        sftp = self.files()
+        if not stat.S_ISDIR(sftp.lstat(path).st_mode or 0):
+            raise OperationError("请选择普通文件夹，不跟随文件链接。")
+        name = validate_name(posixpath.basename(path))
+        deadline = time.monotonic() + TRANSFER_TIMEOUT
+        entries, total, copied = 0, 0, 0
+        pending = [(path, name, 0)]
+        with tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024) as stream:
+            with zipfile.ZipFile(stream, 'w', zipfile.ZIP_DEFLATED, compresslevel=1) as archive:
+                while pending:
+                    directory, relative, depth = pending.pop()
+                    if depth > MAX_DEPTH:
+                        raise OperationError("文件夹层级过深，请分批下载。")
+                    entries += 1
+                    if entries > MAX_ENTRIES or time.monotonic() >= deadline:
+                        raise OperationError("文件夹项目过多或打包超时，请分批下载。")
+                    archive.writestr(relative + '/', b'')
+                    send_reply(self.websocket, request_id, ok=True, phase='preparing', bytes=copied, entries=entries)
+                    for item in sftp.listdir_iter(directory, read_aheads=1):
+                        child = validate_name(item.filename)
+                        source_path, archive_path = posixpath.join(directory, child), relative + '/' + child
+                        mode = item.st_mode or 0
+                        if stat.S_ISDIR(mode):
+                            pending.append((source_path, archive_path, depth + 1))
+                            if len(pending) + entries > MAX_ENTRIES:
+                                raise OperationError("文件夹项目过多，请分批下载。")
+                            continue
+                        entries += 1
+                        if not stat.S_ISREG(mode) or type(item.st_size) is not int or item.st_size < 0:
+                            raise OperationError("文件夹包含链接或特殊文件，请选择普通文件后分批下载。")
+                        total += item.st_size
+                        if entries > MAX_ENTRIES or total > MAX_FILE:
+                            raise OperationError("文件夹下载暂限 2000 项和 512 MiB，请分批下载。")
+                        with sftp.open(source_path, 'rb') as source, archive.open(archive_path, 'w') as target:
+                            remaining = item.st_size
+                            while remaining:
+                                if time.monotonic() >= deadline:
+                                    raise OperationError("文件夹打包超时，请分批下载。")
+                                chunk = source.read(min(MAX_CHUNK, remaining))
+                                if not chunk:
+                                    raise OperationError("文件在打包过程中发生变化，请重试。")
+                                target.write(chunk); remaining -= len(chunk); copied += len(chunk)
+                                send_reply(self.websocket, request_id, ok=True, phase='preparing', bytes=copied, entries=entries)
+                            if source.read(1):
+                                raise OperationError("文件在打包过程中发生变化，请重试。")
+            size = stream.tell()
+            if size > MAX_FILE:
+                raise OperationError("打包文件超过 512 MiB，请分批下载。")
+            stream.seek(0)
+            download_name = name.encode('utf-8')[:240].decode('utf-8', 'ignore') + '.zip'
+            self.send_download(request_id, stream, download_name, size, deadline)
+
     def cancel_upload(self):
         upload = self.upload
         if upload is not None:
@@ -218,6 +316,7 @@ class OperationsSession:
             raise OperationError("操作 id 必须是正整数。")
         op = data.get("op")
         fields = {"list": {"id", "op", "path"}, "download": {"id", "op", "path"},
+                  "download-folder": {"id", "op", "path"}, "mkdir": {"id", "op", "path"},
                   "upload-start": {"id", "op", "path", "name", "size"}, "upload-finish": {"id", "op"},
                   "upload-cancel": {"id", "op"}, "power": {"id", "op", "action"}, "wake": {"id", "op"},
                   "system-info": {"id", "op"}}
@@ -229,6 +328,7 @@ class OperationsSession:
             info = json.loads(run_command(self.ssh(), SYSTEM_COMMAND, self.timeout).decode("utf-8-sig"))
             if not isinstance(info, dict) or set(info) != {"computer", "os", "version", "cpu", "cores", "memory", "uptime", "processes", "disks", "network"}:
                 raise OperationError("设备信息格式无效。")
+            info["connection"] = connection_health(self.client, self.timeout)
             send_reply(self.websocket, request_id, ok=True, info=info)
         elif op == "list":
             path = normalize_path(data["path"], allow_root=True)
@@ -250,19 +350,18 @@ class OperationsSession:
                 raise OperationError("请选择不超过 512 MiB 的普通文件。")
             deadline = time.monotonic() + TRANSFER_TIMEOUT
             with self.sftp.open(path, "rb") as source:
-                send_reply(self.websocket, request_id, ok=True, name=posixpath.basename(path), size=info.st_size)
-                received = 0
-                while received < info.st_size:
-                    if time.monotonic() >= deadline:
-                        raise OperationError("下载超时，请重试。")
-                    chunk = source.read(min(MAX_CHUNK, info.st_size - received))
-                    if not chunk:
-                        raise OperationError("文件在下载过程中发生变化，请重试。")
-                    self.websocket.send(chunk)
-                    received += len(chunk)
-                if source.read(1):
-                    raise OperationError("文件在下载过程中发生变化，请重试。")
-            send_reply(self.websocket, request_id, ok=True, done=True, bytes=received)
+                self.send_download(request_id, source, posixpath.basename(path), info.st_size, deadline)
+        elif op == "download-folder":
+            self.download_folder(request_id, normalize_path(data["path"]))
+        elif op == "mkdir":
+            path = normalize_path(data["path"])
+            if self.exists(path):
+                if not stat.S_ISDIR(self.files().lstat(path).st_mode or 0):
+                    raise OperationError("同名项目不是普通文件夹，未覆盖。")
+                created = False
+            else:
+                self.files().mkdir(path); created = True
+            send_reply(self.websocket, request_id, ok=True, path=path, created=created)
         elif op == "upload-start":
             directory = normalize_path(data["path"])
             name = validate_name(data["name"])

@@ -7,13 +7,23 @@ body{font:16px system-ui;background:#17191d;color:#eee;padding:24px}.tabs-contai
 </style>
 <h1>桌面图标路由回归检查</h1>
 <p>只使用本机模拟卡片，不连接远程电脑。由项目根目录运行 python -m http.server 后打开本页。</p>
-<button id="run">运行检查</button><pre id="result">待运行</pre>
+<button id="run">运行检查</button> <button id="preview">查看本地列表预览</button><pre id="result">待运行</pre>
 <div class="tabs-container"><div class="tabs-home"><button class="tab-chip tab-chip--home">首页</button></div></div>
 <input placeholder="搜索机器名称、IP或备注">
 <div class="machine-body"><div class="native-table-header">原生表头</div><div class="machine-card-scroll"><div class="n-scrollbar-container"><div class="grid"></div></div></div></div>
 <script src="../desktop-web/public/gmssh-entry.js"></script>
 <script src="../desktop-web/public/gmssh-home.js"></script>
 <script>
+document.querySelector('#preview').onclick=async()=>{
+  window.removeGMSSHHome?.();window.removeWindowsDesktopEntry?.();const grid=document.querySelector('.grid');grid.replaceChildren();
+  for(const [id,name,ip] of [['preview-windows','演示工作站','192.0.2.42'],['preview-linux','演示 Linux 服务器','192.0.2.43']]){
+    const card=document.createElement('article');card.dataset.machineId=id;
+    card.innerHTML='<img class="machine-icon-img" src="../desktop-web/public/ui-icons/terminal-window.svg" alt="Linux"><div class="machine-name"><span class="name-txt"></span></div><span class="machine-ip"></span><div class="machine-latency-badge">20ms</div><div class="machine-progress"><span class="label-value">12.0%</span></div><div class="machine-progress"><span class="label-value">4 / 16GB</span></div><div class="machine-progress"><span class="label-value">80 / 256GB</span></div><button data-machine-action="desktop">桌面</button><button data-machine-action="terminal">终端</button>';
+    card.querySelector('.name-txt').textContent=name;card.querySelector('.machine-ip').textContent=ip;grid.append(card);
+  }
+  const css=await fetch('../desktop-web/public/gmssh-theme.css').then(reply=>reply.text());
+  installGMSSHHome({machineId:'preview-windows',target:'192.0.2.42',viewerUrl:location.origin+'/',css});
+};
 document.querySelector('#run').onclick = async () => {
   const result = document.querySelector('#result');
   const grid = document.querySelector('.grid');
@@ -41,6 +51,7 @@ document.querySelector('#run').onclick = async () => {
     const home = installGMSSHHome({ machineId:'synthetic-windows', viewerUrl, css });
     assert(document.querySelector('.machine-body').classList.contains('gm-native-source') && !document.querySelector('.machine-body').contains(document.querySelector('#gmssh-machine-workspace')),'替换整个原生列表区域，增强表格放在原生表头与滚动容器之外');
     assert(document.querySelector('[data-gmssh-row="synthetic-windows"] .gm-os-icon').alt === 'Windows' && document.querySelector('[data-gmssh-row="synthetic-linux"] .gm-os-icon').src === linux.querySelector('img').src, '首页设备列表区分 Windows 与 Linux 系统图标');
+    assert(document.querySelector('[data-gmssh-row="synthetic-windows"] .gm-identity-text small').textContent==='状态待确认','尚未收到设备探测时不把本机桥的延迟当成 Windows 网络延迟');
     assert(document.querySelectorAll('th .gm-ui-icon').length === 3 && document.querySelectorAll('.gm-detail-metric .gm-ui-icon').length === 3, 'CPU、内存、磁盘表头及详情使用小图标');
     assert([...document.querySelectorAll('[data-gmssh-row] button[title="文件互传"] img')].every(image=>image.src.endsWith('/arrows-left-right.svg')), 'Windows 和 Linux 统一使用双向箭头与文件互传名称');
     assert(document.querySelector('.gm-device-details h3:nth-of-type(2)').textContent==='资源使用' && !document.querySelector('.gm-identity-text small').textContent.includes('Windows'), '资源使用去掉当前，设备名称旁不重复标注 Windows');
@@ -60,6 +71,16 @@ document.querySelector('#run').onclick = async () => {
     window.electronAPI={invoke:async(_channel,request)=>{copied=request.data;return {status:'ok'};}};
     document.querySelector('.gm-copy-address').click();await settle();
     assert(copied==='192.0.2.7' && document.querySelector('[role="status"]').textContent==='IP 地址已复制','右侧 IP 点击复制精确地址并显示成功提示');
+    home.select('synthetic-linux');document.querySelector('[data-gmssh-row="synthetic-windows"] button[title="更多操作"]').click();await settle();
+    const deviceMenu=document.querySelector('.gm-device-context');
+    assert(deviceMenu.textContent.includes('设备详情')&&deviceMenu.textContent.includes('复制 IP 地址')&&deviceMenu.textContent.includes('电源操作'),'每行更多菜单包含详情、地址复制与 Windows 电源入口');
+    [...deviceMenu.querySelectorAll('button')].find(button=>button.textContent==='设备详情').click();await settle();
+    const detailsDialog=document.querySelector('.gm-device-dialog'),drawer=detailsDialog.querySelector('.gm-device-details');
+    assert(detailsDialog.open&&getComputedStyle(drawer).display!=='none'&&drawer.querySelector('.gm-copy-address')&&drawer.textContent.includes('电源'),'详情抽屉在窄窗口仍保留地址复制与电源操作');
+    assert(document.querySelector('#gmssh-machine-workspace .gm-device-details h2').textContent==='synthetic-windows','从更多打开详情会选中该设备，状态采集不会留在上一台设备');
+    const drawerBounds=detailsDialog.getBoundingClientRect();assert(drawerBounds.left>=0&&drawerBounds.right<=innerWidth&&drawerBounds.bottom<=innerHeight,'详情抽屉保持在当前窗口范围内');
+    detailsDialog.querySelector('.gm-device-dialog-head button').click();await settle();
+    assert(!detailsDialog.open&&!detailsDialog.querySelector('.gm-device-details'),'关闭详情抽屉后移除临时内容，保留正常设备详情');
     window.electronAPI={invoke:async()=>({status:'error'})};document.querySelector('.gm-copy-address').click();await settle();
     assert(document.querySelector('[role="status"]').textContent.includes('复制失败'),'复制失败不会显示成功提示');window.electronAPI=savedAPI;
     const list = document.querySelector('.gm-device-list');
@@ -90,7 +111,7 @@ document.querySelector('#run').onclick = async () => {
     document.querySelector('[data-gmssh-row="synthetic-windows"]').dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,clientX:innerWidth-5,clientY:innerHeight-5}));
     const contextMenu=document.querySelector('.gm-device-context');
     assert(contextMenu.matches(':popover-open')&&contextMenu.getBoundingClientRect().right<=innerWidth,'Windows 右键编辑菜单在窗口边缘仍完整可见');
-    contextMenu.querySelector('button').click();assert(editedId==='synthetic-windows','Windows 编辑地址进入已核验设备向导');delete window.gmsshPairingController;
+    [...contextMenu.querySelectorAll('button')].find(button=>button.textContent==='编辑连接地址').click();assert(editedId==='synthetic-windows','Windows 编辑地址进入已核验设备向导');delete window.gmsshPairingController;
     linux.querySelector('.machine-ip').textContent='2001:db8:1234:5678:9abc:def0:1234:5678';home.refresh();home.select('synthetic-linux');
     const fullAddress=linux.querySelector('.machine-ip').textContent;
     assert(document.querySelector('[data-gmssh-row="synthetic-linux"] .gm-address').title===fullAddress&&document.querySelector('.gm-copy-address').title.startsWith(fullAddress)&&document.querySelector('.gm-copy-address').scrollWidth<=document.querySelector('.gm-copy-address').clientWidth+1,'长 IPv6 地址可悬浮查看完整值，复制入口保留完整文本且不溢出');

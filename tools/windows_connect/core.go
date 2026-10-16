@@ -435,6 +435,78 @@ func (s store) allowedPeer(address net.IP) bool {
 	return allowed
 }
 
+func (s store) storedCredential(m metadata) (credential, error) {
+	path, err := s.privatePath("connect-password.dat")
+	if err != nil {
+		return credential{}, errUnavailable
+	}
+	sealed, err := readBounded(path, 32768)
+	if err != nil {
+		return credential{}, errUnavailable
+	}
+	defer clear(sealed)
+	digest := sha256.Sum256(sealed)
+	if hex.EncodeToString(digest[:]) != m.PasswordHash {
+		return credential{}, errUnavailable
+	}
+	plain, err := s.unprotect(sealed)
+	if err != nil {
+		return credential{}, errUnavailable
+	}
+	defer clear(plain)
+	var secret credential
+	if decodeJSON(plain, &secret) != nil || secret.Schema != 1 || secret.Username != m.Binding.Username || secret.Fingerprint != m.Binding.Fingerprint || secret.Password == "" || len(secret.Password) > 1024 {
+		return credential{}, errUnavailable
+	}
+	return secret, nil
+}
+
+func (s store) healthClient() (*http.Client, error) {
+	m, err := s.meta()
+	if err != nil || !m.Enabled {
+		return nil, errUnavailable
+	}
+	block, _ := pem.Decode([]byte(m.Certificate))
+	if block == nil {
+		return nil, errUnavailable
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, errUnavailable
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(cert)
+	configuration := &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots, ServerName: "gmssh-" + m.Binding.ID + ".local", VerifyConnection: func(state tls.ConnectionState) error {
+		if len(state.PeerCertificates) != 1 || !bytes.Equal(state.PeerCertificates[0].Raw, cert.Raw) {
+			return errUnavailable
+		}
+		return nil
+	}}
+	return &http.Client{Transport: &http.Transport{TLSClientConfig: configuration, DisableKeepAlives: true}, Timeout: 2 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, nil
+}
+
+func (s store) status() error {
+	client, err := s.healthClient()
+	if err != nil {
+		return errUnavailable
+	}
+	defer client.CloseIdleConnections()
+	response, err := client.Get("https://127.0.0.1:22257/v1/health")
+	if err != nil {
+		return errUnavailable
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 513))
+	var result struct {
+		Schema int  `json:"schema"`
+		Ready  bool `json:"ready"`
+	}
+	if err != nil || len(body) > 512 || response.StatusCode != 200 || decodeJSON(body, &result) != nil || result.Schema != 1 || !result.Ready {
+		return errUnavailable
+	}
+	return nil
+}
+
 func (s store) handler() http.Handler {
 	slots := make(chan struct{}, 1)
 	blockedToken := ""
@@ -454,6 +526,26 @@ func (s store) handler() http.Handler {
 		address := net.ParseIP(host)
 		if err != nil || !s.allowedPeer(address) || r.Header.Get("Origin") != "" {
 			fail(403)
+			return
+		}
+		if r.Method == "GET" && r.URL.Path == "/v1/health" && r.URL.RawQuery == "" {
+			if !address.IsLoopback() {
+				fail(403)
+				return
+			}
+			m, err := s.meta()
+			if err != nil || !m.Enabled {
+				fail(503)
+				return
+			}
+			secret, err := s.storedCredential(m)
+			secret.Password = ""
+			if err != nil {
+				fail(503)
+				return
+			}
+			// Health never attempts an account login or discloses credentials.
+			io.WriteString(w, "{\"schema\":1,\"ready\":true}")
 			return
 		}
 		if r.Method != "POST" || r.URL.Path != "/v1/connect" || r.URL.RawQuery != "" || r.ContentLength < 0 || r.ContentLength > 1024 {
@@ -488,33 +580,12 @@ func (s store) handler() http.Handler {
 			fail(403)
 			return
 		}
-		path, err := s.privatePath("connect-password.dat")
+		secret, err := s.storedCredential(m)
 		if err != nil {
 			fail(503)
 			return
 		}
-		sealed, err := readBounded(path, 32768)
-		if err != nil {
-			fail(503)
-			return
-		}
-		defer clear(sealed)
-		digest := sha256.Sum256(sealed)
-		if hex.EncodeToString(digest[:]) != m.PasswordHash {
-			fail(503)
-			return
-		}
-		plain, err := s.unprotect(sealed)
-		if err != nil {
-			fail(503)
-			return
-		}
-		defer clear(plain)
-		var secret credential
-		if decodeJSON(plain, &secret) != nil || secret.Schema != 1 || secret.Username != m.Binding.Username || secret.Fingerprint != m.Binding.Fingerprint || secret.Password == "" || len(secret.Password) > 1024 {
-			fail(503)
-			return
-		}
+		defer func() { secret.Password = "" }()
 		if s.validatePassword(secret.Username, secret.Password) != nil {
 			// External password changes must not turn repeated imports into lockouts.
 			blockedToken = m.Token

@@ -1,63 +1,83 @@
-type Reply = { id?: number; ok?: boolean; type?: string; message?: string; done?: boolean; bytes?: number; size?: number; name?: string; [key: string]: unknown };
+type Reply = { id?: number; ok?: boolean; type?: string; message?: string; done?: boolean; bytes?: number; size?: number; name?: string; phase?: string; [key: string]: unknown };
 export type FileEntry = { name: string; directory: boolean; size: number; modified: number };
+export type DownloadProgress = (bytes: number, total: number, phase: 'preparing' | 'receiving') => void;
 export class Operations {
   #socket?: WebSocket;
   #ready?: Promise<void>;
+  #rejectReady?: (error: Error) => void;
+  #readyTimer?: number;
   #id = 0;
   #pending = new Map<number, { resolve(reply: Reply): void; reject(error: Error): void; timer: number }>();
-  #download?: { id: number; chunks: BlobPart[]; bytes: number; size: number; name: string; resolve(value: {blob:Blob;name:string}): void; reject(error:Error):void };
+  #download?: { id: number; chunks: BlobPart[]; bytes: number; size: number; name: string; progress: DownloadProgress; timer?: number; cleanup(): void; resolve(value: {blob:Blob;name:string}): void; reject(error:Error):void };
   constructor(private token: () => string) {}
   async ready(): Promise<void> {
-    if (this.#socket?.readyState === WebSocket.OPEN && this.#ready) return this.#ready;
     if (this.#ready) return this.#ready;
     this.#ready = new Promise((resolve, reject) => {
       const socket = new WebSocket(new URL('/operations', location.origin.replace('http:', 'ws:')));
-      socket.binaryType = 'arraybuffer'; this.#socket = socket;
-      const timer = window.setTimeout(() => { reject(Error('操作连接超时。')); socket.close(); }, 20_000);
+      socket.binaryType = 'arraybuffer'; this.#socket = socket; this.#rejectReady = reject;
+      this.#readyTimer = window.setTimeout(() => this.close(Error('操作连接超时。')), 20_000);
       socket.onopen = () => socket.send(JSON.stringify({token:this.token()}));
       socket.onmessage = event => {
+        if (this.#socket !== socket) return;
         if (typeof event.data !== 'string') {
           const file = this.#download;
-          if (!file || event.data.byteLength > 65536 || file.bytes + event.data.byteLength > file.size) { this.close(); return; }
-          file.bytes += event.data.byteLength; file.chunks.push(event.data); return;
+          if (!file || file.size < 0 || event.data.byteLength > 65536 || file.bytes + event.data.byteLength > file.size) { this.close(Error('下载数据无效。')); return; }
+          file.bytes += event.data.byteLength; file.chunks.push(event.data); this.#downloadActivity();
+          file.progress(file.bytes, file.size, 'receiving'); return;
         }
-        const data: Reply = JSON.parse(event.data);
-        if (data.type === 'operations_ready') { clearTimeout(timer); resolve(); return; }
-        if (data.type === 'error') { clearTimeout(timer); reject(Error(data.message || '操作连接失败。')); this.close(); return; }
+        let data: Reply;
+        try { data = JSON.parse(event.data); if (!data || typeof data !== 'object') throw Error(); }
+        catch { this.close(Error('操作响应格式无效。')); return; }
+        if (data.type === 'operations_ready') { clearTimeout(this.#readyTimer); this.#rejectReady = undefined; resolve(); return; }
+        if (data.type === 'error') { this.close(Error(data.message || '操作连接失败。')); return; }
         const file = this.#download;
         if (file && data.id === file.id) {
-          if (data.ok === false) { file.reject(Error(data.message || '下载失败。')); this.#download = undefined; return; }
+          this.#downloadActivity();
+          if (data.ok === false) { this.#finishDownload(Error(data.message || '下载失败。')); return; }
+          if (data.phase === 'preparing') { file.progress(Number(data.bytes) || 0, 0, 'preparing'); return; }
           if (data.done) {
-            if (file.bytes !== file.size) file.reject(Error('下载大小不一致。'));
-            else file.resolve({blob:new Blob(file.chunks),name:file.name});
-            this.#download = undefined; return;
+            if (file.size < 0 || file.bytes !== file.size) this.#finishDownload(Error('下载大小不一致。'));
+            else this.#finishDownload(undefined, {blob:new Blob(file.chunks),name:file.name});
+            return;
           }
-          if (typeof data.size === 'number' && data.size >= 0 && data.size <= 512 * 1024 * 1024 && typeof data.name === 'string') { file.size = data.size; file.name = data.name; }
-          return;
+          if (!Number.isInteger(data.size) || data.size! < 0 || data.size! > 512 * 1024 * 1024 || typeof data.name !== 'string' || !data.name || data.name.length > 1024) { this.close(Error('下载信息无效。')); return; }
+          file.size = data.size!; file.name = data.name; file.progress(0, file.size, 'receiving'); return;
         }
         if (typeof data.id !== 'number') return;
         const pending = this.#pending.get(data.id); if (!pending) return;
         this.#pending.delete(data.id); clearTimeout(pending.timer);
         if (data.ok === false) pending.reject(Error(data.message || '操作失败。')); else pending.resolve(data);
       };
-      socket.onclose = () => { clearTimeout(timer); reject(Error('操作连接已关闭。')); this.close(); };
-      socket.onerror = () => { clearTimeout(timer); reject(Error('无法连接本机操作服务。')); this.close(); };
+      socket.onclose = () => this.close(Error('操作连接已关闭。'));
+      socket.onerror = () => this.close(Error('无法连接本机操作服务。'));
     });
     return this.#ready;
   }
   #wait(id: number, value: Record<string, unknown> | ArrayBuffer): Promise<Reply> {
+    if (this.#socket?.readyState !== WebSocket.OPEN) return Promise.reject(Error('操作连接已关闭。'));
     return new Promise((resolve, reject) => {
       const timer = window.setTimeout(() => { this.#pending.delete(id); reject(Error('文件或电源操作超时。')); }, 30_000);
       this.#pending.set(id, {resolve,reject,timer});
       this.#socket!.send(value instanceof ArrayBuffer ? value : JSON.stringify({...value,id}));
     });
   }
+  #downloadActivity(): void {
+    const file = this.#download; if (!file) return;
+    clearTimeout(file.timer);
+    file.timer = window.setTimeout(() => this.close(Error('下载长时间没有响应，请重试。')), 30_000);
+  }
+  #finishDownload(error?: Error, value?: {blob:Blob;name:string}): void {
+    const file = this.#download; this.#download = undefined; if (!file) return;
+    clearTimeout(file.timer); file.cleanup();
+    if (error) file.reject(error); else file.resolve(value!);
+  }
   async request(op: string, values: Record<string, unknown> = {}): Promise<Reply> { await this.ready(); return this.#wait(++this.#id,{op,...values}); }
   async list(path = ''): Promise<{path:string;entries:FileEntry[];truncated:boolean}> { return await this.request('list',{path}) as unknown as {path:string;entries:FileEntry[];truncated:boolean}; }
-  async upload(file: File, path: string, progress: (bytes:number) => void, cancelled: () => boolean): Promise<void> {
-    if (file.size > 512 * 1024 * 1024) throw Error('单文件暂限 512 MB。');
+  async mkdir(path:string): Promise<void> { await this.request('mkdir',{path}); }
+  async upload(file: File, path: string, progress: (bytes:number) => void, cancelled: () => boolean, name=file.name): Promise<void> {
+    if (file.size > 512 * 1024 * 1024) throw Error('单文件暂限 512 MiB。');
     await this.ready(); const id = ++this.#id;
-    await this.#wait(id,{op:'upload-start',path,name:file.name,size:file.size});
+    await this.#wait(id,{op:'upload-start',path,name,size:file.size});
     try {
       for (let offset = 0; offset < file.size; offset += 65536) {
         if (cancelled()) throw Error('已取消上传。');
@@ -68,14 +88,21 @@ export class Operations {
       await this.#wait(id,{op:'upload-finish'});
     } catch (error) { try { await this.#wait(id,{op:'upload-cancel'}); } catch {} throw error; }
   }
-  async download(path:string): Promise<{blob:Blob;name:string}> {
+  async download(path:string, options:{directory?:boolean;progress?:DownloadProgress;signal?:AbortSignal}={}): Promise<{blob:Blob;name:string}> {
     await this.ready(); if (this.#download) throw Error('请等待当前下载完成。');
-    return new Promise((resolve,reject) => { const id=++this.#id; this.#download={id,chunks:[],bytes:0,size:0,name:'download',resolve,reject}; this.#socket!.send(JSON.stringify({id,op:'download',path})); });
+    if (options.signal?.aborted) throw Error('已取消下载。');
+    return new Promise((resolve,reject) => {
+      const id=++this.#id,abort=()=>this.close(Error('已取消下载。'));
+      this.#download={id,chunks:[],bytes:0,size:-1,name:'download',progress:options.progress||(()=>{}),cleanup:()=>options.signal?.removeEventListener('abort',abort),resolve,reject};
+      options.signal?.addEventListener('abort',abort,{once:true}); this.#downloadActivity();
+      this.#socket!.send(JSON.stringify({id,op:options.directory?'download-folder':'download',path}));
+    });
   }
-  close(): void {
+  close(error=Error('操作连接已关闭。')): void {
     const socket=this.#socket; this.#socket=undefined; this.#ready=undefined;
-    if (socket) { socket.onclose=socket.onerror=null; socket.close(); }
-    for (const pending of this.#pending.values()) { clearTimeout(pending.timer); pending.reject(Error('操作连接已关闭。')); } this.#pending.clear();
-    this.#download?.reject(Error('下载已断开。')); this.#download=undefined;
+    clearTimeout(this.#readyTimer); this.#rejectReady?.(error); this.#rejectReady=undefined;
+    if (socket) { socket.onopen=socket.onmessage=socket.onclose=socket.onerror=null; socket.close(); }
+    for (const pending of this.#pending.values()) { clearTimeout(pending.timer); pending.reject(error); } this.#pending.clear();
+    this.#finishDownload(error);
   }
 }

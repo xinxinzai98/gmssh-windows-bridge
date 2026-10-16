@@ -177,6 +177,17 @@ function Get-GMSSHReadiness {
         [string]$portFilter.LocalPort -eq '22' -and [string]$portFilter.Protocol -in @('TCP','6') -and -not $profiles.Count)) '安装器的 SSH 规则及防火墙状态'
     if (-not $MonitorOnly) {
         $agent = Get-Content (Join-Path $DataRoot 'agent.json') -Raw | ConvertFrom-Json
+        if ($agent.unifiedPassword) {
+            try {
+                . (Join-Path $ProgramRoot 'setup-connect.ps1')
+                $codeHealth = Get-GMSSHConnectHealth $ProgramRoot $DataRoot -Wait
+                Add-Check '连接码服务' $codeHealth.ready $codeHealth.detail
+                $codeTask = Get-GMSSHConnectTask $ProgramRoot $DataRoot
+                Add-Check '连接码开机任务' ([bool]($codeTask -and $codeTask.State -eq 'Running')) '本程序的 SYSTEM 开机任务应运行'
+                $codeRule = Get-GMSSHConnectRule $ProgramRoot
+                Add-Check '连接码局域网规则' ([bool]($codeRule -and [string]$codeRule.Enabled -eq 'True')) '本程序的 TCP 22257 局域网规则应启用'
+            } catch { Add-Check '连接码服务与配置' $false '无法核对，请使用管理员自检或运行升级 / 修复' }
+        }
         Add-Check '安装账号身份' ([bool]($account -and $agent.computer -ieq [Environment]::MachineName -and $agent.username -ceq $connection.username -and
             (-not $agent.managedAccountSid -or $agent.managedAccountSid -ceq $account.SID.Value))) '保留安装记录中的账号身份'
         if ($agent.accountRole -eq 'Administrator') {
