@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Develop 0.4.0a20 locally: search the loaded directory by name, sort naturally or by file size/modification time, refresh explicitly and display modification metadata without inventing missing timestamps. Searches are local to the loaded entries and clearly identify truncated directories.
+- Select/deselect only matching visible entries; retain other selections with an explicit hidden-selection count, offer clear selection, and refresh selected metadata without retaining disappeared or changed-kind entries.
+- Keep navigation and transfer targets consistent: suspend old-directory transfer controls while reading, retain the previous directory on failure, discard stale replies and reset old selection/search after successful navigation. Keep browsing controls and file rows reachable in short windows.
+- Validate bounded directory replies before replacing the last successful listing, including names, duplicates, sizes and timestamps. No new remote operations or listeners are introduced.
+
 - Develop 0.4.0a19 locally: filter file tasks by device, state, filename and path; progressively display the complete native queue in batches of 50 instead of hiding jobs beyond the old summary limits. Preserve search focus and expanded details during polling.
 - Show task source, destination, creation time, failure code and verified SHA-256 as local metadata. Provide readable recovery hints and per-task cancellation/partial cleanup in the global view.
 - Pause an explicit snapshot of filtered native jobs and clear only selected completed/cancelled records. Validate all IDs and device ownership before mutation, pause queued jobs before releasing the active worker, retain pending-cleanup records and never remove files when clearing records.

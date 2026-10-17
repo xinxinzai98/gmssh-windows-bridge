@@ -72,7 +72,11 @@ export class Operations {
     if (error) file.reject(error); else file.resolve(value!);
   }
   async request(op: string, values: Record<string, unknown> = {}): Promise<Reply> { await this.ready(); return this.#wait(++this.#id,{op,...values}); }
-  async list(path = ''): Promise<{path:string;entries:FileEntry[];truncated:boolean}> { return await this.request('list',{path}) as unknown as {path:string;entries:FileEntry[];truncated:boolean}; }
+  async list(path = ''): Promise<{path:string;entries:FileEntry[];truncated:boolean}> {
+    const reply=await this.request('list',{path});
+    if(typeof reply.path!=='string'||reply.path.length>1024||!(/^(?:\/|[A-Za-z]:\/[^\x00-\x1f]*)$/.test(reply.path))||typeof reply.truncated!=='boolean'||!Array.isArray(reply.entries)||reply.entries.length>2000||reply.entries.some(entry=>!entry||typeof entry.name!=='string'||!entry.name||entry.name.length>255||['.','..'].includes(entry.name)||/[\/\\\x00-\x1f]/.test(entry.name)||typeof entry.directory!=='boolean'||!Number.isSafeInteger(entry.size)||entry.size<0||!Number.isFinite(entry.modified)||entry.modified<0)||new Set(reply.entries.map(entry=>entry.name)).size!==reply.entries.length)throw Error('目录响应无效，已保留上次成功读取的目录。');
+    return reply as unknown as {path:string;entries:FileEntry[];truncated:boolean};
+  }
   async mkdir(path:string): Promise<void> { await this.request('mkdir',{path}); }
   async upload(file: File, path: string, progress: (bytes:number) => void, cancelled: () => boolean, name=file.name): Promise<void> {
     if (file.size > 512 * 1024 * 1024) throw Error('单文件暂限 512 MiB。');

@@ -4,9 +4,14 @@ import { TransferQueue, droppedUploads, selectedUploads, type TransferTask, type
 const get=<T extends HTMLElement>(id:string)=>document.getElementById(id) as T;
 const size=(bytes:number)=>bytes>=1024**2?(bytes/1024**2).toFixed(1)+' MiB':bytes>=1024?(bytes/1024).toFixed(1)+' KiB':bytes+' B';
 const button=(text:string,run:()=>void)=>{const node=document.createElement('button');node.type='button';node.textContent=text;node.onclick=run;return node;};
+export function browseEntries(entries:readonly FileEntry[],query:string,order:string):FileEntry[]{
+  const text=query.trim().toLocaleLowerCase(),names=(a:FileEntry,b:FileEntry)=>a.name.localeCompare(b.name,'zh-CN',{numeric:true,sensitivity:'base'});
+  return entries.filter(entry=>entry.name.toLocaleLowerCase().includes(text)).sort((a,b)=>Number(b.directory)-Number(a.directory)||(order==='size'?b.size-a.size:order==='modified'?b.modified-a.modified:0)||names(a,b));
+}
+const modified=(value:number)=>value>0&&Number.isFinite(new Date(value*1000).getTime())?new Date(value*1000).toLocaleString():'时间未知';
 export function installFilePanel(options:{token:()=>string;operations:Operations;available:()=>boolean;releaseInputs:()=>void;closeBrowseAfterUse?:boolean;changed?:(tasks:readonly TransferTask[])=>void;permit?:(signal:AbortSignal)=>Promise<()=>void>;queue?:(changed:(tasks:readonly TransferTask[])=>void)=>TransferCollection}) {
   const panel=get('file-panel'),list=get('file-list'),note=get('file-note'),selected=new Map<string,FileEntry>();
-  let path='/',entries:FileEntry[]=[],request=0,renderTimer:number|undefined,idleCompleted=0,lastTask=0,mode:'files'|'transfers'='files',disposed=false,taskLimit=50,browsing=false;
+  let path='/',entries:FileEntry[]=[],visibleEntries:FileEntry[]=[],truncated=false,request=0,renderTimer:number|undefined,idleCompleted=0,lastTask=0,mode:'files'|'transfers'='files',disposed=false,taskLimit=50,browsing=false;
   const pendingDrops=new Set<AbortController>();
   const rows=new Map<number,{root:HTMLElement;name:HTMLElement;detail:HTMLElement;bar:HTMLProgressElement;cancel:HTMLButtonElement;retry:HTMLButtonElement;rename:HTMLInputElement;renameButton:HTMLButtonElement;pause:HTMLButtonElement;description:HTMLElement}>();
   const filters=document.createElement('div'),search=document.createElement('input'),status=document.createElement('select'),matches=document.createElement('p');filters.className='transfer-filters';
@@ -14,6 +19,13 @@ export function installFilePanel(options:{token:()=>string;operations:Operations
   for(const [value,label] of [['all','全部状态'],['active','进行中与排队'],['attention','需要处理'],['paused','已暂停'],['failed','未完成'],['done','已完成'],['cancelled','已取消']]){const option=document.createElement('option');option.value=value;option.textContent=label;status.append(option);}
   filters.append(search,status);matches.className='transfer-matches';const more=button('显示更多',()=>{taskLimit+=50;renderTransfers();});more.className='transfer-more';get('transfer-list').before(filters,matches);get('transfer-list').after(more);
   search.oninput=status.onchange=()=>{taskLimit=50;renderTransfers();};
+  const browserTools=document.createElement('div'),fileSearch=document.createElement('input'),fileOrder=document.createElement('select'),selectionInfo=document.createElement('div'),selectionText=document.createElement('small');browserTools.className='file-browser-tools';selectionInfo.className='file-selected-info';
+  fileSearch.type='search';fileSearch.placeholder='搜索当前目录';fileSearch.maxLength=256;fileSearch.setAttribute('aria-label','搜索当前目录');fileSearch.title='只筛选当前已读取的目录，不搜索子目录';fileOrder.setAttribute('aria-label','文件排序');
+  for(const [value,label] of [['name','名称顺序'],['size','大文件优先'],['modified','最近修改优先']]){const option=document.createElement('option');option.value=value;option.textContent=label;fileOrder.append(option);}
+  const refreshButton=button('刷新',()=>void refresh()),clearSelection=button('清空选择',()=>{selected.clear();renderFiles();});refreshButton.title='重新读取当前目录';refreshButton.setAttribute('aria-label','刷新当前目录');
+  browserTools.append(fileSearch,fileOrder,refreshButton);selectionInfo.append(selectionText,clearSelection);get('file-note').before(browserTools,selectionInfo);
+  fileSearch.oninput=fileOrder.onchange=()=>renderFiles();
+  get('select-all-files').setAttribute('aria-label','全选当前筛选结果');
   const tell=(text:string)=>{note.textContent=text;};
   const fail=(error:unknown)=>{get('file-feedback').textContent=error instanceof Error?error.message:String(error);get('file-feedback').hidden=false;};
   const run=(action:()=>void|Promise<void>)=>{if(disposed)return;get('file-feedback').hidden=true;try{Promise.resolve(action()).catch(fail);}catch(error){fail(error);}};
@@ -38,9 +50,11 @@ export function installFilePanel(options:{token:()=>string;operations:Operations
     get(id).onclick=()=>setMode(value);get(id).onkeydown=event=>{if(event.key==='ArrowLeft'||event.key==='ArrowRight'){event.preventDefault();const next=value==='files'?'transfers':'files';setMode(next);get(next==='files'?'file-browse-tab':'file-transfers-tab').focus();}};
   }
   function updateSelection():void {
-    get<HTMLButtonElement>('download-selected').disabled=!selected.size;
+    get<HTMLButtonElement>('upload').disabled=get<HTMLButtonElement>('upload-folder').disabled=browsing||path==='/'||!options.available();refreshButton.disabled=browsing;get<HTMLButtonElement>('parent-folder').disabled=browsing||path==='/';
+    get<HTMLButtonElement>('download-selected').disabled=browsing||!selected.size;
     get('download-count').textContent=selected.size?'（'+selected.size+'）':'';
-    get<HTMLInputElement>('select-all-files').checked=path!=='/'&&entries.length>0&&selected.size===entries.length;
+    const count=visibleEntries.filter(entry=>selected.has(join(entry.name))).length,all=get<HTMLInputElement>('select-all-files');all.disabled=browsing||path==='/'||!visibleEntries.length;all.checked=path!=='/'&&visibleEntries.length>0&&count===visibleEntries.length;all.indeterminate=count>0&&count<visibleEntries.length;
+    selectionInfo.hidden=!selected.size;selectionText.textContent='已选 '+selected.size+' 项'+(selected.size>count?'（'+(selected.size-count)+' 项被筛选隐藏）':'');clearSelection.disabled=browsing;
   }
   function breadcrumbs():void {
     const target=get('file-location');target.replaceChildren(button('此电脑',()=>void refresh('/')));
@@ -51,29 +65,32 @@ export function installFilePanel(options:{token:()=>string;operations:Operations
   async function refresh(next=path):Promise<void> {
     if(disposed)return;
     if(!options.available()){fail('请先接通这台电脑的 SSH 连接，再使用文件互传。');get<HTMLButtonElement>('upload').disabled=get<HTMLButtonElement>('upload-folder').disabled=true;return;}
-    const current=++request;browsing=true;tell('正在读取目录…');
+    const current=++request;browsing=true;list.setAttribute('aria-busy','true');list.inert=true;updateSelection();tell('正在读取目录…');get('file-feedback').hidden=true;
     try{
       const reply=await options.operations.list(next);if(disposed||current!==request)return;
-      path=reply.path;entries=reply.entries;selected.clear();get<HTMLInputElement>('file-path').value=path;list.replaceChildren();breadcrumbs();
-      get<HTMLButtonElement>('upload').disabled=get<HTMLButtonElement>('upload-folder').disabled=path==='/';get<HTMLInputElement>('select-all-files').disabled=path==='/';
-      for(const entry of [...entries].sort((a,b)=>Number(b.directory)-Number(a.directory)||a.name.localeCompare(b.name))){
+      if(path!==reply.path){selected.clear();fileSearch.value='';}else for(const [remote,old] of selected){const current=reply.entries.find(entry=>join(entry.name)===remote);if(!current||current.directory!==old.directory)selected.delete(remote);else selected.set(remote,current);}
+      path=reply.path;entries=reply.entries;truncated=reply.truncated;browsing=false;get<HTMLInputElement>('file-path').value=path;breadcrumbs();renderFiles();
+    }catch(error){if(!disposed&&current===request){get<HTMLInputElement>('file-path').value=path;fail(error instanceof Error?error.message:'目录读取失败。');tell('读取失败，仍显示上次成功的目录：'+path);}}
+    finally{if(current===request){browsing=false;list.inert=false;list.setAttribute('aria-busy','false');updateSelection();if(options.closeBrowseAfterUse)options.operations.close();}}
+  }
+  function renderFiles():void {
+      visibleEntries=browseEntries(entries,fileSearch.value,fileOrder.value);list.replaceChildren();
+      for(const entry of visibleEntries){
         const remote=join(entry.name),row=document.createElement('div');row.className='file-row';
         if(path!=='/'){
           const check=document.createElement('input');check.type='checkbox';check.setAttribute('aria-label','选择 '+entry.name);
-          check.onchange=()=>{if(check.checked)selected.set(remote,entry);else selected.delete(remote);updateSelection();};row.append(check);
+          check.checked=selected.has(remote);check.onchange=()=>{if(check.checked)selected.set(remote,entry);else selected.delete(remote);updateSelection();};row.append(check);
         }
-        const open=button('',()=>{if(entry.directory)void refresh(remote);});open.className='file-open';open.title=entry.name;
+        const open=button('',()=>{if(entry.directory)void refresh(remote);});open.className='file-open';open.title=entry.name+'\n'+remote+'\n修改时间：'+modified(entry.modified);
         const icon=document.createElement('img');icon.src='/ui-icons/'+(entry.directory?'folder':'file')+'.svg';icon.alt='';const name=document.createElement('span');name.textContent=entry.name;open.append(icon,name);row.append(open);
-        if(!entry.directory){const bytes=document.createElement('small');bytes.textContent=size(entry.size);row.append(bytes);}
+        if(path!=='/'){const meta=document.createElement('div');meta.className='file-entry-meta';const bytes=document.createElement('small'),date=document.createElement('small');bytes.textContent=entry.directory?'文件夹':size(entry.size);date.className='file-modified';date.textContent=modified(entry.modified);meta.append(bytes,date);row.append(meta);}
         if(path!=='/'){
           const download=button('',()=>run(()=>queue.addDownloads([{path:remote,name:entry.name,directory:entry.directory,size:entry.size}])));download.className='file-download';download.title=entry.directory?(queue.native?'下载文件夹':'下载文件夹（ZIP）'):'下载到本机';download.setAttribute('aria-label',download.title+' · '+entry.name);
           const image=document.createElement('img');image.src='/ui-icons/download-simple.svg';image.alt='';download.append(image);row.append(download);
         }
         list.append(row);
       }
-      updateSelection();tell(path==='/'?'先打开一个磁盘或文件夹，再上传或选择下载。':reply.truncated?'目录较大，当前显示前 2000 项。':entries.length?entries.length+' 项':'此文件夹为空，可选择文件或拖入上传。');
-    }catch(error){if(!disposed&&current===request)fail(error instanceof Error?error.message:'目录读取失败。');}
-    finally{if(current===request){browsing=false;if(options.closeBrowseAfterUse)options.operations.close();}}
+      updateSelection();tell((browsing?'正在读取目录…':fileSearch.value.trim()?visibleEntries.length+' / '+entries.length+' 项匹配，仅筛选当前已读取的目录':path==='/'?'先打开一个磁盘或文件夹，再上传或选择下载。':entries.length?entries.length+' 项':'此文件夹为空，可选择文件或拖入上传。')+(truncated?' · 目录较大，仅载入前 2000 项；未搜索未载入的文件。':''));
   }
   function renderTransfers():void {
     const pending=queue.items.filter(item=>item.status==='queued'||item.status==='running'||item.status==='committing').length;
@@ -117,7 +134,7 @@ export function installFilePanel(options:{token:()=>string;operations:Operations
   get('upload').onclick=()=>queue.chooseUploads?run(()=>queue.chooseUploads!(path,false)):get<HTMLInputElement>('upload-input').click();get('upload-folder').onclick=()=>queue.chooseUploads?run(()=>queue.chooseUploads!(path,true)):get<HTMLInputElement>('folder-input').click();
   get<HTMLFormElement>('path-form').onsubmit=event=>{event.preventDefault();void refresh(get<HTMLInputElement>('file-path').value);};
   get('parent-folder').onclick=()=>{if(path==='/')return;const parts=path.replace(/\/$/,'').split('/');parts.pop();void refresh(parts.length?parts.join('/')+'/':'/');};
-  get<HTMLInputElement>('select-all-files').onchange=event=>{selected.clear();const checked=(event.target as HTMLInputElement).checked;for(const entry of entries)if(checked)selected.set(join(entry.name),entry);for(const check of list.querySelectorAll<HTMLInputElement>('input[type=checkbox]'))check.checked=checked;updateSelection();};
+  get<HTMLInputElement>('select-all-files').onchange=event=>{const checked=(event.target as HTMLInputElement).checked;for(const entry of visibleEntries)if(checked)selected.set(join(entry.name),entry);else selected.delete(join(entry.name));for(const check of list.querySelectorAll<HTMLInputElement>('input[type=checkbox]'))check.checked=checked;updateSelection();};
   get('download-selected').onclick=()=>run(()=>queue.addDownloads([...selected].map(([remote,entry])=>({path:remote,name:entry.name,directory:entry.directory,size:entry.size}))));
   get('cancel-transfers').onclick=()=>run(()=>queue.cancelAll());get('clear-transfers').onclick=()=>run(()=>queue.clearFinished());
   const open=()=>{if(disposed)return;panel.hidden=false;options.releaseInputs();setMode(mode);get('remote-files-label').textContent='本机 ↔ '+(get('session-label').textContent||'此设备');void refresh();};
