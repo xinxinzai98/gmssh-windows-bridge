@@ -48,7 +48,7 @@ class FileTasks {
   }
   save(){if(this.readyError)throw fail(this.readyError);atomic(this.journal,{schema:1,next:this.next,jobs:this.jobs});this.version++;}
   activeCount(){return this.jobs.filter(j=>ACTIVE.has(j.status)).length;}
-  list(machineId){return {version:this.version,jobs:this.jobs.filter(j=>!machineId||j.machineId===machineId).map(j=>({id:j.id,machineId:j.machineId,device:j.device,name:j.name,kind:j.kind,status:j.status,bytes:j.bytes,size:j.size,phase:j.phase||'',copyBytes:j.copyBytes||0,code:j.code||'',sha256:j.status==='done'?j.sha256:null,started:j.started||0,needsGrant:!this.grants.has(j.id)&&j.status!=='done',cleanupPending:!!j.cleanupPending}))};}
+  list(machineId){return {version:this.version,jobs:this.jobs.filter(j=>!machineId||j.machineId===machineId).map(j=>({id:j.id,machineId:j.machineId,device:j.device,name:j.name,kind:j.kind,status:j.status,bytes:j.bytes,size:j.size,phase:j.phase||'',copyBytes:j.copyBytes||0,code:j.code||'',sha256:j.status==='done'?j.sha256:null,started:j.started||0,createdAt:j.createdAt,source:j.kind==='download'?j.remote:j.local.source||j.local.root||'',target:j.kind==='download'?j.local.target:j.remote,needsGrant:!this.grants.has(j.id)&&j.status!=='done',cleanupPending:!!j.cleanupPending}))};}
   job(machineId,id){const j=this.jobs.find(j=>j.id===id&&j.machineId===machineId);if(!j)throw fail('TASK_NOT_FOUND');return j;}
   async binding(machineId){if(!ID.test(machineId))throw fail('INVALID_DEVICE');const value=await this.resolveBinding(machineId);if(!value)throw fail('DEVICE_CONFIG_UNAVAILABLE');return value;}
   async picker(run){if(this.dialogBusy)throw fail('PICKER_BUSY');this.dialogBusy=true;try{return await run();}finally{this.dialogBusy=false;}}
@@ -118,6 +118,14 @@ class FileTasks {
     j.status='queued';j.code='';this.save();this.pump();return {resumed:true};
   }
   async pause(machineId,id){const j=this.job(machineId,id);if(this.running?.job===j){this.running.reason='pause';this.running.worker?.stop();await this.running.promise;}else if(ACTIVE.has(j.status)){j.status='paused';j.code='PAUSED';this.save();}return {paused:true};}
+  selectedJobs(machineId,ids){if(!Array.isArray(ids)||!ids.length||ids.length>MAX_JOBS||ids.some(id=>!Number.isSafeInteger(id)||id<1)||new Set(ids).size!==ids.length)throw fail('INVALID_TRANSFER');return ids.map(id=>this.job(machineId,id));}
+  async pauseMany(machineId,ids){
+    const selected=this.selectedJobs(machineId,ids).filter(j=>ACTIVE.has(j.status));
+    // Pause the selected queued jobs before stopping the worker, which otherwise starts the next job.
+    for(const j of selected)if(j.status==='queued'){j.status='paused';j.code='PAUSED';}
+    this.save();if(selected.includes(this.running?.job))await this.pause(machineId,this.running.job.id);
+    return {paused:selected.length};
+  }
   async cancel(machineId,id){const j=this.job(machineId,id);if(j.status==='done'){if(!j.cleanupPending||j.kind!=='upload')throw fail('TASK_FINISHED');await this.query(machineId,'discard',{remote:j.remote,peer:j.peer,partToken:j.partToken,size:j.size,sha256:j.sha256});j.cleanupPending=false;this.save();return {cleaned:true};}await this.pause(machineId,id);
     if(j.kind==='download'&&j.local.part&&!this.grants.has(id)){
       j.status='cancelled';j.code='CANCELLED';j.cleanupPending=true;this.save();
@@ -140,10 +148,10 @@ class FileTasks {
   }
   async pauseAll(){if(this.readyError)return;for(const j of this.jobs)if(j.status==='queued'){j.status='paused';j.code='PAUSED';}if(this.running){this.running.reason='pause';this.running.worker?.stop();await this.running.promise;}this.save();}
   async shutdown(){this.closed=true;try{await this.pauseAll();}finally{const pending=[...this.queries];for(const q of pending)q.stop();await Promise.allSettled(pending.map(q=>q.promise));this.grants.clear();}}
-  clear(machineId){this.jobs=this.jobs.filter(j=>j.machineId!==machineId||!['done','cancelled'].includes(j.status)||j.cleanupPending);this.save();}
+  clear(machineId,ids){const selected=ids===undefined?this.jobs.filter(j=>j.machineId===machineId):this.selectedJobs(machineId,ids),remove=new Set(selected.filter(j=>['done','cancelled'].includes(j.status)&&!j.cleanupPending));this.jobs=this.jobs.filter(j=>!remove.has(j));for(const j of remove)this.grants.delete(j.id);this.save();return {cleared:remove.size};}
   async invoke(action,machineId,data={}){
     if(this.readyError)throw fail(this.readyError);if(this.closed)throw fail('MANAGER_CLOSED');
-    const keys={hello:[],list:[],'pick-upload':['remote','directory','hints'],'pick-download':['entries'],resume:['id','name'],pause:['id'],cancel:['id'],clear:[],'cancel-all':[]}[action];
+    const keys={hello:[],list:[],'pick-upload':['remote','directory','hints'],'pick-download':['entries'],resume:['id','name'],pause:['id'],'pause-many':['ids'],cancel:['id'],clear:['ids'],'cancel-all':[]}[action];
     if(!keys||(machineId!=null&&!ID.test(machineId))||!data||typeof data!=='object'||Array.isArray(data)||Object.keys(data).some(k=>!keys.includes(k))||(!['hello','list'].includes(action)&&!ID.test(machineId)))throw fail('INVALID_TRANSFER');
     if(['resume','pause','cancel'].includes(action)&&!Number.isSafeInteger(data.id))throw fail('INVALID_TRANSFER');
     try{
@@ -153,8 +161,9 @@ class FileTasks {
     if(action==='pick-download')return await this.pickDownload(machineId,data);
     if(action==='resume')return await this.resume(machineId,data.id,data.name);
     if(action==='pause')return await this.pause(machineId,data.id);
+    if(action==='pause-many')return await this.pauseMany(machineId,data.ids);
     if(action==='cancel')return await this.cancel(machineId,data.id);
-    if(action==='clear'){this.clear(machineId);return {};}
+    if(action==='clear')return this.clear(machineId,data.ids);
     if(action==='cancel-all'){const pending=this.jobs.filter(j=>j.machineId===machineId&&['queued','running','committing','paused','failed'].includes(j.status));for(const j of pending)if(j.status==='queued')j.status='paused';for(const j of pending)await this.cancel(machineId,j.id);return {};}
     throw fail('INVALID_TRANSFER');
     }catch(error){throw fail(errorCode(error));}

@@ -1,0 +1,36 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>文件中心任务管理 · 合成检查</title><link rel="stylesheet" href="/gmssh-theme.css"><style>body{background:#171719;color:#eee;font:14px system-ui;margin:0}.tabs-container{height:48px;display:flex;align-items:center;padding:0 18px;background:#141416}main{padding:24px}pre{white-space:pre-wrap}button{cursor:pointer}</style>
+<div class="tabs-container"><button>首页</button></div><main><h1>文件中心任务管理 · 合成设备</h1><p>260 余项合成任务；不连接真实电脑或读取本机文件。</p><button id="run">运行检查</button><button id="preview">查看任务预览</button><pre id="result">待运行</pre></main><script src="/gmssh-files.js"></script><script>
+const a='1'.repeat(32),b='2'.repeat(32),linux='3'.repeat(32),removed='4'.repeat(32),calls=[];
+let jobs=Array.from({length:262},(_,i)=>({id:i+1,machineId:i%2?a:b,device:i%2?'研发工作站':'设计工作站',name:i===0?'<img src=x onerror=alert(1)>.txt':i===250?'共享报告-中文.txt':'归档-'+String(i+1).padStart(3,'0')+'.bin',kind:i%2?'upload':'download',status:i<250?'done':i<256?'paused':i<260?'failed':'queued',bytes:1024,size:4096,phase:'',code:i<250?'':i<256?'REAUTHORIZE':i<260?'DISK_FULL':'',source:i%2?'/Synthetic/输入/资料-'+i+'.bin':'C:/资料/远端-'+i+'.bin',target:i%2?'C:/接收/资料-'+i+'.bin':'/Synthetic/Downloads/资料-'+i+'.bin',needsGrant:i>=250,createdAt:'2026-10-17T01:02:03.000Z',sha256:i<250?'a'.repeat(64):null}));
+jobs.push({id:263,machineId:removed,device:'旧设备',name:'待清理.txt',kind:'download',status:'cancelled',bytes:0,size:12,code:'CANCELLED',cleanupPending:true,needsGrant:true});
+window.electronAPI={invoke:async(_channel,request)=>{
+ if(request.type==='gmssh-files-state')return {status:'ok'};const {action,machineId,data}=request.data;calls.push(structuredClone(request.data));
+ if(action==='hello')return {status:'ok',data:{protocol:2}};
+ if(action==='list')return {status:'ok',data:{jobs:jobs.filter(j=>!machineId||j.machineId===machineId)}};
+ if(action==='pause-many'){let count=0;for(const j of jobs)if(j.machineId===machineId&&data.ids.includes(j.id)&&['queued','running','committing'].includes(j.status)){j.status='paused';j.code='PAUSED';count++;}return {status:'ok',data:{paused:count}};}
+ if(action==='clear'){let count=0;jobs=jobs.filter(j=>{if(j.machineId===machineId&&data.ids.includes(j.id)&&['done','cancelled'].includes(j.status)&&!j.cleanupPending){count++;return false;}return true;});return {status:'ok',data:{cleared:count}};}
+ return {status:'error',code:action==='resume'?'VOLUME_UNAVAILABLE':'TRANSFER_IO'};
+}};
+window.gmsshHomeController={filesDevices:()=>[{id:a,name:'研发工作站',windows:true},{id:b,name:'设计工作站',windows:true},{id:linux,name:'Linux 原生设备',windows:false}]};
+const controller=installGMSSHFileCenter({viewerUrl:location.origin+'/',devices:[a,b].map((id,i)=>({machineId:id,label:i?'设计工作站':'研发工作站',viewerUrl:location.origin+'/unused-'+i+'/',accessToken:'A'.repeat(48)}))});
+const wait=async check=>{for(let i=0;i<200;i++){if(await check())return;await new Promise(r=>setTimeout(r,30));}throw Error('等待超时');},tasks=()=>[...document.querySelectorAll('.gm-files-header button')].find(n=>n.textContent.startsWith('全部任务')).click(),open=()=>{controller.open(linux);tasks();};
+const select=(label,value)=>{const el=document.querySelector('[aria-label="'+label+'"]');el.value=value;el.dispatchEvent(new Event('change'));},search=value=>{const el=document.querySelector('[aria-label="搜索传输任务"]');el.value=value;el.dispatchEvent(new Event('input'));},rows=()=>[...document.querySelectorAll('.gm-files-task')];
+document.getElementById('preview').onclick=open;if(new URL(location.href).searchParams.has('preview'))setTimeout(open,100);
+document.getElementById('run').onclick=async()=>{const checks=[],assert=(v,t)=>{if(!v)throw Error(t);checks.push('PASS '+t);};try{
+ await wait(()=>controller.native);open();assert(rows().length===50,'默认只渲染 50 项，完整任务数保留');
+ for(let i=0;i<5;i++)document.querySelector('.gm-files-more').click();assert(rows().length===263,'翻页可访问超过旧上限的所有任务');assert(document.querySelectorAll('.gm-files-task strong img').length===0,'文件名作为文字显示，不执行标记');
+ select('按设备筛选任务',a);assert(rows().length===50&&rows().every(n=>n.textContent.includes('研发工作站')),'设备筛选不混入其他设备');
+ select('按状态筛选任务','paused');assert(rows().length===3&&rows().every(n=>n.dataset.state==='paused'),'状态筛选定位暂停任务');
+ select('按设备筛选任务','');select('按状态筛选任务','all');search('共享报告');assert(rows().length===1&&rows()[0].textContent.includes('共享报告-中文'),'中文文件名搜索');
+ search('/Synthetic/Downloads/资料-0.bin');assert(rows().length===1,'可以按本机目标路径搜索');
+ const input=document.querySelector('[aria-label="搜索传输任务"]');input.focus();input.setSelectionRange(5,5);const detail=rows()[0].querySelector('details');detail.open=true;await new Promise(r=>setTimeout(r,850));assert(document.activeElement===input&&input.selectionStart===5&&detail.isConnected&&detail.open,'轮询保留搜索焦点、输入位置和展开详情');
+ assert(detail.textContent.includes('来源：')&&detail.textContent.includes('目标：')&&detail.textContent.includes('SHA-256'),'任务详情显示源、目标、校验摘要');
+ search('没有这个文件');assert(rows().length===0&&document.querySelector('.gm-files-task-list').nextElementSibling.textContent.includes('没有符合'),'无匹配有明确提示');
+ search('');select('按状态筛选任务','failed');assert(rows()[0].textContent.includes('磁盘空间或配额不足'),'失败原因使用可读文字');rows()[0].querySelector('button[aria-label^="继续"]').click();await wait(()=>document.querySelector('.gm-files-feedback').textContent.includes('磁盘或网络盘暂不可用'));assert(true,'操作失败保留任务并给出恢复提示');
+ select('按设备筛选任务',a);select('按状态筛选任务','active');document.querySelector('.gm-files-batch button').click();await wait(()=>jobs.find(j=>j.id===262).status==='paused'&&document.querySelector('.gm-files-feedback').textContent.startsWith('已暂停'));assert(jobs.find(j=>j.id===261).status==='queued','批量暂停只处理当前筛选的设备和任务');
+ select('按状态筛选任务','done');const old=jobs.length;await wait(()=>!document.querySelectorAll('.gm-files-batch button')[1].disabled);document.querySelectorAll('.gm-files-batch button')[1].click();await wait(()=>jobs.length<old&&document.querySelector('.gm-files-feedback').textContent.startsWith('已清除'));assert(jobs.filter(j=>j.machineId===a&&j.status==='done').length===0&&jobs.some(j=>j.machineId===b&&j.status==='done'),'清除记录只作用于当前筛选');assert(jobs.some(j=>j.id===263&&j.cleanupPending),'待清理记录仍保留');
+ select('按设备筛选任务',removed);select('按状态筛选任务','attention');assert(rows().length===1&&rows()[0].textContent.includes('临时文件待清理')&&rows()[0].textContent.includes('清理临时文件'),'移除设备的待清理任务仍可定位');
+ assert(calls.filter(c=>['pause-many','clear'].includes(c.action)).every(c=>c.machineId===a&&Array.isArray(c.data.ids)&&c.data.ids.length>0),'批量操作提交固定任务 ID 和设备身份');
+ select('按设备筛选任务','');select('按状态筛选任务','all');controller.hide();document.getElementById('result').textContent=checks.join('\n')+'\n全部通过';
+ }catch(e){controller.hide();document.getElementById('result').textContent=checks.join('\n')+'\nFAIL '+e.message;}};
+</script></html>

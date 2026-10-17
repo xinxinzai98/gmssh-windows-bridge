@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Develop 0.4.0a19 locally: filter file tasks by device, state, filename and path; progressively display the complete native queue in batches of 50 instead of hiding jobs beyond the old summary limits. Preserve search focus and expanded details during polling.
+- Show task source, destination, creation time, failure code and verified SHA-256 as local metadata. Provide readable recovery hints and per-task cancellation/partial cleanup in the global view.
+- Pause an explicit snapshot of filtered native jobs and clear only selected completed/cancelled records. Validate all IDs and device ownership before mutation, pause queued jobs before releasing the active worker, retain pending-cleanup records and never remove files when clearing records.
+- Avoid refreshing a historical task snapshot over an in-flight directory navigation; keep the selected upload destination ready after restoring completed tasks.
+
 - Develop 0.4.0a18 locally: save to mounted external and network volumes without requiring hard links. Prefer native exclusive rename, retain a safe link fallback, and use an exclusive-created, journaled streaming copy when both are unavailable.
 - Show the separate save/copy phase; retain owned partials across interruption and verify the existing target prefix before resuming. Compatibility copy can expose an incomplete destination until completion and needs additional free space equal to the file size.
 - Normalize 64-bit file IDs between Node and Python, revalidate remounted directories after a fresh system-picker grant, retain conflicting files, and allow a new local filename without downloading the verified part again. Complete local saves without reconnecting the remote Windows host.
