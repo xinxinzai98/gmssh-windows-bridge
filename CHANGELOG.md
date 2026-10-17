@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Develop 0.4.0a21 locally: add per-device backward/forward directory navigation with a bounded 64-entry in-memory history. Restore search, sort and scroll positions only after successful reads; failed navigation and refreshes do not corrupt the forward branch.
+- Create a single folder inside the displayed directory through the existing authenticated file channel. Validate the name and target length, show the exact parent, lock navigation while submitting and distinguish newly created from existing directories.
+- Require acknowledgement of the exact creation target, retain input when the result is unconfirmed, preserve same-name files and allow explicit refresh/retry. Reuse existing mkdir support without a Windows service upgrade or new listener.
+
 - Develop 0.4.0a20 locally: search the loaded directory by name, sort naturally or by file size/modification time, refresh explicitly and display modification metadata without inventing missing timestamps. Searches are local to the loaded entries and clearly identify truncated directories.
 - Select/deselect only matching visible entries; retain other selections with an explicit hidden-selection count, offer clear selection, and refresh selected metadata without retaining disappeared or changed-kind entries.
 - Keep navigation and transfer targets consistent: suspend old-directory transfer controls while reading, retain the previous directory on failure, discard stale replies and reset old selection/search after successful navigation. Keep browsing controls and file rows reachable in short windows.

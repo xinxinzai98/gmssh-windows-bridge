@@ -1,6 +1,6 @@
 const test=require('node:test'),assert=require('node:assert/strict'),path=require('node:path'),vm=require('node:vm');
 const esbuild=require('../desktop-web/node_modules/esbuild');
-const compiled=esbuild.build({stdin:{contents:"export {browseEntries} from './src/file-panel';export {Operations} from './src/operations';",resolveDir:path.join(__dirname,'../desktop-web')},bundle:true,platform:'node',format:'cjs',write:false});
+const compiled=esbuild.build({stdin:{contents:"export {browseEntries,folderTarget} from './src/file-panel';export {Operations} from './src/operations';",resolveDir:path.join(__dirname,'../desktop-web')},bundle:true,platform:'node',format:'cjs',write:false});
 const api=compiled.then(value=>{const scope={module:{exports:{}},exports:{}};scope.exports=scope.module.exports;vm.runInNewContext(value.outputFiles[0].text,scope);return scope.module.exports;});
 const entry=(name,size=0,modified=0,directory=false)=>({name,size,modified,directory});
 
@@ -10,6 +10,19 @@ test('current-directory search is Unicode aware, sorts naturally, keeps folders 
   assert.deepEqual([...browseEntries(values,'','size')].map(e=>e.name),['资料','报告10.txt','报告2.txt','NOTES.TXT']);
   assert.deepEqual([...browseEntries(values,'','modified')].map(e=>e.name),['资料','报告2.txt','报告10.txt','NOTES.TXT']);
   assert.equal(browseEntries(values,' notes ','name')[0].name,'NOTES.TXT');assert.equal(browseEntries(values,'not loaded','name').length,0);assert.equal(JSON.stringify(values),before);
+});
+
+test('new folder targets stay in the selected directory and reject traversal, reserved names and excessive length',async()=>{
+  const {folderTarget}=await api;assert.equal(folderTarget('C:/资料','中文 新目录'),'C:/资料/中文 新目录');assert.equal(folderTarget('D:/','folder'),'D:/folder');
+  for(const value of ['', '..', '../escape','sub/dir','a\\b','CON.txt','a.','a ','x\n','x'.repeat(256)])assert.throws(()=>folderTarget('C:/资料',value));
+  assert.throws(()=>folderTarget('/','new'));assert.throws(()=>folderTarget('C:relative','new'));assert.throws(()=>folderTarget('C:/'+ 'a'.repeat(1018),'new-folder'));
+});
+
+test('folder creation distinguishes an existing directory and requires an acknowledgement of the exact target',async()=>{
+  const {Operations}=await api,op=new Operations(()=>''),target='C:/资料/新目录';let sent;
+  op.request=async(action,data)=>{sent={action,...data};return {path:target,created:true};};assert.equal((await op.mkdir(target)).created,true);assert.deepEqual(sent,{action:'mkdir',path:target});
+  op.request=async()=>({path:target,created:false});assert.equal((await op.mkdir(target)).created,false);
+  for(const reply of [{path:'C:/other',created:true},{path:target},{}]){op.request=async()=>reply;await assert.rejects(op.mkdir(target),/结果未确认/);}
 });
 
 test('directory replies validate path, entry metadata, duplicate names and bounds before replacing the browser view',async()=>{

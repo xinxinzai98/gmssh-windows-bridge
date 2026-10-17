@@ -25,7 +25,7 @@ async function main(){
     res.setHeader('Content-Type','application/json');res.end(JSON.stringify(reply));return;
    }
    if(url.pathname==='/fixture-config.json'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify({devices:[binding]}));return;}
-   if(url.pathname==='/state'){res.setHeader('Content-Type','application/json');const final=path.join(local,'资料.bin');res.end(JSON.stringify({tasks:manager.list().jobs,calls,verified:fs.existsSync(final)&&crypto.createHash('sha256').update(fs.readFileSync(final)).digest('hex')===expected,uploaded:fs.existsSync(path.join(remote,'上传演示.txt'))}));return;}
+   if(url.pathname==='/state'){res.setHeader('Content-Type','application/json');const final=path.join(local,'资料.bin'),folder=path.join(remote,'新建验收');res.end(JSON.stringify({tasks:manager.list().jobs,calls,verified:fs.existsSync(final)&&crypto.createHash('sha256').update(fs.readFileSync(final)).digest('hex')===expected,uploaded:fs.existsSync(path.join(remote,'上传演示.txt')),createdFolder:fs.existsSync(folder)&&fs.statSync(folder).isDirectory()}));return;}
    if(url.pathname==='/restore'&&req.method==='POST'){await manager.shutdown();manager=make();res.end('{}');return;}
    const file=path.resolve(web,'.'+decodeURIComponent(url.pathname));if(!file.startsWith(web+path.sep)||!fs.statSync(file).isFile())throw Error('not found');res.setHeader('Content-Type',file.endsWith('.html')?'text/html; charset=utf-8':file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':file.endsWith('.svg')?'image/svg+xml':'application/octet-stream');fs.createReadStream(file).pipe(res);
   }catch{res.statusCode=404;res.end('fixture request unavailable');}

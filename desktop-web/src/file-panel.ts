@@ -1,5 +1,5 @@
 import { Operations, type FileEntry } from './operations';
-import { TransferQueue, droppedUploads, selectedUploads, type TransferTask, type TransferCollection } from './transfers';
+import { TransferQueue, droppedUploads, selectedUploads, validateRelativePath, type TransferTask, type TransferCollection } from './transfers';
 
 const get=<T extends HTMLElement>(id:string)=>document.getElementById(id) as T;
 const size=(bytes:number)=>bytes>=1024**2?(bytes/1024**2).toFixed(1)+' MiB':bytes>=1024?(bytes/1024).toFixed(1)+' KiB':bytes+' B';
@@ -9,9 +9,18 @@ export function browseEntries(entries:readonly FileEntry[],query:string,order:st
   return entries.filter(entry=>entry.name.toLocaleLowerCase().includes(text)).sort((a,b)=>Number(b.directory)-Number(a.directory)||(order==='size'?b.size-a.size:order==='modified'?b.modified-a.modified:0)||names(a,b));
 }
 const modified=(value:number)=>value>0&&Number.isFinite(new Date(value*1000).getTime())?new Date(value*1000).toLocaleString():'时间未知';
+export function folderTarget(base:string,name:string):string {
+  if(!/^[A-Za-z]:\//.test(base))throw Error('请先打开一个磁盘或文件夹。');
+  if(name.includes('/'))throw Error('请输入单个文件夹名称，不要包含路径。');
+  const target=base.replace(/\/?$/,'/')+validateRelativePath(name);
+  if(target.length>1024)throw Error('目标路径过长，请使用更短的文件夹名称。');
+  return target;
+}
 export function installFilePanel(options:{token:()=>string;operations:Operations;available:()=>boolean;releaseInputs:()=>void;closeBrowseAfterUse?:boolean;changed?:(tasks:readonly TransferTask[])=>void;permit?:(signal:AbortSignal)=>Promise<()=>void>;queue?:(changed:(tasks:readonly TransferTask[])=>void)=>TransferCollection}) {
   const panel=get('file-panel'),list=get('file-list'),note=get('file-note'),selected=new Map<string,FileEntry>();
-  let path='/',entries:FileEntry[]=[],visibleEntries:FileEntry[]=[],truncated=false,request=0,renderTimer:number|undefined,idleCompleted=0,lastTask=0,mode:'files'|'transfers'='files',disposed=false,taskLimit=50,browsing=false;
+  let path='/',entries:FileEntry[]=[],visibleEntries:FileEntry[]=[],truncated=false,request=0,renderTimer:number|undefined,idleCompleted=0,lastTask=0,mode:'files'|'transfers'='files',disposed=false,taskLimit=50,browsing=false,creating=false,folderBase='';
+  type Location={path:string;query:string;order:string;scroll:number;outerScroll:number};
+  const history:Location[]=[];let historyIndex=-1;
   const pendingDrops=new Set<AbortController>();
   const rows=new Map<number,{root:HTMLElement;name:HTMLElement;detail:HTMLElement;bar:HTMLProgressElement;cancel:HTMLButtonElement;retry:HTMLButtonElement;rename:HTMLInputElement;renameButton:HTMLButtonElement;pause:HTMLButtonElement;description:HTMLElement}>();
   const filters=document.createElement('div'),search=document.createElement('input'),status=document.createElement('select'),matches=document.createElement('p');filters.className='transfer-filters';
@@ -26,6 +35,20 @@ export function installFilePanel(options:{token:()=>string;operations:Operations
   browserTools.append(fileSearch,fileOrder,refreshButton);selectionInfo.append(selectionText,clearSelection);get('file-note').before(browserTools,selectionInfo);
   fileSearch.oninput=fileOrder.onchange=()=>renderFiles();
   get('select-all-files').setAttribute('aria-label','全选当前筛选结果');
+  const back=button('',()=>void refresh(history[historyIndex-1].path,historyIndex-1)),forward=button('',()=>void refresh(history[historyIndex+1].path,historyIndex+1));
+  for(const [node,label] of [[back,'后退到上个目录'],[forward,'前进到下个目录']] as const){node.className='file-history-button';node.setAttribute('aria-label',label);const image=document.createElement('img');image.src='/ui-icons/arrow-left.svg';image.alt='';node.append(image);}forward.classList.add('file-forward');get('parent-folder').before(back,forward);
+  const folderForm=document.createElement('form'),folderHeading=document.createElement('strong'),folderName=document.createElement('input'),folderMessage=document.createElement('p'),folderResult=document.createElement('p');
+  folderForm.className='file-new-folder';folderForm.hidden=true;folderForm.setAttribute('aria-label','新建文件夹');folderName.type='text';folderName.maxLength=255;folderName.required=true;folderName.autocomplete='off';folderName.placeholder='文件夹名称';folderName.setAttribute('aria-label','新文件夹名称');folderMessage.setAttribute('role','status');folderResult.className='file-folder-result';folderResult.setAttribute('role','status');folderResult.hidden=true;
+  const createFolder=button('创建',()=>{}),cancelFolder=button('取消',()=>{folderForm.hidden=true;folderName.value='';newFolder.focus();}),newFolder=button('新建文件夹',()=>{if(browsing||creating||path==='/'||!options.available())return;folderBase=path;folderHeading.textContent='在 '+folderBase+' 中新建';folderMessage.textContent='';folderName.value='';folderResult.hidden=true;folderForm.hidden=false;folderName.focus();folderName.scrollIntoView({block:'nearest'});});
+  createFolder.type='submit';const folderActions=document.createElement('div');folderActions.append(createFolder,cancelFolder);folderForm.append(folderHeading,folderName,folderActions,folderMessage);get('upload-folder').after(newFolder);get('file-note').before(folderForm,folderResult);
+  const location=():Location=>({path,query:fileSearch.value,order:fileOrder.value,scroll:list.scrollTop,outerScroll:get('file-browser-view').scrollTop});
+  folderForm.onsubmit=event=>{event.preventDefault();if(disposed||browsing||creating)return;let target:string;try{if(folderBase!==path)throw Error('目录已变化，请重新打开新建窗口。');target=folderTarget(folderBase,folderName.value);}catch(error){folderMessage.textContent=(error as Error).message;return;}
+    void (async()=>{creating=true;updateSelection();folderMessage.textContent='正在创建 '+target+'…';
+      try{const reply=await options.operations.mkdir(target);if(disposed)return;folderForm.hidden=true;folderName.value='';fileSearch.value='';folderResult.textContent=(reply.created?'已创建文件夹：':'文件夹已存在，未改动：')+reply.path;folderResult.hidden=false;creating=false;await refresh(folderBase);if(!disposed)newFolder.focus();}
+      catch(error){if(!disposed)folderMessage.textContent='未确认创建结果：'+(error as Error).message+' 可刷新目录核对后再试。';}
+      finally{creating=false;if(!disposed){updateSelection();if(options.closeBrowseAfterUse&&!browsing)options.operations.close();}}
+    })();
+  };
   const tell=(text:string)=>{note.textContent=text;};
   const fail=(error:unknown)=>{get('file-feedback').textContent=error instanceof Error?error.message:String(error);get('file-feedback').hidden=false;};
   const run=(action:()=>void|Promise<void>)=>{if(disposed)return;get('file-feedback').hidden=true;try{Promise.resolve(action()).catch(fail);}catch(error){fail(error);}};
@@ -37,7 +60,7 @@ export function installFilePanel(options:{token:()=>string;operations:Operations
     const newest=queue.items.at(-1)?.id||0;if(newest>lastTask){lastTask=newest;setMode('transfers');}
     if(renderTimer===undefined)renderTimer=window.setTimeout(()=>{renderTimer=undefined;renderTransfers();},50);
     const complete=queue.items.filter(item=>item.status==='done').length;
-    if(!queue.items.some(item=>item.status==='queued'||item.status==='running'||item.status==='committing')&&complete!==idleCompleted){idleCompleted=complete;if(!panel.hidden&&mode==='files'&&!browsing&&path!=='/')void refresh();}
+    if(!queue.items.some(item=>item.status==='queued'||item.status==='running'||item.status==='committing')&&complete!==idleCompleted){idleCompleted=complete;if(!panel.hidden&&mode==='files'&&!browsing&&!creating&&folderForm.hidden&&path!=='/')void refresh();}
   };
   const queue:TransferCollection=options.queue?options.queue(changed):new TransferQueue(()=>new Operations(options.token),save,changed,options.permit);
   if(queue.native)for(const node of panel.querySelectorAll('.transfer-hint'))node.textContent='文件直接写入本机；单文件最多 1 TiB。可暂停、继续，重开后需确认原文件或保存位置。拖入文件后通过系统选择窗口确认授权；文件夹保留原目录结构。部分网络盘使用兼容保存，需要额外一份文件大小的空间，完成前请勿打开目标文件。';
@@ -50,11 +73,12 @@ export function installFilePanel(options:{token:()=>string;operations:Operations
     get(id).onclick=()=>setMode(value);get(id).onkeydown=event=>{if(event.key==='ArrowLeft'||event.key==='ArrowRight'){event.preventDefault();const next=value==='files'?'transfers':'files';setMode(next);get(next==='files'?'file-browse-tab':'file-transfers-tab').focus();}};
   }
   function updateSelection():void {
-    get<HTMLButtonElement>('upload').disabled=get<HTMLButtonElement>('upload-folder').disabled=browsing||path==='/'||!options.available();refreshButton.disabled=browsing;get<HTMLButtonElement>('parent-folder').disabled=browsing||path==='/';
-    get<HTMLButtonElement>('download-selected').disabled=browsing||!selected.size;
+    const busy=browsing||creating;get<HTMLButtonElement>('upload').disabled=get<HTMLButtonElement>('upload-folder').disabled=newFolder.disabled=busy||path==='/'||!options.available();refreshButton.disabled=busy;get<HTMLButtonElement>('parent-folder').disabled=busy||path==='/';back.disabled=busy||historyIndex<=0;forward.disabled=busy||historyIndex>=history.length-1;
+    back.title=history[historyIndex-1]?.path||'没有上个目录';forward.title=history[historyIndex+1]?.path||'没有下个目录';get('path-form').inert=get('file-location').inert=creating;list.inert=busy;folderName.disabled=createFolder.disabled=busy;cancelFolder.disabled=creating;
+    get<HTMLButtonElement>('download-selected').disabled=busy||!selected.size;
     get('download-count').textContent=selected.size?'（'+selected.size+'）':'';
-    const count=visibleEntries.filter(entry=>selected.has(join(entry.name))).length,all=get<HTMLInputElement>('select-all-files');all.disabled=browsing||path==='/'||!visibleEntries.length;all.checked=path!=='/'&&visibleEntries.length>0&&count===visibleEntries.length;all.indeterminate=count>0&&count<visibleEntries.length;
-    selectionInfo.hidden=!selected.size;selectionText.textContent='已选 '+selected.size+' 项'+(selected.size>count?'（'+(selected.size-count)+' 项被筛选隐藏）':'');clearSelection.disabled=browsing;
+    const count=visibleEntries.filter(entry=>selected.has(join(entry.name))).length,all=get<HTMLInputElement>('select-all-files');all.disabled=busy||path==='/'||!visibleEntries.length;all.checked=path!=='/'&&visibleEntries.length>0&&count===visibleEntries.length;all.indeterminate=count>0&&count<visibleEntries.length;
+    selectionInfo.hidden=!selected.size;selectionText.textContent='已选 '+selected.size+' 项'+(selected.size>count?'（'+(selected.size-count)+' 项被筛选隐藏）':'');clearSelection.disabled=busy;
   }
   function breadcrumbs():void {
     const target=get('file-location');target.replaceChildren(button('此电脑',()=>void refresh('/')));
@@ -62,14 +86,19 @@ export function installFilePanel(options:{token:()=>string;operations:Operations
     const parts=path.replace(/\/$/,'').split('/');
     parts.forEach((part,index)=>{const divider=document.createElement('span');divider.textContent='›';target.append(divider,button(part,()=>void refresh(parts.slice(0,index+1).join('/')+(index===0?'/':''))));});
   }
-  async function refresh(next=path):Promise<void> {
-    if(disposed)return;
-    if(!options.available()){fail('请先接通这台电脑的 SSH 连接，再使用文件互传。');get<HTMLButtonElement>('upload').disabled=get<HTMLButtonElement>('upload-folder').disabled=true;return;}
+  async function refresh(next=path,historyTarget?:number):Promise<void> {
+    if(disposed||creating)return;
+    if(historyIndex>=0)history[historyIndex]=location();
+    if(!options.available()){updateSelection();fail('请先接通这台电脑的 SSH 连接，再使用文件互传。');return;}
     const current=++request;browsing=true;list.setAttribute('aria-busy','true');list.inert=true;updateSelection();tell('正在读取目录…');get('file-feedback').hidden=true;
     try{
       const reply=await options.operations.list(next);if(disposed||current!==request)return;
-      if(path!==reply.path){selected.clear();fileSearch.value='';}else for(const [remote,old] of selected){const current=reply.entries.find(entry=>join(entry.name)===remote);if(!current||current.directory!==old.directory)selected.delete(remote);else selected.set(remote,current);}
+      const restore=historyTarget===undefined?(path===reply.path?history[historyIndex]:undefined):history[historyTarget];if(historyTarget!==undefined&&restore?.path!==reply.path)throw Error('目录位置已变化，请重新打开该路径。');
+      if(path!==reply.path){selected.clear();fileSearch.value=restore?.query||'';if(restore)fileOrder.value=restore.order;folderForm.hidden=folderResult.hidden=true;folderName.value='';}else for(const [remote,old] of selected){const current=reply.entries.find(entry=>join(entry.name)===remote);if(!current||current.directory!==old.directory)selected.delete(remote);else selected.set(remote,current);}
+      const changed=path!==reply.path;
       path=reply.path;entries=reply.entries;truncated=reply.truncated;browsing=false;get<HTMLInputElement>('file-path').value=path;breadcrumbs();renderFiles();
+      if(historyTarget!==undefined)historyIndex=historyTarget;else if(changed||historyIndex<0){history.splice(historyIndex+1);history.push(location());if(history.length>64)history.shift();historyIndex=history.length-1;}
+      list.scrollTop=restore?.scroll||0;get('file-browser-view').scrollTop=restore?.outerScroll||0;history[historyIndex]=location();
     }catch(error){if(!disposed&&current===request){get<HTMLInputElement>('file-path').value=path;fail(error instanceof Error?error.message:'目录读取失败。');tell('读取失败，仍显示上次成功的目录：'+path);}}
     finally{if(current===request){browsing=false;list.inert=false;list.setAttribute('aria-busy','false');updateSelection();if(options.closeBrowseAfterUse)options.operations.close();}}
   }

@@ -12,6 +12,14 @@ window.addEventListener('message',async event=>{
   }else if(action==='upload')document.getElementById('upload').click();
   else if(action==='tasks')document.getElementById('file-transfers-tab').click();
   else if(action==='state')result={text:document.getElementById('transfer-list').textContent,feedback:document.getElementById('file-feedback').textContent,overflow:document.documentElement.scrollWidth>innerWidth};
+  else if(action==='mkdir-check'){
+   document.getElementById('file-browse-tab').click();document.getElementById('file-path').value='C:/';document.getElementById('path-form').dispatchEvent(new Event('submit',{cancelable:true}));
+   const wait=async check=>{for(let i=0;i<300;i++){if(check())return;await new Promise(r=>setTimeout(r,20));}throw Error('Folder operation timed out');};
+   await wait(()=>document.getElementById('file-list').getAttribute('aria-busy')==='false');
+   const open=()=>[...document.querySelectorAll('.file-upload-actions button')].find(b=>b.textContent==='新建文件夹').click(),submit=()=>{document.querySelector('[aria-label="新文件夹名称"]').value='新建验收';document.querySelector('.file-new-folder').dispatchEvent(new Event('submit',{cancelable:true}));};
+   open();submit();await wait(()=>document.querySelector('.file-new-folder').hidden&&document.getElementById('file-list').getAttribute('aria-busy')==='false');const created=document.querySelector('.file-folder-result').textContent.includes('已创建');
+   open();submit();await wait(()=>document.querySelector('.file-new-folder').hidden&&document.getElementById('file-list').getAttribute('aria-busy')==='false');result={created,existing:document.querySelector('.file-folder-result').textContent.includes('已存在')};
+  }
   else if(action==='filter-check'){
    const input=document.querySelector('[aria-label="搜索此设备的任务"]'),status=document.querySelector('[aria-label="筛选此设备的任务状态"]');
    input.value='上传演示';input.dispatchEvent(new Event('input'));const search=document.querySelectorAll('.transfer-task').length===1&&document.querySelector('.transfer-task').textContent.includes('上传演示');
