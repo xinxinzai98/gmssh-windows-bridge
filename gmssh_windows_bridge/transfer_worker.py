@@ -29,7 +29,7 @@ def check():
 def snapshot(fd):
     s=os.fstat(fd)
     if not stat.S_ISREG(s.st_mode) or s.st_size>MAX_SIZE:raise StreamError('UNSUPPORTED_FILE')
-    return dict(size=s.st_size,modifiedNs=str(s.st_mtime_ns),dev=str(s.st_dev),ino=str(s.st_ino))
+    return dict(size=s.st_size,modifiedNs=str(s.st_mtime_ns),dev=str(s.st_dev&((1<<64)-1)),ino=str(s.st_ino&((1<<64)-1)))
 
 
 def hash_fd(fd, size, progress=False):
@@ -84,6 +84,9 @@ def prepared(**value):
 
 
 def transfer(value):
+    if value.get('kind')=='commit':
+        from .local_commit import commit
+        return commit(value,prepared,emit,check,snapshot,hash_fd)
     peer=Peer(value)
     try:
         identity=peer.call('peer',{'expected':value.get('peer')})
@@ -154,7 +157,9 @@ def main():
         peak=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss if resource else 0
         emit(event='done',result=result,peakRssBytes=int(peak if sys.platform=='darwin' else peak*1024))
     except StreamError as error:emit(event='error',code=error.code)
-    except OSError as error:emit(event='error',code='DISK_FULL' if error.errno==28 else 'ACCESS_DENIED' if error.errno in {1,13} else 'TRANSFER_IO')
+    except OSError as error:
+        from .local_commit import io_code
+        emit(event='error',code=io_code(error))
     except Exception:emit(event='error',code='TRANSFER_IO')
 
 

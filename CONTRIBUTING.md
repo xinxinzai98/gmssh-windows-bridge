@@ -33,6 +33,8 @@ node --experimental-vm-modules --test tests/*.cjs
 
 原生流式传输回归还需要当前 Python 环境安装 `.[desktop]`；可用 `GMSSH_TEST_PYTHON` 指定该解释器。测试只在临时目录建立合成文件和回环服务，Mac/Unix 控制端的文件描述符回归在 Windows 跳过。
 
+可用 `GMSSH_TEST_VOLUME_DIR` 指向专用测试挂载目录来执行真实磁盘路径检查；测试仅在该目录中新建并清理自己的随机子目录，不删除共享目录。该变量未设置时，真实挂载检查跳过，模拟检查仍运行。`tests/native_file_fixture.js` 可通过 `GMSSH_TEST_FORCE_COPY=1` 查看兼容保存阶段；该开关只存在于测试夹具中。
+
 前端构建会更新 `gmssh_windows_bridge/desktop_web/`；相关源码与生成资源需要一同提交。页面交互修改可使用 `tests/desktop-entry.html` 与 `tests/pairing-entry.html` 中的合成设备检查，记录实际执行结果。
 
 Windows PowerShell 专属测试需要在 Windows 执行，在其他系统上会跳过。Go 安装器解包检查可在 `tools/windows_installer/` 中运行 `go test extract.go extract_test.go`；连接码组件在 `tools/windows_connect/` 中运行 `GO111MODULE=off go test`。Windows 平台还会检查真实 DPAPI 往返和当前账号 SID，只写临时目录，不创建账号或修改服务。自动化检查不替代真实设备验收；当前已完成和未完成的范围见[验证记录](docs/validation.md)。

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Develop 0.4.0a18 locally: save to mounted external and network volumes without requiring hard links. Prefer native exclusive rename, retain a safe link fallback, and use an exclusive-created, journaled streaming copy when both are unavailable.
+- Show the separate save/copy phase; retain owned partials across interruption and verify the existing target prefix before resuming. Compatibility copy can expose an incomplete destination until completion and needs additional free space equal to the file size.
+- Normalize 64-bit file IDs between Node and Python, revalidate remounted directories after a fresh system-picker grant, retain conflicting files, and allow a new local filename without downloading the verified part again. Complete local saves without reconnecting the remote Windows host.
+- Treat unsupported directory flush separately from file-data failures; report disconnected/read-only volumes, quota and file-size limits. Preserve worker journal acknowledgements before any compatibility-target write.
+
 - Develop 0.4.0a17 locally (stage 2B): move transfer ownership and a private atomic journal into the Mac main process. Stream through granted file descriptors in 64 KiB chunks, retain partial files, and restore unfinished tasks as paused without automatically accessing historical local paths.
 - Resume uploads and downloads after verifying pinned SSH identity, source metadata, full SHA-256 and the existing prefix. Re-authorize local files after reopening; verify the saved download again before a no-overwrite commit, and recover interrupted final commits or a lost upload acknowledgement.
 - Support native file/folder pickers, confirmed drag uploads, hierarchy-preserving folder downloads, pause/continue, partial cleanup and explicit disk/permission/conflict failures. Raise only the native path to 1 TiB per file; retain the bounded 512 MiB/ZIP browser fallback and native Linux tool.

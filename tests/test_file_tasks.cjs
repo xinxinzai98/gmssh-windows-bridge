@@ -10,7 +10,7 @@ if(process.platform==='win32'){test('native controller FD grants',{skip:'Mac/Uni
 test.before(async()=>{
   dir=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'gmssh-stream-test-')));remote=path.join(dir,'remote');fs.mkdirSync(remote);
   server=spawn(python,[path.join(root,'tests/stream_fixture.py'),remote],{cwd:root,stdio:['ignore','pipe','pipe']});
-  binding=await new Promise((resolve,reject)=>{let out='',err='';const timer=setTimeout(()=>reject(Error('Fixture startup: '+err)),10000);server.stderr.on('data',b=>err+=b);server.stdout.on('data',b=>{out+=b;const n=out.indexOf('\n');if(n>=0){clearTimeout(timer);const value=JSON.parse(out.slice(0,n));resolve({viewerUrl:value.url,accessToken:value.token,label:'Synthetic desktop'});}});server.on('error',reject);});
+  binding=await new Promise((resolve,reject)=>{let out='',err='';const timer=setTimeout(()=>reject(Error('Fixture startup: '+err)),20000);server.stderr.on('data',b=>err+=b);server.stdout.on('data',b=>{out+=b;const n=out.indexOf('\n');if(n>=0){clearTimeout(timer);const value=JSON.parse(out.slice(0,n));resolve({viewerUrl:value.url,accessToken:value.token,label:'Synthetic desktop'});}});server.on('error',reject);});
   // Import the working source even when this reusable Python environment contains an older wheel.
   spawnWorker=(program,args,options)=>spawn(program,['-c',"import sys,runpy;sys.path.insert(0,sys.argv[1]);runpy.run_module('gmssh_windows_bridge.transfer_worker',run_name='__main__')",root],options);
 });
@@ -154,15 +154,12 @@ test('cancel after reopen asks for permission and retains cleanup metadata until
 });
 
 
-test('a filesystem without no-overwrite hard-link commits retains the verified partial',async()=>{
-  const target=path.join(dir,'unsupported-volume.bin'),m=manager('unsupported-volume',{save:target}),link=fs.linkSync;let injected=false;
-  fs.linkSync=(from,to)=>{if(to===target&&!injected){injected=true;throw Object.assign(Error('synthetic unsupported volume'),{code:'ENOTSUP'});}return link(from,to);};
-  try{
-    await m.pickDownload(machine,{entries:[{path:'C:/folder/one.txt',name:'one.txt',directory:false,size:3}]});let job=await finish(m);assert.equal(job.status,'failed');assert.equal(job.code,'COMMIT_UNSUPPORTED');assert.equal(fs.existsSync(target),false);assert.ok(fs.existsSync(job.local.part));
-    fs.linkSync=link;await m.resume(machine,job.id);job=await finish(m);assert.equal(job.status,'done',job.code);assert.equal(fs.readFileSync(target,'utf8'),'one');
-  }finally{fs.linkSync=link;await m.shutdown();}
+test('a filesystem without hard links completes through exclusive rename',async()=>{
+  const target=path.join(dir,'unsupported-volume.bin'),m=manager('unsupported-volume',{save:target}),link=fs.linkSync;
+  fs.linkSync=()=>{throw Object.assign(Error('synthetic unsupported hard links'),{code:'ENOTSUP'});};
+  try{await m.pickDownload(machine,{entries:[{path:'C:/folder/one.txt',name:'one.txt',directory:false,size:3}]});const job=await finish(m);assert.equal(job.status,'done',job.code);assert.equal(fs.readFileSync(target,'utf8'),'one');}
+  finally{fs.linkSync=link;await m.shutdown();}
 });
-
 
 test('a queued task pins the device before file selection and rejects a changed identity before writing',async()=>{
   const source=path.join(dir,'identity-before-start.txt');fs.writeFileSync(source,'pin this upload');const m=manager('queued-identity',{open:source}),pump=m.pump.bind(m),marker=path.join(remote,'.fixture-host-key');m.pump=()=>{};
@@ -170,6 +167,19 @@ test('a queued task pins the device before file selection and rejects a changed 
     await m.pickUpload(machine,{remote:'C:/'});assert.ok(m.jobs[0].peer.startsWith('SHA256:'));fs.writeFileSync(marker,'different synthetic host key');m.pump=pump;pump();let job=await finish(m);assert.equal(job.code,'PEER_CHANGED');assert.equal(fs.existsSync(path.join(remote,'identity-before-start.txt')),false);assert.equal(fs.existsSync(path.join(remote,'.gmssh-transfer-'+job.partToken+'.part')),false);
     fs.unlinkSync(marker);await m.resume(machine,job.id);job=await finish(m);assert.equal(job.status,'done',job.code);assert.equal(fs.readFileSync(path.join(remote,'identity-before-start.txt'),'utf8'),'pin this upload');
   }finally{if(fs.existsSync(marker))fs.unlinkSync(marker);await m.shutdown();}
+});
+
+
+test('download resumes after a remount changes the directory and partial file IDs',async()=>{
+  const folder=path.join(dir,'replug');fs.mkdirSync(folder);const target=path.join(folder,'resumed.bin'),m=manager('remount-download',{save:target});let restored;
+  try{await m.pickDownload(machine,{entries:[entry('large.bin',520*1024**2)]});await until(()=>m.jobs[0].bytes>0);await m.pause(machine,m.jobs[0].id);const j=m.jobs[0],old=folder+'.unplugged';await m.shutdown();fs.renameSync(folder,old);fs.mkdirSync(folder);fs.copyFileSync(path.join(old,path.basename(j.local.part)),j.local.part);restored=manager('remount-download',{save:target});await restored.resume(machine,j.id);const job=await finish(restored);assert.equal(job.status,'done',job.code);assert.equal(await hash(target),await hash(path.join(remote,'large.bin')));}
+  finally{await m.shutdown();await restored?.shutdown();}
+});
+
+test('full download and save to an actual SMB-mounted share', {skip:!process.env.GMSSH_TEST_VOLUME_DIR,timeout:60000},async()=>{
+  const folder=fs.mkdtempSync(path.join(process.env.GMSSH_TEST_VOLUME_DIR||dir,'gmssh-download-')),target=path.join(folder,'中文互传.bin'),m=manager('smb-download',{save:target});
+  try{await m.pickDownload(machine,{entries:[{path:'C:/folder/one.txt',name:'one.txt',directory:false,size:3}]});const job=await finish(m);assert.equal(job.status,'done',job.code);assert.equal(fs.readFileSync(target,'utf8'),'one');assert.equal(job.commitMethod,'copy');}
+  finally{await m.shutdown();fs.rmSync(folder,{recursive:true,force:true});}
 });
 
 }

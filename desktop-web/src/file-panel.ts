@@ -20,10 +20,10 @@ export function installFilePanel(options:{token:()=>string;operations:Operations
     const newest=queue.items.at(-1)?.id||0;if(newest>lastTask){lastTask=newest;setMode('transfers');}
     if(renderTimer===undefined)renderTimer=window.setTimeout(()=>{renderTimer=undefined;renderTransfers();},50);
     const complete=queue.items.filter(item=>item.status==='done').length;
-    if(!queue.items.some(item=>item.status==='queued'||item.status==='running')&&complete!==idleCompleted){idleCompleted=complete;if(!panel.hidden)void refresh();}
+    if(!queue.items.some(item=>item.status==='queued'||item.status==='running'||item.status==='committing')&&complete!==idleCompleted){idleCompleted=complete;if(!panel.hidden)void refresh();}
   };
   const queue:TransferCollection=options.queue?options.queue(changed):new TransferQueue(()=>new Operations(options.token),save,changed,options.permit);
-  if(queue.native)for(const node of panel.querySelectorAll('.transfer-hint'))node.textContent='文件直接写入本机；单文件最多 1 TiB。可暂停、继续，重开后需确认原文件或保存位置。拖入文件后通过系统选择窗口确认授权；文件夹保留原目录结构。';
+  if(queue.native)for(const node of panel.querySelectorAll('.transfer-hint'))node.textContent='文件直接写入本机；单文件最多 1 TiB。可暂停、继续，重开后需确认原文件或保存位置。拖入文件后通过系统选择窗口确认授权；文件夹保留原目录结构。部分网络盘使用兼容保存，需要额外一份文件大小的空间，完成前请勿打开目标文件。';
   function setMode(next:'files'|'transfers'):void {
     mode=next;get('file-browser-view').hidden=next!=='files';get('transfer-box').hidden=next!=='transfers';
     get('file-browse-tab').setAttribute('aria-selected',String(next==='files'));get('file-transfers-tab').setAttribute('aria-selected',String(next==='transfers'));
@@ -71,14 +71,14 @@ export function installFilePanel(options:{token:()=>string;operations:Operations
     finally{if(options.closeBrowseAfterUse&&current===request)options.operations.close();}
   }
   function renderTransfers():void {
-    const pending=queue.items.filter(item=>item.status==='queued'||item.status==='running').length;
+    const pending=queue.items.filter(item=>item.status==='queued'||item.status==='running'||item.status==='committing').length;
     const failed=queue.items.filter(item=>item.status==='failed'||item.status==='paused').length;
     get('file-transfer-count').textContent=pending?String(pending):failed?'!':'';get('file-transfer-count').hidden=!pending&&!failed;get('file-transfer-count').dataset.error=String(failed>0);
     get('files').setAttribute('aria-label',pending?'文件互传，'+pending+' 项进行中':failed?'文件互传，'+failed+' 项待处理':'文件互传');
     get('file-queue-count').textContent=queue.items.length?'（'+queue.items.length+'）':'';get('transfer-empty').hidden=!!queue.items.length;
     const summary=pending?pending+' 项待完成':failed?failed+' 项待处理':'传输任务';if(get('transfer-summary').textContent!==summary)get('transfer-summary').textContent=summary;
     get<HTMLButtonElement>('cancel-transfers').disabled=!pending;
-    const visible=[...queue.items.filter(item=>item.status==='running'||item.status==='failed'||item.status==='paused'),...queue.items.filter(item=>item.status==='queued'),...queue.items.filter(item=>item.status==='done'||item.status==='cancelled')].slice(0,100);
+    const visible=[...queue.items.filter(item=>item.status==='running'||item.status==='committing'||item.status==='failed'||item.status==='paused'),...queue.items.filter(item=>item.status==='queued'),...queue.items.filter(item=>item.status==='done'||item.status==='cancelled')].slice(0,100);
     const ids=new Set(visible.map(item=>item.id));for(const [id,view] of rows)if(!ids.has(id)){view.root.remove();rows.delete(id);}
     let position=0;
     for(const task of visible){
@@ -92,11 +92,11 @@ export function installFilePanel(options:{token:()=>string;operations:Operations
         actions.append(pause,cancel,retry,rename,renameButton);root.append(name,detail,bar,actions);view={root,name,detail,bar,cancel,retry,rename,renameButton,pause};rows.set(task.id,view);
       }
       view.name.textContent=(task.kind==='download'?'↓ ':'↑ ')+task.name;view.name.title=task.name;view.root.dataset.state=task.status;
-      const active=task.status==='running',rate=active&&task.phase==='receiving'?task.bytes/Math.max(.1,(Date.now()-task.started)/1000):0;
+      const active=task.status==='running'||task.status==='committing',rate=active&&task.phase==='receiving'?task.bytes/Math.max(.1,(Date.now()-task.started)/1000):0;
       const remaining=rate>0&&task.size>task.bytes?Math.ceil((task.size-task.bytes)/rate):0;
-      view.detail.textContent=active?(task.phase==='waiting'?'等待前面的文件传输':task.phase==='verifying'?'正在核对文件内容与已传部分':task.phase==='preparing'?'正在打包文件夹 · 已读取 '+size(task.bytes):size(task.bytes)+' / '+size(task.size)+(rate?' · '+size(Math.round(rate))+'/s'+(remaining?' · 约 '+remaining+' 秒':''):'')):task.message||({queued:'排队中',paused:'已暂停',done:'完成',failed:'传输未完成',cancelled:'已取消'} as Record<string,string>)[task.status];
-      view.bar.value=task.status==='done'?100:task.size>0&&task.phase!=='preparing'?100*task.bytes/task.size:0;
-      view.pause.hidden=!queue.pause||!['queued','running'].includes(task.status);view.pause.setAttribute('aria-label','暂停 · '+task.name);view.cancel.hidden=!task.cleanupPending&&!['queued','running','paused','failed'].includes(task.status);view.cancel.textContent=task.cleanupPending?'清理临时文件':task.status==='failed'?'跳过':'取消';
+      view.detail.textContent=active?(task.phase==='copying'?'正在兼容保存（完成前请勿打开目标文件） · '+size(task.copyBytes||0)+' / '+size(task.size):task.phase==='saving'?'正在校验并保存到目标磁盘':task.phase==='waiting'?'等待前面的文件传输':task.phase==='verifying'?'正在核对文件内容与已传部分':task.phase==='preparing'?'正在打包文件夹 · 已读取 '+size(task.bytes):size(task.bytes)+' / '+size(task.size)+(rate?' · '+size(Math.round(rate))+'/s'+(remaining?' · 约 '+remaining+' 秒':''):'')):task.message||({queued:'排队中',paused:'已暂停',done:'完成',failed:'传输未完成',cancelled:'已取消'} as Record<string,string>)[task.status];
+      view.bar.value=task.status==='done'?100:task.phase==='copying'&&task.size>0?100*(task.copyBytes||0)/task.size:task.size>0&&task.phase!=='preparing'?100*task.bytes/task.size:0;
+      view.pause.hidden=!queue.pause||!['queued','running','committing'].includes(task.status);view.pause.setAttribute('aria-label','暂停 · '+task.name);view.cancel.hidden=!task.cleanupPending&&!['queued','running','committing','paused','failed'].includes(task.status);view.cancel.textContent=task.cleanupPending?'清理临时文件':task.status==='failed'?'跳过':'取消';
       view.cancel.setAttribute('aria-label',view.cancel.textContent+' · '+task.name);view.retry.setAttribute('aria-label',(queue.native?'继续':'重试')+' · '+task.name);view.renameButton.setAttribute('aria-label','改名重试 · '+task.name);view.rename.setAttribute('aria-label','重试文件名 · '+task.name);
       view.retry.hidden=!['failed','cancelled','paused'].includes(task.status);view.retry.textContent=queue.native?'继续':'重试';const conflict=task.kind==='upload'&&task.status==='failed'&&task.message.includes('同名');view.rename.hidden=view.renameButton.hidden=!conflict;
       const container=get('transfer-list');if(container.children[position]!==view.root)container.insertBefore(view.root,container.children[position]||null);position++;
