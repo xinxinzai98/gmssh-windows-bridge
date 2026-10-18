@@ -54,6 +54,23 @@ try {
     Assert ($script:task.Principal.UserId -ceq 'S-1-5-18' -and $script:task.State -eq 'Running') 'Service-account task registration was incorrect'
     Stop-GMSSHConnectTask $program $data
     Assert ($script:task.State -eq 'Ready') 'Owned task did not stop'
+    # Task Scheduler may report Ready before Windows releases the executable image.
+    $file=(Join-Path $program 'gmssh-connect.exe').Replace("'","''")
+    $lockSource="`$handle=[IO.File]::Open('$file',[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read); [Console]::WriteLine('locked'); Start-Sleep -Milliseconds 1500; `$handle.Dispose()"
+    $lockInfo=New-Object Diagnostics.ProcessStartInfo
+    $lockInfo.FileName=Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+    $lockInfo.Arguments='-NoProfile -NonInteractive -EncodedCommand '+[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($lockSource))
+    $lockInfo.UseShellExecute=$false;$lockInfo.CreateNoWindow=$true;$lockInfo.RedirectStandardOutput=$true
+    $holder=[Diagnostics.Process]::Start($lockInfo)
+    try {
+        Assert ($holder.StandardOutput.ReadLine() -ceq 'locked') 'Executable lock fixture did not start'
+        Stop-GMSSHConnectTask $program $data
+        $released=[IO.File]::Open((Join-Path $program 'gmssh-connect.exe'),[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+        $released.Dispose()
+    } finally {
+        if (-not $holder.HasExited) { $holder.Kill();$holder.WaitForExit() }
+        $holder.Dispose()
+    }
     $script:task.Actions[0].Arguments='foreign-command'
     Expect-Blocked { Register-GMSSHConnectTask $program $data } 'Foreign task was overwritten'
     $script:task=$null;$script:rule.Action='Block'

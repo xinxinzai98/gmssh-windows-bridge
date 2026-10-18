@@ -66,7 +66,7 @@ function protectFileQuit(event,finish){
   const legacy=[...fileActivity.values()].reduce((sum,value)=>sum+value,0),active=legacy+(nativeFiles?.activeCount()||0);
   if(fileQuitAllowed)return;
   if(!active){
-    if(!nativeFiles)return;event.preventDefault();if(confirmingFileQuit)return;confirmingFileQuit=true;nativeFiles.shutdown().then(()=>{fileQuitAllowed=true;finish();}).catch(()=>dialog.showMessageBox({type:'error',message:'文件任务未能保存，暂未退出',detail:'请检查本机存储空间和文件中心目录权限后重试。'})).finally(()=>{confirmingFileQuit=false;});return;
+    if(!nativeFiles)return;event.preventDefault();if(confirmingFileQuit)return;confirmingFileQuit=true;nativeFiles.shutdown().then(()=>{fileQuitAllowed=true;setImmediate(finish);}).catch(()=>dialog.showMessageBox({type:'error',message:'文件任务未能保存，暂未退出',detail:'请检查本机存储空间和文件中心目录权限后重试。'})).finally(()=>{confirmingFileQuit=false;});return;
   }
   event.preventDefault();if(confirmingFileQuit)return;confirmingFileQuit=true;
   dialog.showMessageBox({type:'warning',message:'仍有 '+active+' 项文件传输未完成',detail:'退出会暂停并保存主进程中的任务；重开后可继续，源文件或保存位置需重新确认。浏览器兼容任务仍需重新选择文件。',buttons:['继续传输','暂停并退出'],defaultId:0,cancelId:0,noLink:true}).then(async result=>{
@@ -74,7 +74,8 @@ function protectFileQuit(event,finish){
     for(const contents of fileActivity.keys())if(!contents.isDestroyed()){
       let timer;await Promise.race([contents.executeJavaScript('if(!window.gmsshFilesController?.native)window.gmsshFilesController?.cancelAll();void 0;').catch(()=>{}),new Promise(resolve=>{timer=setTimeout(resolve,2000);})]).finally(()=>clearTimeout(timer));
     }
-    finish();
+    // Let the native quit/close request unwind before resuming it (macOS).
+    setImmediate(finish);
   }).catch(()=>dialog.showMessageBox({type:'error',message:'文件任务未能保存，暂未退出',detail:'请检查本机存储空间和文件中心目录权限后重试。'})).finally(()=>{confirmingFileQuit=false;});
 }
 app.on('before-quit',event=>protectFileQuit(event,()=>app.quit()));

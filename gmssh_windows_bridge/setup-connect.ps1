@@ -143,11 +143,20 @@ function Register-GMSSHConnectTask {
 
 function Stop-GMSSHConnectTask([string]$ProgramRoot,[string]$DataRoot) {
     $task = Get-GMSSHConnectTask $ProgramRoot $DataRoot
-    if (-not $task -or $task.State -ne 'Running') { return }
-    Stop-ScheduledTask -TaskName 'GMSSH Windows Connect' -TaskPath '\'
+    if (-not $task) { return }
+    if ($task.State -eq 'Running') { Stop-ScheduledTask -TaskName 'GMSSH Windows Connect' -TaskPath '\' }
+    $file = Join-Path $ProgramRoot 'gmssh-connect.exe'
     $deadline = [DateTime]::UtcNow.AddSeconds(10)
-    while ((Get-ScheduledTask -TaskName 'GMSSH Windows Connect' -TaskPath '\').State -eq 'Running') {
-        if ([DateTime]::UtcNow -ge $deadline) { throw '原一键接入进程尚未退出。' }
+    while ($true) {
+        if ((Get-ScheduledTask -TaskName 'GMSSH Windows Connect' -TaskPath '\').State -ne 'Running') {
+            # Ready may precede executable-image release. Do not copy or reinitialize yet.
+            try {
+                $handle = [IO.File]::Open($file,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+                $handle.Dispose()
+                return
+            } catch [IO.IOException] { }
+        }
+        if ([DateTime]::UtcNow -ge $deadline) { throw '原一键接入程序仍被占用，已停止更新，请稍后重试。' }
         Start-Sleep -Milliseconds 100
     }
 }

@@ -1,6 +1,6 @@
 # 工作区、连接历史与独立授权
 
-适用于 0.4.0a23 开发分支候选。源码、合成联调、Windows 原生运行和实机验收分别记录；此候选没有部署到现用电脑。公开下载页仍提供已发布的 Alpha 包。
+适用于 0.4.0a23 开发分支候选。源码、合成联调、Windows 原生运行和实机验收分别记录；已有 Windows 安装的升级、恢复与改密已有实机记录，具体范围见文末。公开下载页仍提供已发布的 Alpha 包。
 
 ## 设备工作区
 
@@ -51,4 +51,4 @@ Windows 会话列表列出独立授权通道及开始时间、状态和来源。
 
 Windows 使用内置的 [ConPTY API](https://learn.microsoft.com/en-us/windows/console/creating-a-pseudoconsole-session) 保持交互式终端，并以作业对象回收该终端创建的进程。后台使用受管理账号启动终端，不将它替换成 SYSTEM 交互式 shell。
 
-本地联调使用真实 Go HTTPS、Python、SSH 和主进程传输代码，Windows 进程、CIM 和桌面端点由合成实现提供。Windows x64 已完成交叉编译；原生 ConPTY、安装升级、开机恢复与具体设备上的权限效果仍需 Windows 实机验收。本轮保持 A4 与现用 Mac 客户端不变。
+本地联调使用真实 Go HTTPS、Python、SSH 和主进程传输代码，Windows 进程、CIM 和桌面端点由合成实现提供。后续实机检查已覆盖已有 Windows 安装的升级、重启后的服务与托盘恢复、不同密码的改密重连，以及临时 Mac 客户端完整退出重开后的监控和原桌面自动连接，见[验证记录](validation.md)。原生 ConPTY、独立授权撤销与具体权限效果仍需分别进行 Windows 实机验收，不能由安装自检代替。日常 Mac 应用未替换。

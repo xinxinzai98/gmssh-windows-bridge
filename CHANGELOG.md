@@ -2,7 +2,9 @@
 
 ## Unreleased
 
-- Add the 0.4.0a23 source candidate across the accepted four-phase plan. Native device acceptance and a new installer release remain pending.
+- Wait for exclusive access to the connection helper after stopping its task. Real Windows task state can become Ready before the executable image is released; cover that gap with a native file-lock regression before retrying the upgrade.
+- Resume a canceled quit on the next event-loop turn after saving file tasks. Verify that normal macOS quit ends the main process and bridge listeners, then a new process restores monitoring and the original desktop with saved credentials.
+- Add the 0.4.0a23 source candidate across the accepted four-phase plan. Existing-installation upgrade, restart recovery and distinct-password reconnection have device evidence; broader feature acceptance and a new installer release remain pending.
 - Add pinned Linux SFTP with password/private-key authentication and bastion chains to the native, resumable file queue. Keep POSIX path semantics, favorites, folder creation and current-directory refresh.
 - Add device workspaces, in-place desktop/terminal split views, per-device display preferences and local metadata-only connection history with retention and export. Restore inactive desktop tabs without opening duplicate sessions.
 - Add permanent independent controller grants, QR sharing, per-channel server policy, single-session disconnect and individual revocation. Keep Windows/desktop passwords on the server and preserve legacy shared-password connections.

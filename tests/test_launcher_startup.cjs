@@ -37,7 +37,7 @@ async function launch({ monitoring = true, failure, terminal = false, keychain =
     return child;
   };
   const context = { __dirname: '/synthetic', process: { env: { PYTHONPATH: '/must-not-inherit', PYTHONHOME: '/must-not-inherit' } },
-    setTimeout, clearTimeout, setInterval, clearInterval, URL, URLSearchParams, Buffer,
+    setTimeout, clearTimeout, setInterval, clearInterval, setImmediate, URL, URLSearchParams, Buffer,
     require: name => {
       if (name === 'electron') return { app, ipcMain, autoUpdater, clipboard:{writeText:value=>copies.push(value),readText:()=>{clipboardReads++;return clipboardText;}}, dialog: { showMessageBox: async value => {dialogs.push(value);return {response:fileQuitResponse};},showOpenDialog:async value=>{pickers.push(value);return {canceled:true,filePaths:[]};} } };
       if (name === 'node:child_process') return { spawn };
@@ -192,7 +192,7 @@ test('an explicit stop-and-quit cancels file workspaces, then exits without a se
   const result=await launch({fileQuitResponse:1});result.ipcMain.handle('render-to-main',async()=>{});const scripts=[];
   const contents={getURL:()=> 'file:///synthetic/app.asar/dist/index.html#/home',isDestroyed:()=>false,executeJavaScript:async code=>scripts.push(code)};
   await result.handlers.get('render-to-main')({sender:contents},{type:'gmssh-files-state',data:{active:1,failed:0}});
-  result.app.emit('before-quit',{preventDefault(){}});await new Promise(resolve=>setImmediate(resolve));
+  result.app.emit('before-quit',{preventDefault(){}});await new Promise(resolve=>setImmediate(()=>setImmediate(resolve)));
   assert.equal(result.quits(),1);assert.ok(scripts.some(s=>s.includes('gmsshFilesController?.cancelAll')));
   result.app.emit('before-quit',{preventDefault(){throw Error('should be approved');}});assert.equal(result.dialogs.length,1);result.app.emit('will-quit');
 });
@@ -245,7 +245,24 @@ test('quitting a native transfer pauses and saves main-owned tasks instead of ca
   const result=await launch({pairingOnly:true,nativeTransfers:true,fileQuitResponse:1});result.ipcMain.handle('render-to-main',async()=>({multiPort:22200}));const invoke=result.handlers.get('render-to-main'),event={sender:{getURL:()=> 'file:///synthetic/app.asar/dist/index.html'}};
   const request=action=>({type:'gmssh-transfer',data:{action,machineId:action==='hello'?null:'1'.repeat(32),data:action==='hello'?{}:{remote:'C:/'}}});
   assert.equal((await invoke(event,request('hello'))).data.protocol,2);assert.equal((await invoke(event,request('pick-upload'))).status,'ok');
-  let prevented=false;result.app.emit('before-quit',{preventDefault(){prevented=true;}});await new Promise(r=>setImmediate(r));assert.equal(prevented,true);assert.equal(result.nativeShutdowns(),1);assert.equal(result.quits(),1);assert.ok(result.dialogs.at(-1).buttons.includes('暂停并退出'));assert.equal(result.nativeCalls.some(c=>c.action==='cancel-all'),false);result.app.emit('will-quit');
+  let prevented=false;result.app.emit('before-quit',{preventDefault(){prevented=true;}});await new Promise(r=>setImmediate(()=>setImmediate(r)));assert.equal(prevented,true);assert.equal(result.nativeShutdowns(),1);assert.equal(result.quits(),1);assert.ok(result.dialogs.at(-1).buttons.includes('暂停并退出'));assert.equal(result.nativeCalls.some(c=>c.action==='cancel-all'),false);result.app.emit('will-quit');
+});
+
+test('an idle native queue resumes quit after the cancelled quit event has returned',async()=>{
+  const result=await launch({pairingOnly:true,nativeTransfers:true});
+  result.ipcMain.handle('render-to-main',async()=>({multiPort:22200}));
+  const event={sender:{getURL:()=> 'file:///synthetic/app.asar/dist/index.html'}};
+  await result.handlers.get('render-to-main')(event,{type:'gmssh-transfer',data:{action:'hello',machineId:null,data:{}}});
+  let prevented=0;
+  result.app.emit('before-quit',{preventDefault(){prevented++;}});
+  result.app.emit('before-quit',{preventDefault(){prevented++;}});
+  await Promise.resolve();
+  assert.equal(prevented,2);assert.equal(result.nativeShutdowns(),1);
+  assert.equal(result.quits(),0,'do not re-enter the native quit cycle from a promise microtask');
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(result.quits(),1);assert.equal(result.dialogs.length,0);
+  result.app.emit('before-quit',{preventDefault(){throw Error('saved queue should allow quit');}});
+  result.app.emit('will-quit');assert.ok(result.children.every(child=>child.killed));
 });
 
 test('backend terminal lifecycle is bounded metadata from the trusted child, with no command or credential fields',async()=>{
