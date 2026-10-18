@@ -13,11 +13,15 @@ class ControllerSession(Session):
         self.attempts += 1
         if username != self.config.username or self.attempts > 3 or not isinstance(password, str) or len(password) != 43:
             return paramiko.AUTH_FAILED
-        client = ControllerClient(self.config.target, self.config.controller_configuration, token=password)
+        client = None
         try:
+            from .network_routes import select_route, record_route
+            target = select_route(self.config)
+            client = ControllerClient(target, self.config.controller_configuration, token=password)
             client.authorize()
+            record_route(self.config, client, target)
         except Exception as error:
-            client.close()
+            if client is not None: client.close()
             pool = getattr(self.config, 'desktop_sessions', None)
             if pool is not None:
                 code = getattr(error, 'code', '')

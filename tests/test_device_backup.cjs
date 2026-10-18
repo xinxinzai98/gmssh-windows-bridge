@@ -82,6 +82,7 @@ test('Windows transfer recreates local bridge ports and pinned metadata without 
     assert.ok(!raw.includes('29999')&&!raw.includes('29998')&&!raw.includes('known_hosts')&&!raw.includes('accessToken')&&!raw.includes(source.pairing.root));
     target.manager.open(body);const preview=await target.manager.inspect('synthetic-backup-password');const result=await target.manager.import({id:preview.id,ids:preview.devices.map(item=>item.ref),rememberDesktop:true});assert.equal(result.results[0].status,'imported');
     const record=target.pairing.records[0];assert.equal(record.target,'192.0.2.42');assert.equal(record.monitorPort,34002);assert.equal(target.starts.length,1);assert.equal(target.pairing.takeDesktopAuth(record.machineId).password,'synthetic-ssh-secret-1');
+    assert.equal(record.autoTarget,true);assert.deepEqual(target.starts[0].autoAddresses,connection.addresses);
     assert.ok(!target.events.some(event=>event.operation&&event.operation!=='inspect'||event.route==='/node/test'));
     assert.ok(!fs.readFileSync(path.join(target.pairing.root,'catalog.json'),'utf8').includes('synthetic-ssh-secret-1'));
     const same=await target.pairing.exportConnection(record.machineId);assert.equal(JSON.parse(same.connection).sshHostFingerprint,connection.sshHostFingerprint);

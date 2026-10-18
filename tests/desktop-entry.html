@@ -12,7 +12,7 @@ body{font:16px system-ui;background:#17191d;color:#eee;padding:24px}.tabs-contai
 <input placeholder="搜索机器名称、IP或备注">
 <div class="machine-body"><div class="native-table-header">原生表头</div><div class="machine-card-scroll"><div class="n-scrollbar-container"><div class="grid"></div></div></div></div>
 <script src="../desktop-web/public/gmssh-entry.js"></script>
-<script src="../desktop-web/public/gmssh-home.js"></script>
+<script src="../desktop-web/public/gmssh-home.js?v=route-summary"></script>
 <script>
 document.querySelector('#preview').onclick=async()=>{
   window.removeGMSSHHome?.();window.removeWindowsDesktopEntry?.();const grid=document.querySelector('.grid');grid.replaceChildren();
@@ -68,7 +68,7 @@ document.querySelector('#run').onclick = async () => {
     assert(document.querySelector('.gm-device-details').textContent.includes('12 天')&&document.querySelector('.gm-device-details').textContent.includes('0 / 125'),'原生监控刷新后，Linux 详情同步更新');
     home.select('synthetic-windows');productionRoot.remove();
     const savedAPI=window.electronAPI;let copied;
-    window.electronAPI={invoke:async(_channel,request)=>{copied=request.data;return {status:'ok'};}};
+    window.electronAPI={invoke:async(_channel,request)=>{if(request.type==='gmssh-copy-address')copied=request.data;return {status:'ok'};}};
     document.querySelector('.gm-copy-address').click();await settle();
     assert(copied==='192.0.2.7' && document.querySelector('[role="status"]').textContent==='IP 地址已复制','右侧 IP 点击复制精确地址并显示成功提示');
     home.select('synthetic-linux');document.querySelector('[data-gmssh-row="synthetic-windows"] button[title="更多操作"]').click();await settle();
@@ -118,9 +118,26 @@ document.querySelector('#run').onclick = async () => {
     const contextMenu=document.querySelector('.gm-device-context');
     assert(contextMenu.matches(':popover-open')&&contextMenu.getBoundingClientRect().right<=innerWidth,'Windows 右键编辑菜单在窗口边缘仍完整可见');
     [...contextMenu.querySelectorAll('button')].find(button=>button.textContent==='编辑连接地址').click();assert(editedId==='synthetic-windows','Windows 编辑地址进入已核验设备向导');delete window.gmsshPairingController;
-    linux.querySelector('.machine-ip').textContent='2001:db8:1234:5678:9abc:def0:1234:5678';home.refresh();home.select('synthetic-linux');
+    const beforeRoutesAPI=window.electronAPI;window.electronAPI={invoke:async(_channel,request)=>request.type==='gmssh-route-info'?{status:'ok',data:{routes:request.data.targets.map(address=>({address,target:address,scope:'lan',family:address.includes(':')?'IPv6':'IPv4'}))}}:{status:'ok'}};
+    linux.querySelector('.machine-ip').textContent='2001:db8:1234:5678:9abc:def0:1234:5678';home.refresh();home.select('synthetic-linux');await settle();
     const fullAddress=linux.querySelector('.machine-ip').textContent;
-    assert(document.querySelector('[data-gmssh-row="synthetic-linux"] .gm-address').title===fullAddress&&document.querySelector('.gm-copy-address').title.startsWith(fullAddress)&&document.querySelector('.gm-copy-address').scrollWidth<=document.querySelector('.gm-copy-address').clientWidth+1,'长 IPv6 地址可悬浮查看完整值，复制入口保留完整文本且不溢出');
+    assert(document.querySelector('[data-gmssh-row="synthetic-linux"] .gm-connection-label').textContent==='局域网 · IPv6 · 80ms','名称下使用本机路由分类与真实延迟组成连接摘要');
+    linux.querySelector('.rounded-full').textContent='离线';home.refresh();assert(document.querySelector('[data-gmssh-row="synthetic-linux"] .gm-connection-label').textContent==='离线','离线设备不把已保存地址的局域网标签显示成已连接');linux.querySelector('.rounded-full').textContent='80ms';home.refresh();window.electronAPI=beforeRoutesAPI;
+    assert(!document.querySelector('.gm-device-table .gm-address')&&document.querySelector('.gm-copy-address').title.startsWith(fullAddress)&&document.querySelector('.gm-copy-address').scrollWidth<=document.querySelector('.gm-copy-address').clientWidth+1,'首页不常驻地址列，详情仍保留完整 IPv6 与复制入口');
+    windows.querySelector('.machine-ip').textContent=fullAddress;home.refresh();
+    assert(document.querySelectorAll('.gm-device-table th').length===5&&['synthetic-windows','synthetic-linux'].every(id=>{const row=document.querySelector('[data-gmssh-row="'+id+'"]');return row.children.length===5&&!row.textContent.includes(fullAddress); }),'Windows 和 Linux 列表统一保留设备、CPU、内存、磁盘与操作五列');
+    assert(document.querySelector('[data-gmssh-row="synthetic-linux"] .gm-connection-label').textContent.includes('IPv6'),'设备名称下显示地址族与连接延迟，不占用整列显示 IP');
+    localStorage.setItem('GmsshMachineView','card');home.refresh();
+    const ipv6Card=document.querySelector('[data-gmssh-row="synthetic-linux"]');
+    assert(!ipv6Card.querySelector('.gm-address')&&!ipv6Card.textContent.includes(fullAddress)&&ipv6Card.querySelector('.gm-connection-label').textContent.includes('IPv6'),'卡片模式同样只展示连接摘要，长 IPv6 留在详情');
+    localStorage.setItem('GmsshMachineView','list');home.refresh();
+    document.querySelector('[data-gmssh-row="synthetic-linux"] button[title="更多操作"]').click();
+    [...document.querySelector('.gm-device-context').querySelectorAll('button')].find(button=>button.textContent==='设备详情').click();
+    const longCopy=detailsDialog.querySelector('.gm-copy-address'),longValue=longCopy.querySelector('.gm-address-value');
+    assert(longValue&&longValue.textContent===fullAddress&&longValue.getBoundingClientRect().width>0&&longCopy.scrollWidth<=longCopy.clientWidth+1&&getComputedStyle(longValue).whiteSpace==='normal','详情抽屉完整显示 IPv6，地址文本独立换行且复制图标保留空间');
+    let copiedIPv6;const beforeCopyAPI=window.electronAPI;window.electronAPI={invoke:async(_channel,request)=>{if(request.type==='gmssh-copy-address')copiedIPv6=request.data;return {status:'ok'};}};
+    longCopy.click();await settle();assert(copiedIPv6===fullAddress,'列表隐藏地址和详情换行不改变复制的完整 IPv6 地址');window.electronAPI=beforeCopyAPI;
+    detailsDialog.querySelector('.gm-device-dialog-head button').click();await settle();
     const nativeView=document.createElement('webview');nativeView.className='home-container-view';nativeView.setAttribute('src',location.origin+'/newweb/#/home?machineId=synthetic-linux');let fileCalls=0;
     nativeView.executeJavaScript=async code=>{assert(code.includes('window.$gm.openFolder("/")')&&!code.includes('token'),'Linux 文件入口只调用固定的内置文件 SDK');fileCalls++;return true;};document.body.append(nativeView);
     document.querySelector('[data-gmssh-row="synthetic-linux"] button[title="文件互传"]').click();await settle();
@@ -176,9 +193,10 @@ document.querySelector('#run').onclick = async () => {
     assert(!secondPanel.hidden&&document.documentElement.hasAttribute('data-windows-desktop-active'),'关闭后台桌面不会清除前台桌面的选中状态');
     installWindowsDesktopEntries(entries);
     assert(document.querySelector('[data-windows-machine="second-windows"] iframe')===secondFrame&&document.querySelectorAll('.gmssh-windows-tabs').length===1,'重新配置设备复用已有会话与同一行标签容器');
-    const multi=installGMSSHHome({viewerUrl,css,devices:[{machineId:'first-windows',viewerUrl,target:'192.0.2.10',targetPort:22},{machineId:'second-windows',viewerUrl:entries[1].viewerUrl,target:'192.0.2.11',targetPort:2222}]});
+    const multi=installGMSSHHome({viewerUrl,css,devices:[{machineId:'first-windows',viewerUrl,target:'192.0.2.10',targetPort:22},{machineId:'second-windows',viewerUrl:entries[1].viewerUrl,target:'192.0.2.11',addresses:['192.0.2.11','2001:db8::11'],targetPort:2222}]});
     multi.select('second-windows');
     assert(document.querySelectorAll('.gm-device-identity .gm-os-icon[alt="Windows"]').length===2&&document.querySelector('.gm-copy-address').textContent==='192.0.2.11'&&document.querySelector('.gm-device-details').textContent.includes('2222'),'多台 Windows 独立显示系统图标、真实地址和 SSH 端口');
+    assert(document.querySelector('.gm-device-details').textContent.includes('其他已保存地址')&&[...document.querySelectorAll('.gm-copy-address')].some(button=>button.title.startsWith('2001:db8::11')),'详情保留当前地址及其他已保存地址的完整复制入口');
     await settle();let tool;
     secondFrame.contentWindow.postMessage=(message,origin)=>{tool={message,origin};};
     window.gmsshWindowsControllers.get('second-windows').open();

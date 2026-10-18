@@ -60,7 +60,8 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
   const byId=new Map(connections.filter(device=>device.machineId).map(device=>[device.machineId,device]));
   const style = document.createElement('style'); style.textContent = css; document.head.append(style);
   let root, host, selected, fingerprint = '', timer, noticeTimer, disposed = false, infoBusy = false, infoFrame, infoReady, infoOrigin, infoRequestId = 0, cancelInfo, filesTimer, contextMenu;
-  const metadata = new Map(), systemInfo = new Map(), currentRecords = new Map(), scrollPositions = {list:{top:0,left:0},card:{top:0,left:0}};
+  const metadata = new Map(), systemInfo = new Map(), currentRecords = new Map(), routeInfo = new Map(), scrollPositions = {list:{top:0,left:0},card:{top:0,left:0}};
+  let routeQuery='',routeSampled=0,routeBusy=false;
   const fitWorkspace = () => { if (root?.getClientRects().length) root.style.height = Math.max(0, window.innerHeight - Math.max(0, root.getBoundingClientRect().top)) + 'px'; };
   const make = (tag, className, text) => { const node = document.createElement(tag); node.className = className || ''; if (text !== undefined) node.textContent = text; return node; };
   const icon = name => { const node = make('img', 'gm-ui-icon'); node.src = new URL('ui-icons/' + name + '.svg', base).href; node.alt = ''; return node; };
@@ -124,7 +125,7 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
     const id = node.dataset.machineId, binding=byId.get(id)||(node.hasAttribute('data-windows-desktop-card')?connections[0]:undefined), windows=!!binding;
     const name = get('.machine-name .name-txt') || get('.windows-card-name') || get('.machine-name') || id;
     const shownAddress = get('.machine-ip') || get('.windows-card-host').split(' · ')[0];
-    const address = windows && binding.target && (!shownAddress || shownAddress==='127.0.0.1' || /^100\./.test(shownAddress)) ? binding.target : shownAddress || '—';
+    const configuredAddress = windows && binding.target ? binding.target : shownAddress || '—';
     const metrics = [...node.querySelectorAll('.machine-progress')].map(metric => metric.querySelector('.label-value')?.textContent.trim() || metric.querySelector('.label')?.textContent.trim().replace(/^[^:：]+[:：]/, '') || '—');
     const cpuText = node.querySelector('.machine-progress')?.textContent || '';
     const cores = cpuText.match(/(\d+)\s*核/)?.[1];
@@ -134,9 +135,11 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
     // Read only public configuration fields; never copy native connection credentials.
     const info = {...metadata.get(id), ...models.get(id), ...systemInfo.get(id)};
     const connection=info.connection;
+    const address=windows&&connection?.state==='connected'&&typeof info.route?.target==='string'?info.route.target:configuredAddress;
+    const route=windows&&connection?.state==='connected'?info.route:routeInfo.get(address)||binding?.route;
     const latency=!windows?nativeLatency:info.unavailable?'采集异常':connection?.state==='disconnected'?'连接已断开':connection?.state==='connected'?
       Number.isFinite(connection.latencyMs)?(connection.latencyMs<1?'＜1ms':Math.round(connection.latencyMs)+'ms'):'已连接 · 延迟待测':'状态待确认';
-    return { node, id, windows, binding, name, address, metrics, latency, desktop, terminal, info, cores:info.cores || info.cpuCores || cores,
+    return { node, id, windows, binding, name, address, route, metrics, latency, desktop, terminal, info, cores:info.cores || info.cpuCores || cores,
       image: node.querySelector('.machine-icon-img')?.getAttribute('src'), note: get('.machine-note') || get('.windows-card-note') };
   };
   function status(record) {
@@ -157,7 +160,13 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
     const box = make('div','gm-device-identity'); box.title = configuration(record);
     if (record.windows || record.image) { const image=make('img','gm-os-icon'); image.src=record.windows ? new URL('ui-icons/windows.svg',base).href : record.image; image.alt=record.windows ? 'Windows' : ''; box.append(image); } else box.append(icon('desktop'));
     const text=make('div','gm-identity-text'), name=make('strong','gm-device-name'); name.append(status(record),make('span','',record.name));
-    text.append(name,make('small','',record.latency || '状态未知')); box.append(text); return box;
+    const label=make('small','gm-connection-label',connectionLabel(record));label.title=label.textContent;text.append(name,label); box.append(text); return box;
+  }
+  function connectionLabel(record){
+    if(/离线|断开|异常|待确认|未知/.test(record.latency||''))return record.latency||'状态未知';
+    const scope=record.route?.scope==='lan'?'局域网':record.route?.scope==='remote'?'远端':null;
+    const family=['IPv4','IPv6'].includes(record.route?.family)?record.route.family:record.address.includes(':')?'IPv6':/^\d+\.\d+\.\d+\.\d+$/.test(record.address)?'IPv4':null;
+    return [scope,family,record.latency||'状态未知'].filter(Boolean).join(' · ');
   }
   function openLinuxFiles(record) {
     clearTimeout(filesTimer);
@@ -253,12 +262,15 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
     const pane=make('aside','gm-device-details');
     const logo=make('img','gm-brand');logo.src=new URL(record.windows?'ui-icons/windows.svg':'brand/gmssh.png',base).href;logo.alt=record.windows?'Windows':'GMSSH';pane.append(logo);
     const title=make('h2','');title.append(status(record),make('span','',record.name));title.title=configuration(record);pane.append(title);
-    const address=action(record.address,'copy',()=>void copyAddress(record.address),false,record.address==='—'||/[＊*]/.test(record.address));address.classList.add('gm-copy-address');address.title=record.address+' · 点击复制 IP 地址';address.setAttribute('aria-label','复制 IP 地址 '+record.address);pane.append(address);
+    const address=action('','copy',()=>void copyAddress(record.address),false,record.address==='—'||/[＊*]/.test(record.address));address.append(make('span','gm-address-value',record.address));address.classList.add('gm-copy-address');address.title=record.address+' · 点击复制 IP 地址';address.setAttribute('aria-label','复制 IP 地址 '+record.address);pane.append(address);
     pane.append(action('打开桌面','monitor',()=>invoke(record,'desktop'),true,!record.desktop||record.desktop.disabled||!allowed(record,'desktop')));
     const pair=make('div','gm-detail-actions');pair.append(action('终端','terminal-window',()=>invoke(record,'terminal'),false,!record.terminal||record.terminal.disabled||!allowed(record,'terminal')),action('文件互传','arrows-left-right',()=>invoke(record,'files'),false,!allowed(record,'files')||!(window.gmsshFilesController&&(record.windows||window.gmsshFilesController.linux))&&(!record.desktop||record.desktop.disabled)));pane.append(pair);
     if(record.windows)pane.append(action('电源','power',()=>invoke(record,'power'),false,!record.desktop||record.desktop.disabled||!allowed(record,'power')));
     const tools=make('div','gm-detail-actions');tools.append(action('连接诊断','activity',()=>window.gmsshToolsController?.open(record.id,'diagnostics')),action('系统工具','gear',()=>window.gmsshToolsController?.open(record.id,'processes')));pane.append(tools);
-    pane.append(make('h3','','连接信息'),make('p','gm-muted',record.latency||'状态未知'),make('p','gm-muted',record.note||'—'),make('h3','','资源使用'));
+    pane.append(make('h3','','连接信息'),make('p','gm-muted',connectionLabel(record)),make('p','gm-muted',record.note||'—'));
+    const alternatives=[...new Set(record.binding?.addresses||[])].filter(value=>typeof value==='string'&&value!==record.address);
+    if(alternatives.length){pane.append(make('h3','','其他已保存地址'));for(const value of alternatives){const copy=action('','copy',()=>void copyAddress(value));copy.classList.add('gm-copy-address');copy.append(make('span','gm-address-value',value));copy.title=value+' · 点击复制 IP 地址';copy.setAttribute('aria-label','复制 IP 地址 '+value);pane.append(copy);}}
+    pane.append(make('h3','','资源使用'));
     ['CPU','内存','磁盘'].forEach((name,index)=>{const line=make('div','gm-detail-metric');line.append(labelled('span',name,['cpu','memory','hard-drive'][index]),meter(record.metrics[index],index));pane.append(line);});
     pane.append(make('h3','','网络与设备'));
     const info=record.info;
@@ -293,7 +305,7 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
     if(!source||!cards.length){currentRecords.clear();if(detailsDialog.open)detailsDialog.close();root?.remove();host?.classList.remove('gm-native-source');root=host=undefined;return;}
     const models=nativeModels(cards),records=cards.map(node=>details(node,models)),mode=localStorage.getItem('GmsshMachineView')==='card'?'card':'list';
     currentRecords.clear();for(const record of records)currentRecords.set(record.id,record);
-    const next=JSON.stringify([mode,records.map(({id,windows,image,name,address,metrics,latency,note,desktop,terminal,info,cores})=>[id,windows,image,name,address,metrics,latency,note,desktop?.disabled,terminal?.disabled,info,cores]),selected]);
+    const next=JSON.stringify([mode,records.map(({id,windows,image,name,address,route,metrics,latency,note,desktop,terminal,info,cores})=>[id,windows,image,name,address,route,metrics,latency,note,desktop?.disabled,terminal?.disabled,info,cores]),selected]);
     if(next===fingerprint&&root?.isConnected)return;
     observer.disconnect();
     try {
@@ -311,14 +323,14 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
       if(!records.some(record=>record.id===selected))selected=records.find(record=>record.windows)?.id||records[0].id;
       if(mode==='list'){
         const table=make('table','gm-device-table'),head=make('thead'),header=make('tr');
-        for(const [text,name] of [['设备'],['地址'],['CPU','cpu'],['内存','memory'],['磁盘','hard-drive'],['操作']]){const cell=make('th');cell.append(name?labelled('span',text,name):text);header.append(cell);}
+        for(const [text,name] of [['设备'],['CPU','cpu'],['内存','memory'],['磁盘','hard-drive'],['操作']]){const cell=make('th');cell.append(name?labelled('span',text,name):text);header.append(cell);}
         head.append(header);table.append(head);const body=make('tbody');
-        for(const record of records){const row=make('tr');selectRecord(row,record);const cell=make('td');cell.append(identity(record));const address=make('td','gm-address',record.address);address.title=record.address;row.append(cell,address);
+        for(const record of records){const row=make('tr');selectRecord(row,record);const cell=make('td');cell.append(identity(record));row.append(cell);
           for(let i=0;i<3;i++){const cell=make('td');cell.append(meter(record.metrics[i],i));row.append(cell);}const actions=make('td','gm-row-actions');actions.append(controls(record));row.append(actions);body.append(row);}
         table.append(body);list.replaceChildren(table);
       }else{
         const grid=make('div','gm-device-grid');
-        for(const record of records){const card=make('article','gm-device-card');selectRecord(card,record);const address=make('p','gm-address',record.address);address.title=record.address;card.append(identity(record),address);
+        for(const record of records){const card=make('article','gm-device-card');selectRecord(card,record);card.append(identity(record));
           const metrics=make('div','gm-card-metrics');['CPU','内存','磁盘'].forEach((name,index)=>{const cell=make('div');cell.append(labelled('small',name,['cpu','memory','hard-drive'][index]),meter(record.metrics[index],index));metrics.append(cell);});card.append(metrics,controls(record));grid.append(card);}
         list.replaceChildren(grid);
       }
@@ -329,6 +341,15 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
       refreshDetailsDialog();
     } finally {observer.observe(document.body,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['hidden','class','disabled','src']});}
     if(byId.has(selected)&&!systemInfo.has(selected))void refreshSystemInfo();
+    void refreshRoutes();
+  }
+  async function refreshRoutes(){
+    const targets=[...new Set([...currentRecords.values()].map(record=>record.address))].slice(0,200),key=JSON.stringify(targets);
+    if(disposed||routeBusy||!window.electronAPI?.invoke||key===routeQuery&&Date.now()-routeSampled<30000)return;
+    routeBusy=true;routeQuery=key;routeSampled=Date.now();
+    try{const described=await window.electronAPI.invoke('render-to-main',{type:'gmssh-route-info',data:{targets}});if(disposed)return;
+      if(described?.status==='ok'&&Array.isArray(described.data?.routes)){for(const route of described.data.routes)if(targets.includes(route.address)&&['lan','remote','unknown'].includes(route.scope)&&['IPv4','IPv6'].includes(route.family))routeInfo.set(route.address,route);fingerprint='';render();}
+    }catch{}finally{routeBusy=false;}
   }
   async function loadNativeMetadata() {
     try {
@@ -366,7 +387,7 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
   const observer=new MutationObserver(records=>{if(records.every(record=>root?.contains(record.target)))return;clearTimeout(timer);timer=setTimeout(render,100);});
   observer.observe(document.body,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['hidden','class','disabled','src']});render();
   window.addEventListener('resize',fitWorkspace);void loadNativeMetadata();void refreshSystemInfo();
-  const infoInterval=setInterval(refreshSystemInfo,30000);
+  const infoInterval=setInterval(()=>{void refreshSystemInfo();void refreshRoutes();},30000);
   window.removeGMSSHHome=()=>{disposed=true;observer.disconnect();clearTimeout(timer);clearTimeout(noticeTimer);clearTimeout(filesTimer);clearInterval(infoInterval);cancelInfo?.();infoFrame?.remove();contextMenu?.remove();detailsDialog.remove();window.removeEventListener('resize',fitWorkspace);root?.remove();host?.classList.remove('gm-native-source');style.remove();};
   return {refresh:render,select(id){selected=id;fingerprint='';render();},filesDevices:()=>[...currentRecords.values()].map(record=>({id:record.id,name:record.name,windows:record.windows,...(record.binding?.permissions?{permissions:record.binding.permissions}:{})})),permissions(id,value){const binding=byId.get(id);if(binding){binding.permissions={...value};fingerprint='';render();}},workspaceOverview(id){const record=currentRecords.get(id);return record?detailPane(record):null;},openNative(id,channel){const record=currentRecords.get(id);if(!record)return;if(channel==='terminal')record.terminal?.click();else if(!record.windows)record.desktop?.click();},openNativeFiles(id){const record=currentRecords.get(id);if(record&&!record.windows){record.desktop?.click();openLinuxFiles(record);}},remove:window.removeGMSSHHome};
 };

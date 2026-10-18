@@ -79,6 +79,21 @@ $tray.Text = 'GMSSH Windows'
 $tray.Visible = $true
 $menu = New-Object Windows.Forms.ContextMenuStrip
 $tray.ContextMenuStrip = $menu
+$script:aiWorker=$null;$script:aiWorkerAttempt=[DateTime]::MinValue
+$aiPausePath=Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'GMSSHWindowsBridge\ai-paused'
+function Start-AIWorker {
+    if($script:aiWorker -and -not $script:aiWorker.HasExited){return}
+    if(([DateTime]::UtcNow-$script:aiWorkerAttempt).TotalSeconds -lt 30){return}
+    $script:aiWorkerAttempt=[DateTime]::UtcNow
+    $file=Join-Path $root 'ai-desktop.ps1'
+    if(Test-Path -LiteralPath $file -PathType Leaf){
+        try{
+            if($script:aiWorker){$script:aiWorker.Dispose()}
+            $parentStart=(Get-Process -Id $PID).StartTime.ToUniversalTime().Ticks
+            $script:aiWorker=Start-Process (Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe') -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-STA','-WindowStyle','Hidden','-File',('"'+$file+'"'),'-Worker','-ParentProcessId',[string]$PID,'-ParentStartTicks',[string]$parentStart) -WindowStyle Hidden -PassThru
+        }catch{$script:aiWorker=$null}
+    }
+}
 $background = [Drawing.ColorTranslator]::FromHtml('#141414')
 $surface = [Drawing.ColorTranslator]::FromHtml('#202020')
 $muted = [Drawing.ColorTranslator]::FromHtml('#a7a7af')
@@ -260,6 +275,17 @@ function Show-Panel {
     $panel.Activate()
 }
 $open = $menu.Items.Add('打开管理面板'); $open.Add_Click({ Show-Panel })
+$aiPause=$menu.Items.Add('暂停 AI 桌面控制')
+$aiPause.CheckOnClick=$false
+$aiPause.Add_Click({
+    try{
+        if(Test-Path -LiteralPath $aiPausePath){Remove-Item -LiteralPath $aiPausePath -Force}
+        else{[void][IO.Directory]::CreateDirectory((Split-Path $aiPausePath));[IO.File]::WriteAllText($aiPausePath,'paused')}
+        $aiPause.Text=if(Test-Path -LiteralPath $aiPausePath){'恢复 AI 桌面控制'}else{'暂停 AI 桌面控制'}
+        Add-AgentActivity $(if(Test-Path -LiteralPath $aiPausePath){'已暂停 AI 桌面控制。'}else{'已恢复 AI 桌面控制。'})
+    }catch{Add-AgentActivity 'AI 控制状态未能修改。'}
+})
+$aiPause.Text=if(Test-Path -LiteralPath $aiPausePath){'恢复 AI 桌面控制'}else{'暂停 AI 桌面控制'}
 if (Test-Path (Join-Path $root 'controller-panel.ps1')) {
     . (Join-Path $root 'controller-panel.ps1')
     $sessionsMenu = $menu.Items.Add('会话与独立授权'); $sessionsMenu.Add_Click({ Show-GMSSHControllers })
@@ -360,7 +386,7 @@ $copy.Add_Click({
 $startButton.Add_Click({ Invoke-AgentAction Start }); $stopButton.Add_Click({ Invoke-AgentAction Stop })
 $checkButton.Add_Click({ Invoke-AgentAction Check })
 $timer = New-Object Windows.Forms.Timer
-$timer.Interval = 5000; $timer.Add_Tick({ Refresh-Status }); $timer.Start()
+$timer.Interval = 5000; $timer.Add_Tick({ Refresh-Status; Start-AIWorker }); $timer.Start()
 try {
     $startup = Get-GMSSHStartupStatus
     $local = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'GMSSHWindowsBridge'
@@ -369,8 +395,9 @@ try {
     Get-GMSSHConnectionInfo | ConvertTo-Json -Depth 5 | Set-Content (Join-Path ([Environment]::GetFolderPath('Desktop')) 'GMSSH-connection.json') -Encoding UTF8
     Add-AgentActivity '登录自启检查已完成，桌面连接信息已刷新。'
 } catch { Add-AgentActivity '启动检查或连接信息导出未完成，可从托盘运行接入自检。' }
-try { Refresh-Status; [Windows.Forms.Application]::Run($context) }
+try { Start-AIWorker; Refresh-Status; [Windows.Forms.Application]::Run($context) }
 finally {
+    if($script:aiWorker){try{if(-not $script:aiWorker.HasExited){$script:aiWorker.Kill()}}catch{};$script:aiWorker.Dispose()}
     $timer.Dispose(); $tray.Visible = $false; $tray.Dispose(); $tooltip.Dispose()
     $logo.Image.Dispose(); $panel.Dispose()
     if ($brandIcon) { $brandIcon.Dispose() }

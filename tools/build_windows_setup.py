@@ -66,7 +66,7 @@ def build(output, installer=None, controller="LocalSubnet", openssh=None, engine
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as bundle:
         names = ['setup-windows.cmd', 'setup-windows.ps1', 'setup-checks.ps1', 'setup-progress.ps1', 'setup-monitor.ps1', 'install-vc-runtime.ps1', 'windows-installers.json', 'credential-dialog.ps1']
         if not monitor_only:
-            names += ['setup-desktop.ps1', 'install-desktop-engine.ps1', 'gmssh-agent.ps1', 'controller-panel.ps1', 'collector.ps1', 'login.ps1', 'system-info.ps1', 'readonly-tools.ps1', 'setup-maintenance.ps1', 'setup-connect.ps1', 'setup-network.ps1']
+            names += ['setup-desktop.ps1', 'install-desktop-engine.ps1', 'gmssh-agent.ps1', 'controller-panel.ps1', 'collector.ps1', 'login.ps1', 'system-info.ps1', 'readonly-tools.ps1', 'ai-context.ps1', 'ai-desktop.ps1', 'setup-maintenance.ps1', 'setup-connect.ps1', 'setup-network.ps1']
         for name in names:
             content = (source / name).read_bytes()
             if name.endswith(".ps1"):

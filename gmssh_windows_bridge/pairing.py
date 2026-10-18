@@ -133,31 +133,39 @@ def probe_identity(connection, target, timeout=5):
 
 def choose_target(connection, preferred=None, code=None):
     """Probe only supplied, pinned addresses. Never send a login or bearer token."""
+    from .network_routes import local_networks, route_info
     def probe(target):
-        probe_identity(connection, target, timeout=2)
+        probe_identity(connection, target, timeout=1.5)
         if code is not None and not connection.get('authorization'):
             from .connection_code import _PinnedConnection
             client = _PinnedConnection(target, code)
-            client.timeout = 2
+            client.timeout = 1.5
             try: client.connect()
             finally: client.close()
         return {'target': target, 'verified': True}
-    addresses = list(connection['addresses'])
-    if preferred in addresses:
-        try: return probe(preferred)
-        except (ValueError, OSError, EOFError, paramiko.SSHException): addresses.remove(preferred)
-    pool = ThreadPoolExecutor(max_workers=4)
-    pending = {pool.submit(probe, target) for target in addresses}
-    deadline = time.monotonic()+6
-    try:
-        while pending and time.monotonic() < deadline:
-            done, pending = wait(pending, timeout=max(0, deadline-time.monotonic()), return_when=FIRST_COMPLETED)
-            for future in done:
-                try: return future.result()
-                except (ValueError, OSError, EOFError, paramiko.SSHException): pass
-        raise ValueError('自动探测未找到通过主机身份核对的可用地址。请检查 SSH / 接入服务，或从列表指定 IPv6 地址重试。')
-    finally:
-        pool.shutdown(wait=False, cancel_futures=True)
+    networks = local_networks()
+    groups = [[] for _ in range(4)]
+    for target in connection['addresses']:
+        route = route_info(target, networks)
+        groups[(0 if route['scope'] == 'lan' else 2)+(0 if route['family'] == 'IPv6' else 1)].append(target)
+    for addresses in groups:
+        if preferred in addresses:
+            try: return probe(preferred)
+            except (ValueError, OSError, EOFError, paramiko.SSHException): addresses.remove(preferred)
+        if not addresses:
+            continue
+        pool = ThreadPoolExecutor(max_workers=4)
+        pending = {pool.submit(probe, target) for target in addresses}
+        deadline = time.monotonic()+3.2
+        try:
+            while pending and time.monotonic() < deadline:
+                done, pending = wait(pending, timeout=max(0, deadline-time.monotonic()), return_when=FIRST_COMPLETED)
+                for future in done:
+                    try: return future.result()
+                    except (ValueError, OSError, EOFError, paramiko.SSHException): pass
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+    raise ValueError('自动探测未找到通过主机身份核对的可用地址。请检查网络、主机身份或手动指定地址。')
 
 
 def inspect_manual(data):
@@ -256,12 +264,22 @@ def main():
         if len(raw) > MAX_EXPORT * 2:
             raise ValueError("请求过大。")
         request = json.loads(raw, object_pairs_hook=_object)
-        if not isinstance(request, dict) or request.get("operation") not in ("inspect", "probe", "redeem-code", "endpoint", "manual", "test-login", "choose-target"):
+        if not isinstance(request, dict) or request.get("operation") not in ("inspect", "probe", "redeem-code", "endpoint", "manual", "test-login", "choose-target", "route-info"):
             raise ValueError("无效的接入操作。")
         text = request.get('connection')
         from .connection_code import PREFIX, inspect_code, redeem_code
         from .controller_access import PREFIX as AUTHORIZATION_PREFIX, ControllerClient, inspect_authorization, metadata_connection
-        if request['operation'] == 'choose-target':
+        if request['operation'] == 'route-info':
+            from .network_routes import local_networks, route_info
+            targets = request.get('targets')
+            if not isinstance(targets,list) or len(targets)>200 or any(not isinstance(v,str) or len(v)>128 for v in targets):
+                raise ValueError('地址列表无效。')
+            networks = local_networks(); routes=[]
+            for value in dict.fromkeys(targets):
+                try: routes.append({'address':value, **route_info(value,networks)})
+                except ValueError: continue
+            result={'routes':routes}
+        elif request['operation'] == 'choose-target':
             if isinstance(text,str) and text.strip().startswith(AUTHORIZATION_PREFIX):
                 code = inspect_authorization(text)
                 connection = inspect_connection(metadata_connection(code))

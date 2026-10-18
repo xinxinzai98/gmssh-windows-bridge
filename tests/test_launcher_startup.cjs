@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../gmssh_windows_bridge/launcher.cjs'), 'utf8')
-  .replace('start().catch(', 'globalThis.completion = start().catch(');
+  .replace('start().catch(', 'globalThis.testStartDevice = startDevice;globalThis.completion = start().catch(');
 
 async function launch({ monitoring = true, failure, terminal = false, keychain = true, wake = false, pairingOnly = false, clipboardText = '', adopted = false, fileQuitResponse=0, nativeTransfers=false, recordHistory=false } = {}) {
   const children = [], dialogs = [], copies = [], pickers = [], nativeCalls=[],history=[];let nativeActive=0,nativeShutdowns=0;
@@ -63,8 +63,20 @@ async function launch({ monitoring = true, failure, terminal = false, keychain =
     } };
   vm.runInNewContext(source, context, { importModuleDynamically: async () => { imported = true; return import('node:assert/strict'); } });
   await context.completion;
-  return { children, app, dialogs, copies, pickers, imported, exitCode, ipcMain, autoUpdater, handlers, nativeInstallCalls:()=>nativeInstallCalls, clipboardReads:()=>clipboardReads,quits:()=>quits,nativeCalls,history,nativeShutdowns:()=>nativeShutdowns };
+  return { children, app, dialogs, copies, pickers, imported, exitCode, ipcMain, autoUpdater, handlers, testStartDevice:context.testStartDevice,nativeInstallCalls:()=>nativeInstallCalls, clipboardReads:()=>clipboardReads,quits:()=>quits,nativeCalls,history,nativeShutdowns:()=>nativeShutdowns };
 }
+test('runtime route metadata updates file bindings only for supplied peers and contains no credential fields',async()=>{
+ const result=await launch();const value={target:'2001:db8::42',addresses:['2001:db8::42','192.0.2.42'],autoAddresses:['2001:db8::42','192.0.2.42'],port:22256,monitor:{port:22255,targetPort:22,username:'synthetic-user',knownHosts:'/synthetic/known_hosts',hostKey:'/synthetic/host_key'}};
+ const binding=await result.testStartDevice(value),child=result.children.at(-1);assert.equal(child.args.filter(v=>v==='--auto-address').length,2);
+ child.stdout.emit('data',Buffer.from('GMSSH_ROUTE '+JSON.stringify({target:'192.0.2.42',scope:'lan',family:'IPv4'})+'\n'));assert.equal(binding.target,'192.0.2.42');assert.equal(binding.route.scope,'lan');
+ for(const route of [{target:'198.51.100.42',scope:'remote',family:'IPv4'},{target:'2001:db8::42',scope:'lan',family:'IPv6',password:'must-not-be-used'}])child.stdout.emit('data',Buffer.from('GMSSH_ROUTE '+JSON.stringify(route)+'\n'));
+ assert.equal(binding.target,'192.0.2.42');result.app.emit('will-quit');
+});
+test('route classification rejects untrusted pages and oversized input before spawning a helper',async()=>{
+ const result=await launch();result.ipcMain.handle('render-to-main',async()=>({status:'vendor'}));const handler=result.handlers.get('render-to-main'),before=result.children.length;
+ assert.equal((await handler({sender:{getURL:()=> 'https://example.com/'}},{type:'gmssh-route-info',data:{targets:['192.0.2.42']}})).status,'error');
+ assert.equal((await handler({sender:{getURL:()=> 'file:///synthetic/app.asar/dist/index.html'}},{type:'gmssh-route-info',data:{targets:Array(201).fill('192.0.2.42')}})).status,'error');assert.equal(result.children.length,before);result.app.emit('will-quit');
+});
 
 test('starts one shared SSH bridge, waits for both listeners and keeps monitoring read-only', async () => {
   const result = await launch();

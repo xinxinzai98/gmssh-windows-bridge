@@ -79,13 +79,14 @@ class PairingManager {
       if(record.legacyMachineId&&(!legacy||record.machineId!==legacy.machineId||connection.sshHostFingerprint!==legacy.fingerprint||connection.username!==legacy.monitor?.username||connection.sshPort!==legacy.monitor?.targetPort||record.monitorPort!==legacy.monitor.port||record.desktopPort!==legacy.port))throw Error('旧设备接入身份或端口不一致。');
       const previous=record.previousTargets||[];
       if(connection.id!==record.id||ids.has(record.id)||!connection.addresses.includes(record.target)||
+          record.autoTarget!==undefined&&typeof record.autoTarget!=='boolean'||
           !Array.isArray(previous)||previous.length>32||previous.some(value=>!connection.addresses.includes(value))||
           typeof record.name!=='string'||!record.name.trim()||record.name.length>128||/[\x00-\x1f\x7f]/.test(record.name)||
           (record.machineId!==null&&(!/^[a-f0-9]{32}$/.test(record.machineId)||machineIds.has(record.machineId)||!legacy&&this.legacy.some(value=>value.machineId===record.machineId))))throw Error('本地设备身份无效。');
       const ownPorts=new Set(legacy?[legacy.port,legacy.monitor.port]:[]);
       if(record.monitorPort===record.desktopPort)throw Error('本地设备端口冲突。');
       for(const port of [record.monitorPort,record.desktopPort]){if(!Number.isInteger(port)||port<1||port>65535||ports.has(port)&&!ownPorts.has(port))throw Error('本地设备端口冲突。');ports.add(port);}
-      ids.add(record.id);if(record.machineId)machineIds.add(record.machineId);this.records.push({id:record.id,connection:record.connection,target:record.target,name:record.name,monitorPort:record.monitorPort,desktopPort:record.desktopPort,machineId:record.machineId,public:connection,...(record.legacyMachineId?{legacyMachineId:record.legacyMachineId}:{}),...(previous.length?{previousTargets:previous}:{})});
+      ids.add(record.id);if(record.machineId)machineIds.add(record.machineId);this.records.push({id:record.id,connection:record.connection,target:record.target,name:record.name,monitorPort:record.monitorPort,desktopPort:record.desktopPort,machineId:record.machineId,public:connection,autoTarget:record.autoTarget!==false,...(record.legacyMachineId?{legacyMachineId:record.legacyMachineId}:{}),...(previous.length?{previousTargets:previous}:{})});
     }
     const errors=[];
     for(const record of this.records){try{await this.start(record);}catch{errors.push(record.name+' 的本地服务未能启动，请检查端口和连接文件。');}}
@@ -102,7 +103,7 @@ class PairingManager {
   }
   options(record) {
     const folder=path.join(this.root,record.id),connection=record.public;
-    const targets=[...new Set([record.target,...(record.previousTargets||[])])];
+    const targets=[...new Set([record.target,...(record.previousTargets||[]),...connection.addresses])];
     const known=targets.map(target=>(connection.sshPort===22?target:`[${target}]:${connection.sshPort}`)+' '+connection.sshHostPublicKey+'\n').join('');
     directory(this.root);directory(folder);
     const knownHosts=path.join(folder,'known_hosts');
@@ -120,7 +121,7 @@ class PairingManager {
     const adapter=connection.adapters.find(value=>value.address===record.target);
     const legacy=record.legacyMachineId?this.legacy.find(value=>value.machineId===record.legacyMachineId):null;
     return {target:record.target,label:record.name,machineId:record.machineId,port:record.desktopPort,keychain:authorization?false:this.keychain,...(authorization?{authorization}:{}),
-      credentialAliases:record.previousTargets||[],
+      addresses:connection.addresses,autoAddresses:record.autoTarget!==false?connection.addresses:[],credentialAliases:record.previousTargets||[],
       monitor:{port:record.monitorPort,targetPort:connection.sshPort,username:connection.username,knownHosts,hostKey:legacy?.monitor.hostKey||path.join(folder,'bridge_host_key'),forwardTerminal:true},
       wake:adapter?{mac:adapter.mac,broadcast:adapter.broadcast}:null};
   }
@@ -141,7 +142,7 @@ class PairingManager {
     const timer=setTimeout(()=>{if(this.initialAuth.get(machineId)===value)this.initialAuth.delete(machineId);},120000);timer.unref?.();
   }
   existing(connection) {
-    return [...this.records.filter(value=>value.machineId).map(value=>({machineId:value.machineId,name:value.name,target:value.target,fingerprint:value.public.sshHostFingerprint,username:value.public.username,sshPort:value.public.sshPort,monitorPort:value.monitorPort,...(value.public.authorization?{authorizationId:value.public.authorization.controller.id}:{})})),
+    return [...this.records.filter(value=>value.machineId).map(value=>({machineId:value.machineId,name:value.name,target:value.target,autoTarget:value.autoTarget!==false,fingerprint:value.public.sshHostFingerprint,username:value.public.username,sshPort:value.public.sshPort,monitorPort:value.monitorPort,...(value.public.authorization?{authorizationId:value.public.authorization.controller.id}:{})})),
       ...this.legacy.map(value=>({machineId:value.machineId,target:value.target,fingerprint:value.fingerprint,username:value.monitor?.username,sshPort:value.monitor?.targetPort,monitorPort:value.monitor?.port}))]
       .find(value=>value.machineId&&value.fingerprint===connection.sshHostFingerprint&&value.username===connection.username&&value.sshPort===connection.sshPort&&(value.authorizationId||null)===(connection.authorization?.controller.id||null));
   }
@@ -168,7 +169,7 @@ class PairingManager {
     const source=record?record.connection:JSON.stringify({schema:1,computer:legacy.label||'Windows-PC',username:legacy.monitor.username,sshPort:legacy.monitor.targetPort,addresses:[legacy.target],sshHostPublicKey:legacy.sshHostPublicKey,sshHostFingerprint:legacy.fingerprint,desktopAuth:'manual'});
     const connection=await this.request({operation:'inspect',connection:source});
     if(connection.fromCode||connection.connectionText)throw Error('备份不能保存长效连接码，请使用已接入的设备配置。');
-    return {connection:connectionText(connection),target:record?.target||legacy.target};
+    return {connection:connectionText(connection),target:record?.target||legacy.target,autoTarget:record?record.autoTarget!==false:false};
   }
 
   // Restore saved configuration while offline. No authentication or remote provisioning runs here.
@@ -183,7 +184,7 @@ class PairingManager {
     if(!record){
       if(this.records.length>=50)throw Error('此版本最多管理 50 台 Windows 电脑。');
       const reserved=new Set([...this.reserved,...native.filter(value=>['127.0.0.1','localhost'].includes(value.ip)).map(value=>Number(value.port)),...this.legacy.flatMap(value=>[value.port,value.monitor?.port]),...this.records.flatMap(value=>[value.monitorPort,value.desktopPort])]);
-      record={id:connection.id,connection:connectionText(connection),public:connection,target,name:item.name,monitorPort:await this.port(reserved),desktopPort:await this.port(reserved),machineId:null};
+      record={id:connection.id,connection:connectionText(connection),public:connection,target,autoTarget:item.windows.autoTarget===true,name:item.name,monitorPort:await this.port(reserved),desktopPort:await this.port(reserved),machineId:null};
       this.records.push(record);try{this.save();}catch(error){this.records.pop();throw error;}
     }
     await this.start(record);
@@ -203,7 +204,7 @@ class PairingManager {
     return node.id;
   }
 
-  async replaceTarget(existing,connection,target,password,rememberDesktop) {
+  async replaceTarget(existing,connection,target,password,rememberDesktop,autoTarget=false) {
     const detail=await this.api('/node/detail',{id:existing.machineId});
     const match=value=>value?.id===existing.machineId&&['127.0.0.1','localhost'].includes(value.ip)&&Number(value.port)===existing.monitorPort&&value.userName===connection.username;
     if(![0,200].includes(detail.code)||!match(detail.data)||detail.data.authType!=='pass'||typeof detail.data.name!=='string')throw Error('原设备的入口或账号不一致，已停止更新地址。');
@@ -217,7 +218,7 @@ class PairingManager {
     if(previous.length>31)throw Error('此设备保存的旧地址过多，请先核对连接配置。');
     const publicValue=await this.request({operation:'inspect',connection:connectionText({...connection,addresses:[...new Set([target,...previous,...connection.addresses])].slice(0,32)})});
     if(publicValue.id!==old.id||!publicValue.addresses.includes(target))throw Error('新地址配置未通过身份核对，原连接已保留。');
-    const candidate={...old,target,previousTargets:previous,public:publicValue,connection:connectionText(publicValue)};
+    const candidate={...old,target,autoTarget,previousTargets:previous,public:publicValue,connection:connectionText(publicValue)};
     const oldBinding=managed?this.running.get(old.id):legacy;
     if(!oldBinding?.stop)throw Error('当前连接尚不支持地址切换，请重开新版客户端后重试。');
     this.options(old); // Verify existing local pins before stopping or replacing anything.
@@ -302,7 +303,7 @@ class PairingManager {
       await this.request({operation:'probe',connection:text,target});
       if(existing){
         const authorizationChanged=connection.authorization&&this.records.some(value=>value.machineId===existing.machineId&&JSON.stringify(value.public.authorization)!==JSON.stringify(connection.authorization));
-        if(addressChanged||authorizationChanged){await resolvePassword();const result=await this.replaceTarget(existing,connection,target,password,rememberDesktop);if(code)delete this.preview.code;return result;}
+        if(addressChanged||authorizationChanged||code&&existing.autoTarget!==undefined&&existing.autoTarget!==(autoTarget===true)){await resolvePassword();const result=await this.replaceTarget(existing,connection,target,password,rememberDesktop,autoTarget===true);if(code)delete this.preview.code;return result;}
         const managed=this.records.find(record=>record.machineId===existing.machineId);
         if(managed){await this.start(managed);this.save();}
         if(refreshPassword===true){
@@ -334,7 +335,7 @@ class PairingManager {
         if(this.records.length>=50)throw Error('此预览版最多管理 50 台 Windows 电脑。');
         const reserved=new Set([...this.reserved,...native.filter(value=>['localhost','127.0.0.1'].includes(value.ip)).map(value=>Number(value.port)),...this.legacy.flatMap(value=>[value.port,value.monitor?.port]),...this.records.flatMap(value=>[value.monitorPort,value.desktopPort])]);
         const normalized=connectionText(connection);
-        record={id,connection:normalized,public:connection,target,name:name.trim(),monitorPort:await this.port(reserved),desktopPort:await this.port(reserved),machineId:null};
+        record={id,connection:normalized,public:connection,target,autoTarget:autoTarget===true,name:name.trim(),monitorPort:await this.port(reserved),desktopPort:await this.port(reserved),machineId:null};
         this.records.push(record);try{this.save();}catch(error){this.records.pop();throw error;}
       }
       await this.start(record);

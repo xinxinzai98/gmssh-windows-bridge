@@ -3,5 +3,6 @@ Upstream release: https://github.com/rustdesk/rustdesk/releases/tag/1.5.0
 Corresponding upstream source and build instructions: https://github.com/rustdesk/rustdesk/tree/1.5.0 (including the referenced Git submodules).
 The original RustDesk AGPL-3.0 licence accompanies this package. The upstream payload also retains its Flutter NOTICES.Z and driver licence files.
 GMSSH's installer and tray scripts are separate orchestration code. No RustDesk executable or library is patched or rebranded.
+The optional AI CLI/MCP adapter uses the official MCP Python SDK under its MIT licence: https://github.com/modelcontextprotocol/python-sdk/tree/v1.30.0 . It is installed as an optional Python dependency; no MCP server runtime is embedded in the Windows tray worker.
 OpenSSH's official, unchanged Microsoft MSI is included from https://github.com/PowerShell/Win32-OpenSSH/releases/tag/10.0.0.0p2-Preview.
 Public release bundles do not include Microsoft Visual C++ Redistributable. When the required runtime is absent or too old, setup obtains the pinned installer directly from Microsoft, verifies SHA-256 and Authenticode, and installs it. Microsoft's terms apply: https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist . Private offline builds may still include an unchanged redistributable only when the builder has the required redistribution rights.

@@ -10,7 +10,7 @@ import (
 
 // A view-only controller can read bounded system metadata, never submit a script.
 func infoScript(tool string, options map[string]json.RawMessage) (string, string, error) {
-	fixed := map[string]string{"metrics-fast": "collector.ps1", "metrics-slow": "collector.ps1", "login": "login.ps1", "system": "system-info.ps1", "drives": ""}
+	fixed := map[string]string{"metrics-fast": "collector.ps1", "metrics-slow": "collector.ps1", "login": "login.ps1", "system": "system-info.ps1", "drives": "", "ai-context": "ai-context.ps1"}
 	if file, ok := fixed[tool]; ok {
 		if len(options) != 0 {
 			return "", "", errDenied

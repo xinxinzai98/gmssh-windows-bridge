@@ -4,8 +4,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 )
+
+func runAIDesktop(context.Context, string, json.RawMessage) (any, error) {
+	return nil, aiFailure("DESKTOP_WORKER_UNAVAILABLE")
+}
 
 func runControllerCommand(context.Context, string, string, string, string) ([]byte, int, error) {
 	return nil, 0, errUnavailable

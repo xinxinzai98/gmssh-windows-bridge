@@ -27,7 +27,8 @@ function validatePayload(value){
     const auth=credentials(item.credentials);if(auth)result.credentials=auth;
     if(item.kind==='windows'){
       if(item.authType!=='pass'||!item.windows||result.bastion||typeof item.windows.connection!=='string'||Buffer.byteLength(item.windows.connection)>65536||item.windows.target!==result.address)throw Error('Windows 桥接配置无效。');
-      result.windows={connection:item.windows.connection,target:result.address};
+      if(item.windows.autoTarget!==undefined&&typeof item.windows.autoTarget!=='boolean')throw Error('Windows 自动连接配置无效。');
+      result.windows={connection:item.windows.connection,target:result.address,...(item.windows.autoTarget!==undefined?{autoTarget:item.windows.autoTarget}:{})};
     }else if(item.windows!==undefined)throw Error('设备系统与桥接配置不一致。');
     return result;
   });

@@ -13,7 +13,7 @@ ROOT_FILES = {'README.md', 'CHANGELOG.md', 'CONTRIBUTING.md', 'LICENSE', 'SECURI
 SOURCE_DIRS = ('gmssh_windows_bridge', 'desktop-web', 'tools', 'tests', 'docs', 'examples', 'install', '.github')
 SKIP_DIRS = {'.git', 'node_modules', '__pycache__', '.venv', 'venv', 'build', 'dist', 'work', 'outputs', '.pytest_cache'}
 PRIVATE_NAMES = {'.ds_store', 'catalog.json', 'connection.json', 'agent.json', 'readiness.json', 'launcher-config.json', 'installation-status.txt', 'startup-status.json',
-                 'connect-meta.dat', 'connect-password.dat', 'connect-identity.dat', 'transfer-journal.json', 'file-places.json', 'linux-host-pins.json', 'workspace-history.json', 'controllers.dat', 'controller-connection.json'}
+                 'connect-meta.dat', 'connect-password.dat', 'connect-identity.dat', 'transfer-journal.json', 'file-places.json', 'linux-host-pins.json', 'workspace-history.json', 'controllers.dat', 'controller-connection.json', 'ai-devices.json', 'registry.lock', 'ai-paused'}
 PRIVATE_SUFFIXES = {'.key', '.pem', '.db', '.sqlite', '.sqlite3', '.log', '.pyc', '.exe', '.msi', '.dmg', '.whl', '.zip', '.gmsshbackup', '.part'}
 
 
@@ -22,7 +22,7 @@ def private_path(name):
     base = Path(name).name.lower()
     return (any(p in SKIP_DIRS or p.endswith(('.app', '.egg-info')) for p in parts)
             or name.startswith('gmssh_windows_bridge/desktop_web/') and re.search(r' \d+\.[^./]+$', base) is not None
-            or base in PRIVATE_NAMES or base.startswith(('._', '.env', 'gmssh-connection', 'gmssh-readiness', 'gmssh-devices-'))
+            or base in PRIVATE_NAMES or base.startswith(('._', '.env', 'gmssh-connection', 'gmssh-readiness', 'gmssh-devices-', 'ai-job-', '.ai-devices-'))
             or 'host_key' in base or 'known_hosts' in base or Path(base).suffix in PRIVATE_SUFFIXES)
 
 

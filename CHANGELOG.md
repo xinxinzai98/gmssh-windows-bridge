@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Develop 0.4.0a27 locally: add opt-in `gmssh-ai` CLI and official-SDK stdio MCP over shared bounded operations, pinned existing SSH/HTTPS transports, public device metadata and Keychain/environment credential references. Do not read the vendor machine credential database or open another Windows network listener.
+- Add environment snapshots, fixed system queries, controller-owned encrypted command jobs with exit codes/pagination/idempotency/cancel/reopen lookup, semantic UIA observations and target-bound actions, condition waits, and bounded text search/read/diff/edit/backup restore.
+- Run UIA in a tray-owned interactive user worker over a local ACL-protected named pipe, with stale-target checks, Unicode input, a user pause menu and a provider watchdog. Package the helper/scripts and include them in transactional upgrades. Keep Windows native UI acceptance pending; no A4 operations or Mac application switch in this round.
+
+- Develop controller 0.4.0a26: rank supplied pinned targets as LAN IPv6, LAN IPv4, remote IPv6, remote IPv4. Re-evaluate on each new monitoring/desktop transport, including after controller reopen; keep explicit manual addresses fixed and preserve the mode in configuration backups.
+- Replace homepage IP columns with connection scope, address family and latency beneath device names. Keep current and saved addresses with copy actions in details; derive the active Windows route from its authenticated transport.
+
+- Clip long IPv6 addresses inside device list and card bounds, preserve full hover/copy values, and wrap detail addresses independently of their copy icon. Verify the old overflow regression and 64 browser checks, then apply the UI-only fix to the existing Mac test client.
+
 - Develop 0.4.0a25 locally: recognize live local-interface IPv6 prefixes for LAN code enrollment; retain explicit source authorization for off-link clients. Distinguish source denial from invalid credentials in both connection-code protocols.
 - Add a Windows IPv6 source-settings dialog that synchronizes protected metadata and owned, program-bound TCP 22/22257 rules, backs up settings, and rolls back partial failures. Keep cross-subnet sources opt-in.
 - Automatically probe supplied pinned IPv4/IPv6 addresses without sending credentials, retain an available original route, and preserve an explicitly edited address. Keep native device IDs and manual enrollment.

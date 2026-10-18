@@ -48,12 +48,18 @@ func controllerDrives() []string {
 }
 
 type limitedOutput struct {
-	body   bytes.Buffer
-	cancel context.CancelFunc
+	body      bytes.Buffer
+	cancel    context.CancelFunc
+	truncated bool
 }
 
 func (w *limitedOutput) Write(p []byte) (int, error) {
 	if w.body.Len()+len(p) > 256*1024 {
+		remaining := 256*1024 - w.body.Len()
+		if remaining > 0 {
+			w.body.Write(p[:remaining])
+		}
+		w.truncated = true
 		w.cancel()
 		return 0, errors.New("OUTPUT_LIMIT")
 	}
@@ -88,12 +94,15 @@ func runControllerCommand(ctx context.Context, username, password, kind, command
 		}
 		cmd = exec.CommandContext(ctx, filepath.Join(system, "shutdown.exe"), args...)
 	} else if kind == "terminal" {
-		units := utf16.Encode([]rune("[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false);" + command))
+		// Keep CreateProcess below its command-line limit; scripts travel on stdin.
+		bootstrap := "[Console]::InputEncoding=[Text.UTF8Encoding]::new($false);[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); & ([scriptblock]::Create([Console]::In.ReadToEnd()))"
+		units := utf16.Encode([]rune(bootstrap))
 		raw := make([]byte, len(units)*2)
 		for i, v := range units {
 			binary.LittleEndian.PutUint16(raw[i*2:], v)
 		}
 		cmd = exec.CommandContext(ctx, filepath.Join(system, "WindowsPowerShell", "v1.0", "powershell.exe"), "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", base64.StdEncoding.EncodeToString(raw))
+		cmd.Stdin = strings.NewReader(command)
 		clear(raw)
 	} else {
 		return nil, 0, errDenied
@@ -108,7 +117,10 @@ func runControllerCommand(ctx context.Context, username, password, kind, command
 		code = cmd.ProcessState.ExitCode()
 	}
 	if ctx.Err() != nil {
-		return nil, code, ctx.Err()
+		if output.truncated {
+			return output.body.Bytes(), code, errors.New("OUTPUT_LIMIT")
+		}
+		return output.body.Bytes(), code, ctx.Err()
 	}
 	var exit *exec.ExitError
 	if err != nil && !errors.As(err, &exit) {

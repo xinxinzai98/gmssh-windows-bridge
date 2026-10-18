@@ -11,7 +11,7 @@ import tempfile
 
 def source_files():
     source = Path(__file__).resolve().parent / 'windows_connect'
-    files = {name: (source / name).read_bytes() for name in ('core.go', 'main.go', 'platform_windows.go', 'qr_png.go', 'controllers.go', 'controller_desktop.go', 'controller_files.go', 'controller_platform_windows.go', 'controller_info.go', 'controller_terminal.go', 'controller_conpty_windows.go')}
+    files = {name: (source / name).read_bytes() for name in ('core.go', 'main.go', 'platform_windows.go', 'qr_png.go', 'controllers.go', 'controller_desktop.go', 'controller_files.go', 'controller_platform_windows.go', 'controller_info.go', 'controller_terminal.go', 'controller_conpty_windows.go', 'controller_ai.go', 'controller_ai_windows.go')}
     for file in sorted((source / 'qr').rglob('*')):
         if file.is_file() and (file.suffix == '.go' or file.name in {'LICENSE', 'PROVENANCE.json'}):
             files[file.relative_to(source).as_posix()] = file.read_bytes()

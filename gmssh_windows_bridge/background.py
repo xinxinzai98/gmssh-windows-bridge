@@ -15,6 +15,7 @@ def start_background(config):
             '--timeout', str(config.timeout), '--shell', config.shell,
             '--known-hosts', str(config.known_hosts.resolve()),
             '--host-key', str(config.host_key.resolve())]
+    for target in getattr(config, 'auto_address', []): args.extend(['--auto-address', target])
     if getattr(config, 'desktop_port', None) is not None:
         args.extend(['--desktop-port', str(config.desktop_port),
                      '--rustdesk-port', str(config.rustdesk_port)])

@@ -159,7 +159,11 @@ class ControllerClient:
                     raise FileExistsError(errno.EEXIST, 'remote target exists')
                 if error == 'SOURCE_DENIED':
                     raise StreamError('SOURCE_DENIED')
-                raise StreamError('AUTH_FAILED' if action == 'capabilities' and response.status in (401, 403) else error if error in {'ACCESS_DENIED', 'DISK_FULL', 'CONFLICT'} else 'REMOTE_IO')
+                allowed = {'ACCESS_DENIED', 'DISK_FULL', 'CONFLICT', 'IDEMPOTENCY_CONFLICT', 'TASK_LIMIT', 'TASK_RUNNING',
+                           'NO_INTERACTIVE_SESSION', 'DESKTOP_WORKER_UNAVAILABLE', 'DESKTOP_OUTCOME_UNKNOWN', 'INVALID_RESPONSE',
+                           'DESKTOP_LOCKED', 'AI_PAUSED', 'STALE_TARGET', 'TARGET_NOT_FOUND', 'AMBIGUOUS_TARGET',
+                           'UNSUPPORTED_PATTERN', 'FOCUS_DENIED', 'DESKTOP_BUSY', 'INVALID_QUERY', 'QUERY_FAILED', 'PASSWORD_FIELD', 'DESKTOP_QUERY_FAILED'}
+                raise StreamError('AUTH_FAILED' if action == 'capabilities' and response.status in (401, 403) else error if error in allowed else 'REMOTE_IO')
             result = reply.get('result')
             if not isinstance(result, dict):
                 raise StreamError('INVALID_RESPONSE')
@@ -453,6 +457,12 @@ class ControllerSFTP:
     def __init__(self, client):
         self.client = client
         self.session = client.open('files')
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
 
     def request(self, action, **args):
         return self.client.call(action, self.session, args=args)

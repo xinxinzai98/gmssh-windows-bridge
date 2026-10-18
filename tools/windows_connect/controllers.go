@@ -97,6 +97,8 @@ type controllerBroker struct {
 	accountMu         sync.Mutex
 	blockedCredential string
 	lease             time.Duration
+	aiJobs            map[string]*aiJob
+	aiDesktop         func(context.Context, string, json.RawMessage) (any, error)
 }
 
 func (b *controllerBroker) verifyAccount(m metadata, secret credential) error {
@@ -122,7 +124,7 @@ func (b *controllerBroker) accountFailure(m metadata, err error) {
 func newControllerBroker(s store) *controllerBroker {
 	return &controllerBroker{store: s, sessions: map[string]*controllerSession{},
 		openDesktop: func() (net.Conn, error) { return net.DialTimeout("tcp", "127.0.0.1:21118", 3*time.Second) },
-		execute:     runControllerCommand, filePath: controllerFilePath, readInfo: runControllerInfo, infoSlots: make(chan struct{}, 2), openTerminal: openControllerTerminal, lease: 30 * time.Minute}
+		execute:     runControllerCommand, filePath: controllerFilePath, readInfo: runControllerInfo, infoSlots: make(chan struct{}, 2), openTerminal: openControllerTerminal, lease: 30 * time.Minute, aiDesktop: runAIDesktop}
 }
 
 func (b *controllerBroker) expire(s *controllerSession) {
@@ -327,6 +329,7 @@ func (b *controllerBroker) manage(r controllerRequest) (any, error) {
 	if err = b.save(registry); err != nil {
 		return nil, err
 	}
+	b.cancelAIJobs(r.ID)
 	// Changes close this controller's sessions. Other controllers and legacy SSH stay intact.
 	for id, s := range b.sessions {
 		if s.ControllerID == r.ID {
@@ -352,6 +355,9 @@ func permissionFor(p permissions, kind string) bool {
 }
 
 func (b *controllerBroker) request(c controller, r controllerRequest, address string) (any, error) {
+	if strings.HasPrefix(r.Action, "ai-") {
+		return b.aiRequest(c, r)
+	}
 	if r.Action == "info" {
 		var value struct {
 			Tool    string                     `json:"tool"`
@@ -381,7 +387,7 @@ func (b *controllerBroker) request(c controller, r controllerRequest, address st
 		return map[string]any{"data": body}, nil
 	}
 	if r.Action == "capabilities" {
-		return map[string]any{"protocol": 2, "permissions": c.Policy, "name": c.Name, "controllerId": c.ID}, nil
+		return map[string]any{"protocol": 2, "aiProtocol": 1, "permissions": c.Policy, "name": c.Name, "controllerId": c.ID}, nil
 	}
 	if r.Action == "open" {
 		if !permissionFor(c.Policy, r.Kind) {
@@ -653,6 +659,10 @@ func (b *controllerBroker) serve(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, errDenied) {
 			code = "ACCESS_DENIED"
 			status = 403
+		}
+		var aiErr aiFailure
+		if errors.As(err, &aiErr) {
+			code = string(aiErr)
 		}
 		fail(status, code)
 		return

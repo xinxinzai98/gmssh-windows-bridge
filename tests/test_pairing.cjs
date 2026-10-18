@@ -13,10 +13,17 @@ test('code auto-address probes only before redeeming and explicit selection does
  try{
   manager.request=async request=>{if(request.operation==='choose-target'){events.push('choose-target');return {target:'192.0.2.42',verified:true};}return original(request);};
   await manager.inspect('GMSSH-CONNECT1.synthetic');await manager.connect({id:fixture.id,target:'192.0.2.42',name:'Automatic',autoTarget:true});
-  assert.ok(events.indexOf('choose-target')<events.indexOf('redeem-code'));assert.equal(records.length,1);
-  events.length=0;await manager.inspect('GMSSH-CONNECT1.synthetic');await manager.connect({id:fixture.id,target:'192.0.2.42',name:'Explicit'});assert.ok(!events.includes('choose-target'));
+  assert.ok(events.indexOf('choose-target')<events.indexOf('redeem-code'));assert.equal(records.length,1);assert.equal(manager.records[0].autoTarget,true);assert.deepEqual(manager.bindings()[0].autoAddresses,['192.0.2.42']);
+  events.length=0;await manager.inspect('GMSSH-CONNECT1.synthetic');await manager.connect({id:fixture.id,target:'192.0.2.42',name:'Explicit'});assert.ok(!events.includes('choose-target'));assert.equal(manager.records[0].autoTarget,false);assert.deepEqual(manager.bindings()[0].autoAddresses,[]);
  }finally{await Promise.all([...manager.running.values()].map(value=>value.stop?.()));fs.rmSync(root,{recursive:true,force:true});}
 });
+test('automatic addresses and their common pin survive reopening while manual targets remain fixed',async()=>temporary(async root=>{
+ const h=harness(root),connection={...fixture,addresses:['192.0.2.42','2001:db8::42']};await h.manager.inspect(JSON.stringify(connection));await connect(h.manager);
+ h.manager.records[0].autoTarget=true;h.manager.save();
+ const reopened=harness(root);await reopened.manager.restore();assert.deepEqual(reopened.starts[0].autoAddresses,connection.addresses);
+ const pins=fs.readFileSync(path.join(root,fixture.id,'known_hosts'),'utf8');assert.ok(pins.includes('2001:db8::42 '+fixture.sshHostPublicKey));
+ reopened.manager.records[0].autoTarget=false;reopened.manager.save();const manual=harness(root);await manual.manager.restore();assert.deepEqual(manual.starts[0].autoAddresses,[]);
+}));
 function harness(root,options={}) {
   const events=[],records=[],starts=[];
   let nextPort=35000,adds=0;

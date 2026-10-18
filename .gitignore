@@ -50,3 +50,8 @@ linux-host-pins.json
 workspace-history.json
 controllers.dat
 controller-connection.json
+ai-devices.json
+registry.lock
+ai-job-*.dat
+.ai-devices-*
+ai-paused

@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { createHash } = require('node:crypto');
-const { PairingManager, loopbackRequest } = require('./pairing.cjs');
+const { PairingManager, loopbackRequest, pythonRequest } = require('./pairing.cjs');
 const { DeviceBackup, writeBackup, MAX_FILE } = require('./device-backup.cjs');
 const readonlyTools = require('./readonly-tools.cjs');
 const { FileTasks } = require('./file-tasks.cjs');
@@ -88,6 +88,10 @@ autoUpdater.checkForUpdates = () => {};
 autoUpdater.quitAndInstall = () => {};
 const handle = ipcMain.handle.bind(ipcMain);
 ipcMain.handle = (channel, listener) => handle(channel, channel === 'render-to-main' ? async (event, request, ...args) => {
+  if(request?.type==='gmssh-route-info'){
+    if(event.sender?.getURL().split('#')[0]!==indexUrl||!Array.isArray(request.data?.targets)||request.data.targets.length>200||request.data.targets.some(value=>typeof value!=='string'||value.length>128))return {status:'error',code:'INVALID_ROUTE'};
+    try{return {status:'ok',data:await pythonRequest(config.python,{operation:'route-info',targets:request.data.targets})};}catch{return {status:'error',code:'ROUTE_UNAVAILABLE'};}
+  }
   if(request?.type==='gmssh-workspace'){
     if(event.sender?.getURL().split('#')[0]!==indexUrl)return {status:'error',code:'UNTRUSTED_PAGE'};
     try{
@@ -232,7 +236,7 @@ async function inject(contents) {
   const bindings=[...legacyBindings.filter(value=>!pairing?.records.some(record=>record.machineId===value.machineId)),...(pairing?.bindings()||[])];
   const entries=bindings.map(value=>({machineId:value.machineId??undefined,viewerUrl:value.viewerUrl,label:value.label,
     card:value.machineId?undefined:{host:value.target,name:value.tailscaleName||value.target},autoConnect:true,accessToken:value.accessToken}));
-  const devices=bindings.map(value=>({machineId:value.machineId,viewerUrl:value.viewerUrl,target:value.target,label:value.label,targetPort:value.monitor?.targetPort,accessToken:value.accessToken,...(value.authorization?{permissions:value.authorization.permissions}:{})}));
+  const devices=bindings.map(value=>({machineId:value.machineId,viewerUrl:value.viewerUrl,target:value.target,addresses:value.addresses||[value.target],route:value.route,label:value.label,targetPort:value.monitor?.targetPort,accessToken:value.accessToken,...(value.authorization?{permissions:value.authorization.permissions}:{})}));
   const policies=bindings.filter(value=>value.monitor).map(value=>({bridgePort:value.monitor.port,username:value.monitor.username}));
   const first=devices[0]||{viewerUrl};
   const bootstrap=entry+'\nif(typeof installWindowsDesktopEntries==="function")installWindowsDesktopEntries('+JSON.stringify(entries)+');else if('+entries.length+')installWindowsDesktopEntry('+JSON.stringify(entries[0]||{})+');\n'+home+'\ninstallWindowsMachinePolicy('+JSON.stringify(policies)+');\nglobalThis.gmsshHomeController=installGMSSHHome('+JSON.stringify({...first,viewerUrl,css:theme,devices})+');\n'+pairingPage+'\nif(typeof installGMSSHPairing==="function")installGMSSHPairing();\n'+backupPage+'\nif(typeof installGMSSHBackup==="function")installGMSSHBackup('+JSON.stringify({viewerUrl})+');\n'+(vendorUpdateNotice?'installWindowsUpdateNotice('+JSON.stringify(vendorUpdateNotice)+');\n':'')+'void 0;';
@@ -243,16 +247,18 @@ async function nativeRequest(endpoint,data) {
   return loopbackRequest(nativeApiPort,endpoint,data);
 }
 
-async function startService(args, label, isReady, target=config.target, onSession) {
+async function startService(args, label, isReady, target=config.target, onSession, onRoute) {
   const environment = { ...process.env, PYTHONUNBUFFERED: '1' };
   delete environment.PYTHONPATH;
   delete environment.PYTHONHOME;
   const child = spawn(config.python, args, { env: environment, stdio: ['ignore', 'pipe', 'pipe'] });
   backends.push(child);
-  if(onSession){
+  if(onSession||onRoute){
     let events='';child.stdout.on('data',data=>{
       events=(events+data.toString()).slice(-16384);let newline;
-      while((newline=events.indexOf('\n'))>=0){const line=events.slice(0,newline);events=events.slice(newline+1);if(!line.startsWith('GMSSH_SESSION '))continue;
+      while((newline=events.indexOf('\n'))>=0){const line=events.slice(0,newline);events=events.slice(newline+1);
+        if(line.startsWith('GMSSH_ROUTE ')){try{const value=JSON.parse(line.slice(12));if(Object.keys(value).sort().join()==='family,scope,target'&&isIP(value.target)&&['lan','remote','unknown'].includes(value.scope)&&value.family===('IPv'+isIP(value.target)))onRoute?.(value);}catch{}continue;}
+        if(!onSession||!line.startsWith('GMSSH_SESSION '))continue;
         try{const value=JSON.parse(line.slice(14));if(value.channel!=='terminal'||!['connecting','connected','disconnected','failed'].includes(value.state)||typeof value.instance!=='string'||!/^[a-f0-9]{32}:\d{1,10}$/.test(value.instance)||Object.keys(value).some(k=>!['channel','instance','state','reason'].includes(k))||value.reason!==undefined&&!/^[A-Z_]{1,48}$/.test(value.reason))continue;onSession(value,'backend-'+(child.pid||args.join('|')));}catch{}
       }
     });
@@ -296,6 +302,7 @@ async function startService(args, label, isReady, target=config.target, onSessio
 }
 
 async function startDevice(device) {
+  const binding={...device};
   const viewerUrl=`http://127.0.0.1:${device.port}/`;
   let accessToken;
   const firstChild=backends.length;
@@ -318,6 +325,7 @@ async function startDevice(device) {
     if (device.authorization) args.push('--controller-connection',device.authorization.file);
     if (device.wake) args.push('--wake-mac', device.wake.mac, '--wake-broadcast', device.wake.broadcast);
     if (device.keychain) args.push('--desktop-keychain');
+    for(const target of device.autoAddresses||[])args.push('--auto-address',target);
     for(const target of device.credentialAliases||[])args.push('--desktop-credential-alias',target);
     let monitorStarted = false, desktopStarted = false;
     await startService(args, '本地监控与桌面服务', line => {
@@ -327,7 +335,7 @@ async function startDevice(device) {
     },device.target,(event,owner)=>{
       const machineId=device.machineId||pairing?.records.find(record=>record.monitorPort===m.port&&record.desktopPort===device.port)?.machineId;
       if(machineId)workspaceState().event(owner,{...event,machineId,name:device.label||'设备'});
-    });
+    },route=>{if([device.target,...(device.autoAddresses||[])].includes(route.target)){binding.target=route.target;binding.route=route;}});
   } else {
     const args = ['-m', 'gmssh_windows_bridge.desktop', '--target', device.target,
       '--direct-tailscale', '--tailscale-name', device.tailscaleName,
@@ -338,7 +346,7 @@ async function startDevice(device) {
   }
   }catch(error){await stopChildren(backends.slice(firstChild));throw error;}
   const children=backends.slice(firstChild);
-  return {...device,viewerUrl,accessToken,stop:()=>stopChildren(children)};
+  return Object.assign(binding,{viewerUrl,accessToken,stop:()=>stopChildren(children)});
 }
 
 async function stopChildren(children) {

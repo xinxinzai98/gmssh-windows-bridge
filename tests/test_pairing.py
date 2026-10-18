@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import json
+import ipaddress
 import struct
 import unittest
 import threading
@@ -30,15 +31,15 @@ class PairingTests(unittest.TestCase):
         checked=[]
         def probe(value,target,timeout):
             checked.append(target)
-            self.assertIs(value,connection);self.assertEqual(timeout,2)
+            self.assertIs(value,connection);self.assertEqual(timeout,1.5)
             if target=='192.0.2.42':raise OSError('unreachable')
         with patch('gmssh_windows_bridge.pairing.probe_identity',side_effect=probe):
             result=choose_target(connection,'192.0.2.42')
         self.assertEqual(result,{'target':'2001:db8::42','verified':True})
-        self.assertEqual(set(checked),set(connection['addresses']))
+        self.assertIn('2001:db8::42',checked)
         with patch('gmssh_windows_bridge.pairing.probe_identity') as probe:
             self.assertEqual(choose_target(connection,'2001:db8::42')['target'],'2001:db8::42')
-            probe.assert_called_once_with(connection,'2001:db8::42',timeout=2)
+            probe.assert_called_once_with(connection,'2001:db8::42',timeout=1.5)
         with patch('gmssh_windows_bridge.pairing.probe_identity',side_effect=ValueError('identity mismatch')):
             with self.assertRaisesRegex(ValueError,'主机身份'):choose_target(connection)
 
@@ -48,6 +49,19 @@ class PairingTests(unittest.TestCase):
             result=choose_target(connection,code={'certificate':'synthetic'})
             self.assertTrue(result['verified']);ssh.assert_called_once()
             tls.return_value.connect.assert_called_once();tls.return_value.request.assert_not_called();tls.return_value.close.assert_called_once()
+
+    def test_locality_precedes_family_and_last_address_never_overrides_priority(self):
+        order=['2001:db8:1::42','192.0.2.42','2001:db8:2::42','10.99.0.42']
+        connection=inspect_connection(json.dumps({**exported(),'addresses':list(reversed(order))}))
+        networks=[ipaddress.ip_network('2001:db8:1::/64'),ipaddress.ip_network('192.0.2.0/24')]
+        for first in range(4):
+            checked=[]
+            def probe(_connection,target,timeout):
+                checked.append(target)
+                if target in order[:first]:raise OSError('unavailable')
+            with patch('gmssh_windows_bridge.network_routes.local_networks',return_value=networks),patch('gmssh_windows_bridge.pairing.probe_identity',side_effect=probe):
+                self.assertEqual(choose_target(connection,preferred=order[-1])['target'],order[first])
+            self.assertEqual(checked,order[:first+1])
 
     def test_manual_ipv6_reads_only_the_public_key_before_password_authentication(self):
         connection=inspect_connection(json.dumps(exported()))

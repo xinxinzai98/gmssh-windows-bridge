@@ -376,6 +376,8 @@ class OperationsSession:
             if not isinstance(info, dict) or set(info) != {"computer", "os", "version", "cpu", "cores", "memory", "uptime", "processes", "disks", "network"}:
                 raise OperationError("设备信息格式无效。")
             info["connection"] = connection_health(self.client, self.timeout)
+            route = getattr(self.client, 'gmssh_route', None)
+            if isinstance(route, dict): info['route'] = route
             send_reply(self.websocket, request_id, ok=True, info=info)
         elif op == "list":
             path = normalize_path(data["path"], allow_root=True)

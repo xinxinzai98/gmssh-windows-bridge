@@ -355,7 +355,7 @@ def create_server(config):
                         pass  # Manual login remains available if Keychain is locked.
                 operations = getattr(config, "monitor_pool", None) is not None and valid_access_token(getattr(config, "access_token", ""))
                 policy = config.controller_policy() if callable(getattr(config, 'controller_policy', None)) else None
-                body = json.dumps({"target": config.target, "username": config.username,
+                body = json.dumps({"target": getattr(config, 'route_status', {}).get('target', config.target), "username": config.username,
                                    "target_port": config.target_port,
                                    "transport": "monitor" if getattr(config, "monitor_channel", None) else
                                                 "tailscale" if getattr(config, "direct_tailscale", False) else "ssh",

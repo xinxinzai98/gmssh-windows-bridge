@@ -84,6 +84,8 @@ func TestControllerLoopbackFixture(t *testing.T) {
 			return []byte("__GMB_LOGIN_PROFILE__=1\n__GMB_LOGIN_USER__=gmssh\n__GMB_LOGIN_SUDO__=0\n__GMB_LOGIN_OS__=Windows\n"), nil
 		case "system-info.ps1":
 			return []byte(`{"computer":"LAB-PC","os":"Synthetic Windows","version":"test","cpu":"Synthetic CPU","cores":4,"memory":17179869184,"uptime":60,"processes":3,"disks":[],"network":[]}`), nil
+		case "ai-context.ps1":
+			return []byte(`{"schema":1,"computer":"LAB-PC","tools":[],"disks":[]}`), nil
 		case "":
 			return []byte(`["C:"]`), nil
 		}
@@ -94,9 +96,16 @@ func TestControllerLoopbackFixture(t *testing.T) {
 		p.Resize(w, h)
 		return p, nil
 	}
-	b.execute = func(_ context.Context, _, _, kind, command string) ([]byte, int, error) {
+	b.execute = func(ctx context.Context, _, _, kind, command string) ([]byte, int, error) {
 		if kind == "power" {
 			return []byte("synthetic power accepted"), 0, nil
+		}
+		if command == "synthetic-ai-exit-7" {
+			return []byte("synthetic 中文 failure"), 7, nil
+		}
+		if command == "synthetic-ai-wait" {
+			<-ctx.Done()
+			return []byte("synthetic partial"), -1, ctx.Err()
 		}
 		return []byte("synthetic command accepted"), 0, nil
 	}

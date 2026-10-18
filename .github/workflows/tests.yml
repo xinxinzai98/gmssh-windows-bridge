@@ -14,10 +14,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      - run: python -m pip install ".[desktop]"
+      - run: python -m pip install ".[desktop,ai]"
       # Isolated imports exercise the installed package, not the checkout.
       - run: python -I -m gmssh_windows_bridge --help
       - run: python -I -m gmssh_windows_bridge --version
+      - run: python -I -m gmssh_windows_bridge.ai --help
       - run: python -m unittest discover -s tests -v
       - run: python tools/build_share_bundle.py --check-only
   web:

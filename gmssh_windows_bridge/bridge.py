@@ -144,13 +144,16 @@ class Session(paramiko.ServerInterface):
             return paramiko.AUTH_FAILED
         remote = paramiko.SSHClient()
         try:
+            from .network_routes import select_route, record_route
+            target = select_route(self.config)
             remote.load_host_keys(str(self.config.known_hosts))
-            remote.connect(self.config.target, port=self.config.target_port,
+            remote.connect(target, port=self.config.target_port,
                            username=username, password=password,
                            timeout=self.config.timeout, auth_timeout=self.config.timeout,
                            banner_timeout=self.config.timeout,
                            allow_agent=False, look_for_keys=False)
-        except (paramiko.SSHException, OSError) as exc:
+            record_route(self.config, remote, target)
+        except (paramiko.SSHException, OSError, ValueError) as exc:
             remote.close()
             pool = getattr(self.config, "desktop_sessions", None)
             if pool is not None and hasattr(pool, "record_failure"):
@@ -399,6 +402,7 @@ def main():
     parser.add_argument("--desktop-shared-auth", action="store_true", help="Use the authenticated monitoring transport for the desktop; no extra SSH password")
     parser.add_argument("--desktop-keychain", action="store_true", help="Remember the RustDesk password in macOS Keychain when using shared monitoring")
     parser.add_argument('--desktop-credential-alias', action='append', default=[], help='Previously verified address for desktop credential compatibility')
+    parser.add_argument('--auto-address', action='append', default=[], help='Supplied pinned addresses; prefer LAN IPv6, LAN IPv4, remote IPv6, remote IPv4 on each new connection')
     parser.add_argument("--wake-mac", help="Paired Windows NIC MAC; requires Wake-on-LAN to be enabled on that device")
     parser.add_argument("--wake-broadcast", help="Connected LAN broadcast IPv4; private address ending in .255, fixed UDP 9")
     parser.add_argument("--rustdesk-port", type=int, default=21118, help="Windows loopback RustDesk direct-access port; used only with --desktop-port")
@@ -451,6 +455,11 @@ def main():
         parser.error("desktop Keychain requires shared monitoring on macOS")
     if not config.known_hosts.is_file():
         parser.error("known_hosts missing: verify the Windows SSH host key first")
+    from .network_routes import prepare_routes
+    try:
+        prepare_routes(config)
+    except (ValueError, OSError, paramiko.SSHException) as error:
+        parser.error(str(error))
     if config.background:
         from .background import start_background
         try:

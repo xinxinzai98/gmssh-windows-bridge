@@ -2,6 +2,8 @@
 
 公开下载目前为 0.4.0a8 Alpha 预览版；下文另标出尚未发布的候选流程。Windows 电脑安装被控端；Mac 安装增强控制端。两台电脑需要能在同一局域网互访，不要求安装 Tailscale。
 
+0.4.0a27 候选另提供独立的 `gmssh-ai` CLI 和可选 stdio MCP，可在不打开图形客户端时访问明确启用的设备；安装 `.[ai]` 后按 [AI 接入](ai-access.md)设置授权和客户端配置。新 UIA/长任务需要配套新版 Windows 服务端；没有自动升级现有设备的行为，原生桌面能力仍待实机验收。
+
 ## Windows 电脑
 
 1. 从本项目的 GitHub Release 下载 `GMSSH-Windows-Setup-版本号.exe`，运行并完成正常管理员提示。
