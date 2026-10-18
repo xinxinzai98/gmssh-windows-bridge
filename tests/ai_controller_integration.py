@@ -118,7 +118,25 @@ def run(go):
                     assert text == long_content
                     call('files_restore', path='C:/source.txt', backup=long_edit['backup'], backupSha256=original['sha256'], expectedSha256=long_edit['sha256'])
                     checks.append('whole UTF-8 long-line continuation over controller SFTP')
-                    for tool, args in [('powershell_run', {'script': 'untrusted'}), ('files_read', {'path': 'C:/source.txt'}), ('desktop_act', {'snapshot': 'a'*32, 'target': 'b'*32, 'action': 'invoke'})]:
+                    content = '\ufeffname=测试\r\nport=22257\r\n'
+                    created = call('files_create', path='C:/new-config.txt', content=content)
+                    found = call('files_find_text', path='C:/new-config.txt', query='port=22257')
+                    assert found['items'][0]['line'] == 2 and found['sha256'] == created['sha256']
+                    preview = call('files_replace_preview', path='C:/new-config.txt', oldText='port=22257', newText='port=22258', expectedSha256=created['sha256'])
+                    assert preview['changed'] and not preview['bomChanged']
+                    assert call('files_read', path='C:/new-config.txt')['sha256'] == created['sha256']
+                    replaced = call('files_replace', path='C:/new-config.txt', oldText='port=22257', newText='port=22258', expectedSha256=created['sha256'])
+                    assert call('files_find_text', path='C:/new-config.txt', query='port=22258')['sha256'] == replaced['sha256']
+                    conflict = operations.call('files_create', {'device': full['id'], 'path': 'C:/new-config.txt', 'content': 'must not overwrite'})
+                    assert not conflict['ok'] and conflict['error']['code'] == 'ALREADY_EXISTS'
+                    call('files_restore', path='C:/new-config.txt', backup=replaced['backup'], backupSha256=created['sha256'], expectedSha256=replaced['sha256'])
+                    assert call('files_read', path='C:/new-config.txt')['sha256'] == created['sha256']
+                    checks.append('verified create, literal search, precise edit and no-overwrite over controller SFTP')
+                    for tool, args in [('powershell_run', {'script': 'untrusted'}), ('files_read', {'path': 'C:/source.txt'}),
+                                       ('files_find_text', {'path': 'C:/source.txt', 'query': 'one'}), ('files_create', {'path': 'C:/denied.txt', 'content': 'denied'}),
+                                       ('files_replace_preview', {'path': 'C:/source.txt', 'oldText': 'one', 'newText': 'two', 'expectedSha256': original['sha256']}),
+                                       ('files_replace', {'path': 'C:/source.txt', 'oldText': 'one', 'newText': 'two', 'expectedSha256': original['sha256']}),
+                                       ('desktop_act', {'snapshot': 'a'*32, 'target': 'b'*32, 'action': 'invoke'})]:
                         denied = operations.call(tool, {'device': view['id'], **args})
                         assert not denied['ok'] and denied['error']['code'] == 'ACCESS_DENIED', (tool, denied)
                     checks.append('server-side view-only permission isolation')

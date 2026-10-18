@@ -1,6 +1,6 @@
 # AI 接入：管理界面、CLI 与 MCP
 
-0.4.0a27 增加 `gmssh-ai`，0.4.0a28 增加图形化接入与状态检查，0.4.0a29 控制端候选增加任务等待、本地回执和完整长文本续读，CLI/MCP 共用 20 个工具。复用 SSH 或固定证书的 HTTPS 独立授权，不增加 Windows 网络监听端口。AI 设备名单单独启用，不自动读取 GMSSH 机器数据库或导出其中的密码。
+0.4.0a27 增加 `gmssh-ai`，0.4.0a28 增加图形化接入，0.4.0a29 增加任务跟进，0.4.0a30 控制端候选补齐内容定位、精确替换和新文本创建，CLI/MCP 共用 24 个工具。复用 SSH 或固定证书的 HTTPS 独立授权，不增加 Windows 网络监听端口。AI 设备名单单独启用，不自动读取 GMSSH 机器数据库或导出其中的密码。
 
 本轮只在临时环境、回环合成服务和临时文件中验证。没有操作 A4，没有切换当前 Mac 客户端。Windows UIA 执行器、托盘暂停和原生输入仍需另行实机验收；交叉编译不等于桌面实测。
 
@@ -99,6 +99,9 @@ Codex TOML 使用 `[mcp_servers.gmssh]`、`command` 和 `args`；需要环境变
 | `desktop_act` | Invoke/SetValue、控件中心点击、Unicode 输入、有限按键组合 | `view` + `input` |
 | `wait_for` | 控件出现/消失、服务状态、文本文件哈希 | 按条件检查 `view` / `inspect` / `files` |
 | `files_search` / `files_read` | 文件名搜索、UTF-8 分段读取、完整 SHA-256 | `files` |
+| `files_find_text` | 在指定文本文件中按字面量找内容，返回行号、列号和有界上下文 | `files` |
+| `files_replace_preview` / `files_replace` | 唯一原文片段的修改预览、核验哈希后替换并保留备份 | `files` |
+| `files_create` | 校验暂存内容后创建新文本；已有目标不覆盖 | `files` |
 | `files_preview` / `files_apply` / `files_restore` | 差异、核对哈希后保存、备份恢复 | `files` |
 
 CLI 与 MCP 使用相同参数：
@@ -152,6 +155,21 @@ UIA 能力取决于应用。UAC、安全桌面、锁屏及缺少 UIA 的自绘�
 文本文件最多 1 MiB、一次最多 200 行/32 KiB。搜索最多 200 个结果、2000 个目录项和 4 层递归，不跟随符号链接；独立授权沿用服务端 reparse point 检查。普通 SSH 的链接识别受其 SFTP 实现影响。超长行和差异截断有明确标记。
 
 `files_read` 返回 `startByte`、`nextByte`、`eof` 和完整文件 `sha256`。长单行超过一页时，下一次传 `startByte: 上次的 nextByte`、`expectedSha256: 上次的 sha256`，可一直读到 `nextByte: null`，不会跳过行内剩余内容或拆开中文/emoji。偏移是原文件的 UTF-8 字节，包含可能存在的 BOM；首屏不显示 BOM。续读只接受字符边界，非零偏移必须带哈希，源文件变化就停止。字节模式不能与 `startLine`/`limit` 混用；普通按行翻页可继续用 `nextLine`，同样可携带 `expectedSha256`。
+
+`files_find_text` 在明确指定的单个 UTF-8 文件内定位，区分大小写，不解释正则或执行命令，也不扫描其他目录。`query` 是非空单行字面量、最多 256 UTF-8 字节；每个匹配行返回第一个匹配的行号/列号和前后各至多 32 个字符。列号按 Unicode 字符从 1 起计；片段可能只覆盖长行的一部分，`textStartColumn` 标明片段起点。单页最多 100 行匹配，上下文合计不超过 16 KiB；`nextLine` 表示还有未扫描的行，不保证后面仍有匹配。继续查询时带回完整文件的 `expectedSha256`，避免拼接不同版本。
+
+修改少量配置时，可先用 `files_replace_preview`，再用相同参数调用 `files_replace`。两者均要求 `path`、`oldText`、`newText` 和 `expectedSha256`。原文必须恰好出现一次，包含重叠匹配的重复也会停止；不提供“全部替换”。片段各最多 32 KiB UTF-8，新内容可为空。保存复用原有的哈希复核、临时文件校验、不覆盖重命名及备份恢复，不需要把整个文件重新发送给模型。保留现有 UTF-8 BOM 和替换范围外的原有换行；若原文未找到，应读取真实的 CRLF/空格等内容，而非忽略差异后强行修改。完整文件预览另用 `bomChanged` 标识 BOM 是否变化，编码标记变化可能没有可见行差异。
+
+```bash
+gmssh-ai call files_find_text --arguments \
+  '{"device":"DEVICE_ID","path":"C:/work/config.ini","query":"port="}'
+gmssh-ai call files_replace_preview --arguments \
+  '{"device":"DEVICE_ID","path":"C:/work/config.ini","oldText":"port=8080","newText":"port=8081","expectedSha256":"SHA256_FROM_READ"}'
+```
+
+替换设备编号和哈希占位符后使用；保存时将工具名改为 `files_replace`，仍使用同一原文、新文和原哈希。修改后再次读取核对实际内容与新哈希。
+
+`files_create` 只在已存在的目录下新建最多 1 MiB 的 UTF-8 文本，不自动建目录。先以独占方式创建同目录临时文件，读取校验后以不覆盖目标的重命名提交；同名文件或文件夹已经存在时停止，竞态出现的新目标也不覆盖。提交响应中断或提交后的校验未确认时返回 `CREATE_OUTCOME_UNKNOWN`，附目标路径、预期哈希和可能仍保留的临时路径；不会声称已成功、自动重试或删除目标。此时先用 `files_read` 对照 `expectedSha256`，再决定下一步。创建、替换和恢复均只使用已有文件通道，不调用任意 PowerShell。
 
 保存必须提供原文件 `expectedSha256`。验证临时内容与原文件后，把原件移动到唯一 `.gmssh-ai-*.bak`，再以不覆盖目标的重命名提交。并发修改、目标抢占或校验失败会停止，保留原件与恢复路径。恢复同样核验当前文件与备份哈希，先保留当前版本。该流程不是跨所有进程的文件系统事务锁。
 

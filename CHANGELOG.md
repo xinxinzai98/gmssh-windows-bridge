@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Develop controller 0.4.0a30 locally: add bounded literal text search in a specified file, unique-fragment replacement previews/commits and verified creation of new text files over the existing SFTP interfaces. Keep original hashes and backups, preserve BOM/surrounding line endings, stop ambiguous edits and never overwrite a creation target.
+- Distinguish an unknown creation commit from failure or success, retaining the intended hash and recovery paths without automatic retry or deleting the destination. Continue to use Windows a27 protocol; no endpoint, real-device or current-app changes.
+
 - Develop controller 0.4.0a29 locally: add bounded task waits and private, restart-safe task receipts without storing command bodies or output. Preserve request keys before submission, separate wait timeout from task failure, retain known remote results if a local receipt write fails, and never replay commands automatically.
 - Add a human task-history tab with dated local observations and explicit, permission-checked remote status/output queries. Add hash-checked UTF-8 byte continuation so long single lines can be read completely without skipping or splitting characters. Reuse Windows a27 protocol; no real-device changes or new listener.
 

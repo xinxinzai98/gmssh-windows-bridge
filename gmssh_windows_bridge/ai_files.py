@@ -151,6 +151,107 @@ def search(sftp, path, query='', recursive=False):
     return {'path': path, 'items': rows, 'scanned': scanned, 'truncated': truncated or bool(pending)}
 
 
+def find_text(sftp, path, query, start_line=1, limit=50, expected_sha256=None):
+    """Literal, case-sensitive search inside one bounded UTF-8 file."""
+    if not isinstance(query, str) or not query or '\x00' in query or query.splitlines() != [query] or len(query.encode('utf-8')) > 256 or type(start_line) is not int or start_line < 1 or type(limit) is not int or not 1 <= limit <= 100:
+        raise StreamError('INVALID_ARGUMENT')
+    path = remote_path(path)
+    raw = read_bytes(sftp, path)
+    sha = digest(raw)
+    if expected_sha256 is not None and sha != expected_sha256:
+        raise StreamError('SOURCE_CHANGED')
+    try:
+        lines = raw.decode('utf-8-sig').splitlines()
+    except UnicodeError:
+        raise StreamError('TEXT_ENCODING_UNSUPPORTED') from None
+    rows, used, next_line = [], 0, None
+    for index in range(start_line-1, len(lines)):
+        line = lines[index]
+        column = line.find(query)
+        if column < 0:
+            continue
+        left, right = max(0, column-32), min(len(line), column+len(query)+32)
+        snippet = line[left:right]
+        size = len(snippet.encode('utf-8'))
+        if used+size > 16384:
+            next_line = index+1
+            break
+        rows.append({'line': index+1, 'column': column+1, 'text': snippet, 'textStartColumn': left+1,
+                     'truncated': left > 0 or right < len(line)})
+        used += size
+        if len(rows) == limit:
+            next_line = index+2 if index+1 < len(lines) else None
+            break
+    return {'path': path, 'sha256': sha, 'items': rows, 'totalLines': len(lines),
+            'nextLine': next_line, 'truncated': next_line is not None, 'literal': True, 'caseSensitive': True}
+
+
+def replace(sftp, path, old_text, new_text, expected_sha256, preview_only=False):
+    if not text_bytes(old_text) or len(old_text.encode('utf-8')) > 32768 or len(text_bytes(new_text)) > 32768:
+        raise StreamError('INVALID_ARGUMENT')
+    path = remote_path(path)
+    raw = read_bytes(sftp, path)
+    if digest(raw) != expected_sha256:
+        raise StreamError('SOURCE_CHANGED')
+    try:
+        text = raw.decode('utf-8-sig')
+    except UnicodeError:
+        raise StreamError('TEXT_ENCODING_UNSUPPORTED') from None
+    position = text.find(old_text)
+    if position < 0:
+        raise StreamError('TEXT_NOT_FOUND')
+    if text.find(old_text, position+1) >= 0:
+        raise StreamError('TEXT_NOT_UNIQUE')
+    content = ('\ufeff' if raw.startswith(b'\xef\xbb\xbf') else '')+text[:position]+new_text+text[position+len(old_text):]
+    # Reuse the full edit's second hash check, no-overwrite commit and backup.
+    result = (preview if preview_only else apply)(sftp, path, content, expected_sha256)
+    return {**result, 'occurrences': 1}
+
+
+def create(sftp, path, content):
+    path = checked_path(sftp, path, missing=True)
+    if path.endswith('/'):
+        raise StreamError('INVALID_ARGUMENT')
+    raw = text_bytes(content)
+    try:
+        sftp.lstat(path)
+    except FileNotFoundError:
+        pass
+    else:
+        raise FileExistsError(errno.EEXIST, 'target already exists')
+    temporary = posixpath.join(posixpath.dirname(path), '.gmssh-ai-'+uuid.uuid4().hex+'.tmp')
+    created, committing = False, False
+    try:
+        with sftp.open(temporary, 'wx') as target:
+            created = True
+            target.write(raw)
+        if digest(read_bytes(sftp, temporary)) != digest(raw):
+            raise StreamError('VERIFY_FAILED')
+        checked_path(sftp, path, missing=True)
+        committing = True
+        try:
+            sftp.rename(temporary, path)
+        except FileExistsError:
+            committing = False
+            raise
+        created = False
+        if digest(read_bytes(sftp, path)) != digest(raw):
+            raise StreamError('VERIFY_FAILED')
+        return {'path': path, 'sha256': digest(raw), 'size': len(raw), 'created': True}
+    except Exception:
+        if committing:
+            failure = StreamError('CREATE_OUTCOME_UNKNOWN')
+            failure.recovery = {'path': path, 'expectedSha256': digest(raw), **({'temporary': temporary} if created else {})}
+            raise failure from None
+        raise
+    finally:
+        if created and not committing:
+            try:
+                sftp.remove(temporary)
+            except (OSError, StreamError):
+                pass
+
+
 def preview(sftp, path, content, expected_sha256):
     path = remote_path(path)
     old, new = read_bytes(sftp, path), text_bytes(content)
@@ -160,11 +261,12 @@ def preview(sftp, path, content, expected_sha256):
         before = old.decode('utf-8-sig')
     except UnicodeError:
         raise StreamError('TEXT_ENCODING_UNSUPPORTED') from None
-    lines = list(difflib.unified_diff(before.splitlines(True), content.splitlines(True), fromfile=path, tofile=path))
+    lines = list(difflib.unified_diff(before.splitlines(True), content.removeprefix('\ufeff').splitlines(True), fromfile=path, tofile=path))
     shortened = any(len(line) > 512 for line in lines)
     diff = ''.join(line if len(line) <= 512 else line[:512]+'…\n' for line in lines)
     return {'path': path, 'beforeSha256': digest(old), 'afterSha256': digest(new),
-            'diff': diff[:32768], 'truncated': shortened or len(diff) > 32768, 'changed': old != new}
+            'diff': diff[:32768], 'truncated': shortened or len(diff) > 32768, 'changed': old != new,
+            'bomChanged': old.startswith(b'\xef\xbb\xbf') != new.startswith(b'\xef\xbb\xbf')}
 
 
 def apply(sftp, path, content, expected_sha256):

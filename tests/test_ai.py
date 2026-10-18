@@ -10,6 +10,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -241,6 +242,138 @@ class AITests(unittest.TestCase):
         (self.remote/'long.txt').write_text('changed', encoding='utf-8')
         result = self.call('files_read', path='C:/long.txt', startByte=first['nextByte'], expectedSha256=first['sha256'])
         self.assertEqual(result['error']['code'], 'SOURCE_CHANGED')
+
+    def test_literal_content_search_paginates_matches_and_checks_source(self):
+        content = b'\xef\xbb\xbf'+('heading\r\n'+'x'*60000+'目标.*[0]🙂\r\n'+'目标.*[0]🙂\n'*120).encode()
+        (self.remote/'config.txt').write_bytes(content)
+        result = self.call('files_find_text', path='C:/config.txt', query='目标.*[0]🙂', limit=2)['result']
+        self.assertEqual([row['line'] for row in result['items']], [2, 3]); self.assertEqual(result['nextLine'], 4)
+        self.assertTrue(result['literal']); self.assertTrue(result['items'][0]['truncated'])
+        self.assertIn('目标.*[0]🙂', result['items'][0]['text']); self.assertLessEqual(len(result['items'][0]['text'].encode()), 512)
+        self.assertEqual(result['items'][0]['column'], 60001)
+        next_page = self.call('files_find_text', path='C:/config.txt', query='目标.*[0]🙂', startLine=4, expectedSha256=result['sha256'])['result']
+        self.assertEqual(next_page['items'][0]['line'], 4); self.assertLessEqual(len(next_page['items']), 100)
+        (self.remote/'config.txt').write_text('changed', encoding='utf-8')
+        self.assertEqual(self.call('files_find_text', path='C:/config.txt', query='目标', expectedSha256=result['sha256'])['error']['code'], 'SOURCE_CHANGED')
+        self.assertEqual(self.call('files_find_text', path='C:/config.txt', query='missing')['result']['items'], [])
+        query = '🙂'*64
+        (self.remote/'config.txt').write_text(('前'*32+query+'后'*32+'\n')*100, encoding='utf-8')
+        bounded = self.call('files_find_text', path='C:/config.txt', query=query, limit=100)['result']
+        self.assertLess(len(bounded['items']), 100)
+        self.assertLessEqual(sum(len(row['text'].encode()) for row in bounded['items']), 16384)
+        self.assertEqual(bounded['nextLine'], len(bounded['items'])+1)
+
+    def test_precise_replacement_previews_preserve_bom_crlf_and_retained_backups(self):
+        original = b'\xef\xbb\xbf'+('name=测试\r\nport=22257\r\nlast=🙂\r\n').encode()
+        (self.remote/'config.txt').write_bytes(original); sha = ai_files.digest(original)
+        args = dict(path='C:/config.txt', oldText='port=22257', newText='port=22258', expectedSha256=sha)
+        result = self.call('files_replace_preview', **args)
+        self.assertTrue(result['ok']); self.assertEqual(result['result']['occurrences'], 1)
+        self.assertIn('+port=22258\r\n', result['result']['diff']); self.assertFalse(result['result']['bomChanged'])
+        self.assertEqual((self.remote/'config.txt').read_bytes(), original); self.assertEqual(len(list(self.remote.iterdir())), 1)
+        bom_only = self.call('files_preview', path='C:/config.txt', content=original.decode('utf-8-sig'), expectedSha256=sha)['result']
+        self.assertTrue(bom_only['changed']); self.assertTrue(bom_only['bomChanged']); self.assertEqual(bom_only['diff'], '')
+        saved = self.call('files_replace', **args)['result']
+        expected = original.replace(b'22257', b'22258')
+        self.assertEqual((self.remote/'config.txt').read_bytes(), expected)
+        self.assertEqual(self.sftp.local(saved['backup']).read_bytes(), original)
+        reply = self.call('files_replace', **args)
+        self.assertEqual(reply['error']['code'], 'SOURCE_CHANGED')
+        restored = self.call('files_restore', path='C:/config.txt', backup=saved['backup'], backupSha256=sha, expectedSha256=saved['sha256'])
+        self.assertTrue(restored['ok']); self.assertEqual((self.remote/'config.txt').read_bytes(), original)
+
+    def test_replacement_rejects_missing_or_ambiguous_including_overlapping_text(self):
+        for source, old, code in [('a=1\na=1\n', 'a=1', 'TEXT_NOT_UNIQUE'), ('aaa', 'aa', 'TEXT_NOT_UNIQUE'), ('name=one', 'name=two', 'TEXT_NOT_FOUND')]:
+            with self.subTest(source=source):
+                (self.remote/'config.txt').write_text(source)
+                result = self.call('files_replace', path='C:/config.txt', oldText=old, newText='new', expectedSha256=ai_files.digest(source.encode()))
+                self.assertEqual(result['error']['code'], code); self.assertEqual((self.remote/'config.txt').read_text(), source)
+                self.assertEqual(len(list(self.remote.iterdir())), 1)
+
+    def test_create_verifies_new_content_and_never_overwrites_existing_or_racing_target(self):
+        content = '中文配置\r\n🙂'
+        reply = self.call('files_create', path='C:/new.txt', content=content)
+        self.assertTrue(reply['ok'], reply); self.assertEqual((self.remote/'new.txt').read_bytes(), content.encode())
+        missing = self.call('files_create', path='C:/missing/new.txt', content='new')
+        self.assertEqual(missing['error']['code'], 'NOT_FOUND'); self.assertFalse((self.remote/'missing').exists())
+        reply = self.call('files_create', path='C:/new.txt', content='different')
+        self.assertEqual(reply['error']['code'], 'ALREADY_EXISTS'); self.assertEqual((self.remote/'new.txt').read_bytes(), content.encode())
+        def race(source, target):
+            (self.remote/'racing.txt').write_text('other writer')
+        self.sftp.before_rename = race
+        reply = self.call('files_create', path='C:/racing.txt', content='mine')
+        self.assertEqual(reply['error']['code'], 'ALREADY_EXISTS'); self.assertEqual((self.remote/'racing.txt').read_text(), 'other writer')
+        self.assertEqual(sorted(path.name for path in self.remote.iterdir()), ['new.txt', 'racing.txt'])
+
+    def test_create_lost_commit_response_never_claims_success_or_deletes_destination(self):
+        rename = self.sftp.rename
+        def lost(source, target):
+            rename(source, target)
+            raise StreamError('REMOTE_IO')
+        self.sftp.rename = lost
+        self.sftp.remove = lambda *_: (_ for _ in ()).throw(AssertionError('must retain unconfirmed commit'))
+        reply = self.call('files_create', path='C:/new.txt', content='new 中文')
+        self.assertEqual(reply['error']['code'], 'CREATE_OUTCOME_UNKNOWN')
+        self.assertEqual(reply['error']['recovery']['path'], 'C:/new.txt')
+        self.assertEqual((self.remote/'new.txt').read_text(), 'new 中文')
+        self.assertEqual(reply['error']['recovery']['expectedSha256'], ai_files.digest('new 中文'.encode()))
+
+    def test_file_operations_over_real_disposable_ssh_sftp(self):
+        import paramiko
+        from tests.test_forwarding import Files, bridge
+        class WindowsFiles(Files):
+            def path(self, name):
+                if not name.startswith('C:/'):
+                    raise PermissionError(errno.EACCES, 'synthetic Windows drive only')
+                return super().path(name[2:])
+            def rename(self, source, target):
+                try:
+                    os.link(self.path(source), self.path(target)); self.path(source).unlink()
+                    return paramiko.SFTP_OK
+                except OSError as error:
+                    return paramiko.SFTPServer.convert_errno(error.errno)
+        with patch('tests.test_forwarding.Files', WindowsFiles), bridge() as (transport, _):
+            self.client = SimpleNamespace(open_sftp=lambda: paramiko.SFTPClient.from_transport(transport))
+            created = self.call('files_create', path='C:/config.txt', content='name=one\r\nvalue=中文\r\n')
+            self.assertTrue(created['ok'], created); sha = created['result']['sha256']
+            found = self.call('files_find_text', path='C:/config.txt', query='value=中文')
+            self.assertEqual(found['result']['items'][0]['line'], 2)
+            saved = self.call('files_replace', path='C:/config.txt', oldText='name=one', newText='name=two', expectedSha256=sha)
+            self.assertTrue(saved['ok'], saved)
+            self.assertTrue(self.call('files_read', path='C:/config.txt')['result']['text'].startswith('name=two\r\n'))
+            self.assertFalse(self.call('files_create', path='C:/config.txt', content='no overwrite')['ok'])
+            result = saved['result']
+            self.assertTrue(self.call('files_restore', path='C:/config.txt', backup=result['backup'], backupSha256=sha, expectedSha256=result['sha256'])['ok'])
+            self.assertEqual(self.call('files_read', path='C:/config.txt')['result']['sha256'], sha)
+
+    @unittest.skipIf(os.name == 'nt', 'ordinary user symlink fixture is Unix-only')
+    def test_create_rejects_linked_parent_and_verification_failure_removes_only_own_candidate(self):
+        outside = self.root/'outside'; outside.mkdir(); (self.remote/'linked').symlink_to(outside, target_is_directory=True)
+        result = self.call('files_create', path='C:/linked/new.txt', content='not allowed')
+        self.assertEqual(result['error']['code'], 'UNSUPPORTED_FILE'); self.assertEqual(list(outside.iterdir()), [])
+        real_read = ai_files.read_bytes
+        def corrupt(sftp, path):
+            return b'synthetic corrupt write' if path.endswith('.tmp') else real_read(sftp, path)
+        with patch('gmssh_windows_bridge.ai_files.read_bytes', side_effect=corrupt):
+            result = self.call('files_create', path='C:/new.txt', content='intended content')
+        self.assertEqual(result['error']['code'], 'VERIFY_FAILED'); self.assertFalse((self.remote/'new.txt').exists())
+        self.assertEqual([path.name for path in self.remote.iterdir()], ['linked'])
+
+    def test_file_tools_validate_fragments_before_connecting_and_require_file_permission(self):
+        sha = '0'*64
+        invalid = [('files_find_text', dict(query='two\nlines')), ('files_find_text', dict(query='line\u2028')),
+                   ('files_replace', dict(oldText='', newText='new', expectedSha256=sha)),
+                   ('files_replace', dict(oldText='old', newText='🙂'*10000, expectedSha256=sha)),
+                   ('files_create', dict(content='中文'*400000))]
+        for name, values in invalid:
+            result = self.call(name, path='C:/config.txt', **values)
+            self.assertIn(result['error']['code'], {'INVALID_ARGUMENT', 'FILE_LIMIT'})
+        self.assertEqual(self.connects, 0)
+        self.registry.configure(self.device_id, ['inspect'])
+        for name, values in [('files_find_text', dict(query='one')), ('files_replace_preview', dict(oldText='a', newText='b', expectedSha256=sha)),
+                             ('files_replace', dict(oldText='a', newText='b', expectedSha256=sha)), ('files_create', dict(content='new'))]:
+            self.assertEqual(self.call(name, path='C:/config.txt', **values)['error']['code'], 'ACCESS_DENIED')
+        self.assertEqual(self.connects, 0)
 
     def test_older_server_is_reported_without_auto_upgrade_or_command_fallback(self):
         self.client.ai_capabilities = {}

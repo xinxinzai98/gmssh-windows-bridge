@@ -477,6 +477,15 @@ TOOLS = [
     specification('files_read', 'Read a UTF-8 text file <=1 MiB, <=200 lines/32 KiB per page. Continue long lines using nextByte as startByte and the returned sha256 as expectedSha256; do not mix byte and line modes.',
                   {'path': PATH, 'startLine': {'type': 'integer', 'minimum': 1}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 200},
                    'startByte': {'type': 'integer', 'minimum': 0, 'maximum': ai_files.MAX_TEXT}, 'expectedSha256': HASH}, ('path',), 'files'),
+    specification('files_find_text', 'Find literal, case-sensitive text within ONE UTF-8 file <=1 MiB. Returns matching line numbers and bounded context, not a directory scan. Continue with nextLine and expectedSha256.',
+                  {'path': PATH, 'query': {'type': 'string', 'minLength': 1, 'maxLength': 256},
+                   'startLine': {'type': 'integer', 'minimum': 1}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 100}, 'expectedSha256': HASH}, ('path', 'query'), 'files'),
+    *[specification(name, description, {'path': PATH, 'oldText': {'type': 'string', 'minLength': 1, 'maxLength': 32768}, 'newText': TEXT, 'expectedSha256': HASH},
+                    ('path', 'oldText', 'newText', 'expectedSha256'), 'files', name == 'files_replace')
+      for name, description in [('files_replace_preview', 'Preview replacing exactly one literal occurrence; hash required, ambiguity stops. Preserves UTF-8 BOM and surrounding line endings. Each fragment <=32 KiB.'),
+                                ('files_replace', 'Replace exactly one literal occurrence against the expected hash, retaining a backup. Missing, duplicate or changed text stops. Preview first. Each fragment <=32 KiB.')]],
+    specification('files_create', 'Create a new UTF-8 file <=1 MiB in an existing directory. Verify a temporary file then commit without overwriting any existing target. An unknown commit outcome must be checked, not retried blindly.',
+                  {'path': PATH, 'content': {'type': 'string', 'maxLength': 1048576}}, ('path', 'content'), 'files', True),
     *[specification(name, description, {'path': PATH, 'content': {'type': 'string', 'maxLength': 1048576}, 'expectedSha256': HASH}, ('path', 'content', 'expectedSha256'), 'files', name == 'files_apply')
       for name, description in [('files_preview', 'Preview an exact-content text edit against the expected file hash.'),
                                 ('files_apply', 'Apply a verified text edit; retain original in a unique sibling backup; never overwrite a competing destination.')]],
@@ -533,6 +542,14 @@ class Operations:
             validate_arguments(tool['inputSchema'], arguments)
             if name == 'files_read' and 'startByte' in arguments and (set(arguments) & {'startLine', 'limit'} or arguments['startByte'] > 0 and 'expectedSha256' not in arguments):
                 raise StreamError('INVALID_ARGUMENT')
+            if name == 'files_find_text':
+                bounded_text(arguments['query'], 256)
+                if arguments['query'].splitlines() != [arguments['query']]:
+                    raise StreamError('INVALID_ARGUMENT')
+            if name in {'files_replace_preview', 'files_replace'}:
+                bounded_text(arguments['oldText']); bounded_text(arguments['newText'])
+            if name == 'files_create':
+                ai_files.text_bytes(arguments['content'])
             if name == 'devices_list':
                 result = {'devices': [self.registry.public(v) for v in self.registry.devices()], 'version': __version__}
             else:
@@ -555,7 +572,7 @@ class Operations:
                     self.registry.record_check(device, result)
             reply.update(ok=True, result=result)
         except Exception as error:
-            code = error.code if isinstance(error, StreamError) else 'AUTH_FAILED' if isinstance(error, paramiko.AuthenticationException) else 'PEER_CHANGED' if isinstance(error, paramiko.BadHostKeyException) else 'NOT_FOUND' if isinstance(error, FileNotFoundError) else 'ACCESS_DENIED' if isinstance(error, PermissionError) else 'INVALID_ARGUMENT' if isinstance(error, (ValueError, TypeError, KeyError, UnicodeError)) else 'CONNECTION_FAILED'
+            code = error.code if isinstance(error, StreamError) else 'AUTH_FAILED' if isinstance(error, paramiko.AuthenticationException) else 'PEER_CHANGED' if isinstance(error, paramiko.BadHostKeyException) else 'NOT_FOUND' if isinstance(error, FileNotFoundError) else 'ALREADY_EXISTS' if isinstance(error, FileExistsError) else 'ACCESS_DENIED' if isinstance(error, PermissionError) else 'INVALID_ARGUMENT' if isinstance(error, (ValueError, TypeError, KeyError, UnicodeError)) else 'CONNECTION_FAILED'
             reply['error'] = {'code': code, 'message': error_message(code)}
             if isinstance(error, StreamError) and hasattr(error, 'recovery'):
                 reply['error']['recovery'] = error.recovery
@@ -677,6 +694,12 @@ class Operations:
                 return ai_files.search(sftp, args['path'], args.get('query', ''), args.get('recursive', False))
             if name == 'files_read':
                 return ai_files.read(sftp, args['path'], args.get('startLine', 1), args.get('limit', 100), args.get('startByte'), args.get('expectedSha256'))
+            if name == 'files_find_text':
+                return ai_files.find_text(sftp, args['path'], args['query'], args.get('startLine', 1), args.get('limit', 50), args.get('expectedSha256'))
+            if name in {'files_replace_preview', 'files_replace'}:
+                return ai_files.replace(sftp, args['path'], args['oldText'], args['newText'], args['expectedSha256'], name == 'files_replace_preview')
+            if name == 'files_create':
+                return ai_files.create(sftp, args['path'], args['content'])
             if name in {'files_preview', 'files_apply'}:
                 return (ai_files.preview if name == 'files_preview' else ai_files.apply)(sftp, args['path'], args['content'], args['expectedSha256'])
             if name == 'files_restore':
@@ -771,7 +794,11 @@ def error_message(code):
             'TEXT_ENCODING_UNSUPPORTED': '当前文件不是有效的 UTF-8 文本，请使用文件中心处理。',
             'FILE_LIMIT': '该文件超出 AI 文本读取范围，请使用文件中心处理。',
             'NOT_FOUND': '请求的文件或任务已不存在，请核对保存的路径或任务编号。',
-            'OUTCOME_UNKNOWN': '执行结果未知，请先核对远端状态，不要作为新任务重试。'}.get(code, code)
+            'OUTCOME_UNKNOWN': '执行结果未知，请先核对远端状态，不要作为新任务重试。',
+            'TEXT_NOT_FOUND': '原文片段没有找到，请重新读取文件后再生成修改。',
+            'TEXT_NOT_UNIQUE': '原文片段出现多次，请增加上下文以唯一定位，不会批量替换。',
+            'ALREADY_EXISTS': '同名文件已存在，未覆盖原文件。',
+            'CREATE_OUTCOME_UNKNOWN': '新文件提交结果未确认，请先按返回的路径和哈希核对，不要直接重试或覆盖。'}.get(code, code)
 
 
 def main(argv=None):
