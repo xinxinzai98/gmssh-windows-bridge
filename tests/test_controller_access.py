@@ -22,6 +22,17 @@ def encode(value):
 
 
 class ControllerAccessTests(unittest.TestCase):
+    def test_source_rejection_keeps_a_distinct_error_code(self):
+        response=type('Response',(),{'status':403,'read':lambda _self,_limit:b'{"ok":false,"code":"SOURCE_DENIED"}'})()
+        with patch('gmssh_windows_bridge.controller_access._PinnedConnection') as connection:
+            connection.return_value.getresponse.return_value=response
+            client=ControllerClient('192.168.250.2',inspect_authorization(encode(self.payload)))
+            try:
+                with self.assertRaises(StreamError) as error:client.authorize()
+                self.assertEqual(error.exception.code,'SOURCE_DENIED')
+                self.assertFalse(client.is_authenticated())
+            finally:client.close()
+
     def setUp(self):
         self.public = public_connection()
         self.cert, self.key = certificate(self.public)

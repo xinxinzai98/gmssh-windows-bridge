@@ -85,12 +85,13 @@ def configuration(connection):
     return inspect_authorization(PREFIX+base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip('='))
 
 
-def probe_authorization(connection, target):
+def probe_authorization(connection, target, timeout=8):
     code = configuration(connection)
     target = normalize_address(target)
     if target not in code['public']['addresses']:
         raise ValueError('请选择独立授权配置中的目标地址。')
     client = _PinnedConnection(target, code)
+    client.timeout = timeout
     try:
         client.connect()  # No bearer token is sent during this public identity probe.
         return {'verified': True, 'fingerprint': code['public']['sshHostFingerprint']}
@@ -156,6 +157,8 @@ class ControllerClient:
                     raise FileNotFoundError(errno.ENOENT, 'remote file unavailable')
                 if error == 'CONFLICT':
                     raise FileExistsError(errno.EEXIST, 'remote target exists')
+                if error == 'SOURCE_DENIED':
+                    raise StreamError('SOURCE_DENIED')
                 raise StreamError('AUTH_FAILED' if action == 'capabilities' and response.status in (401, 403) else error if error in {'ACCESS_DENIED', 'DISK_FULL', 'CONFLICT'} else 'REMOTE_IO')
             result = reply.get('result')
             if not isinstance(result, dict):

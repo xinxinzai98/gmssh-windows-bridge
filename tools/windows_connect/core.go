@@ -57,11 +57,12 @@ type credential struct {
 }
 
 type store struct {
-	root             string
-	protect          func([]byte) ([]byte, error)
-	unprotect        func([]byte) ([]byte, error)
-	validatePassword func(string, string) error
-	validateBinding  func(binding) error
+	root              string
+	protect           func([]byte) ([]byte, error)
+	unprotect         func([]byte) ([]byte, error)
+	validatePassword  func(string, string) error
+	validateBinding   func(binding) error
+	ipv6LocalNetworks func() ([]*net.IPNet, error)
 }
 
 func decodeJSON(body []byte, value any) error {
@@ -401,6 +402,32 @@ func publicConnection(public map[string]any) (map[string]any, error) {
 	return filtered, nil
 }
 
+func localIPv6Networks() ([]*net.IPNet, error) {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil, err
+	}
+	var networks []*net.IPNet
+	for _, item := range interfaces {
+		if item.Flags&net.FlagUp == 0 || item.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addresses, err := item.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, address := range addresses {
+			if network, ok := address.(*net.IPNet); ok {
+				ones, bits := network.Mask.Size()
+				if bits == 128 && ones > 0 && network.IP.To4() == nil && network.IP.IsGlobalUnicast() && !network.IP.IsLinkLocalUnicast() {
+					networks = append(networks, network)
+				}
+			}
+		}
+	}
+	return networks, nil
+}
+
 func (s store) allowedPeer(address net.IP) bool {
 	if address == nil {
 		return false
@@ -411,8 +438,8 @@ func (s store) allowedPeer(address net.IP) bool {
 	if address.To4() != nil || !address.IsGlobalUnicast() || address.IsLinkLocalUnicast() {
 		return false
 	}
-	// Additional IPv6 sources are explicit administrator configuration, not
-	// inferred from target addresses and not a change to Windows firewall rules.
+	// Local IPv6 prefixes come from live interfaces, never from an imported code.
+	// Off-link sources still require explicit administrator configuration.
 	body, err := readBounded(filepath.Join(s.root, "agent.json"), 65536)
 	if err != nil {
 		return false
@@ -440,7 +467,24 @@ func (s store) allowedPeer(address net.IP) bool {
 			allowed = true
 		}
 	}
-	return allowed
+	if allowed {
+		return true
+	}
+	query := s.ipv6LocalNetworks
+	if query == nil {
+		query = localIPv6Networks
+	}
+	networks, err := query()
+	if err != nil {
+		return false
+	}
+	for _, network := range networks {
+		ones, bits := network.Mask.Size()
+		if bits == 128 && ones > 0 && network.IP.To4() == nil && network.IP.IsGlobalUnicast() && !network.IP.IsLinkLocalUnicast() && network.Contains(address) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s store) storedCredential(m metadata) (credential, error) {
@@ -527,7 +571,14 @@ func (s store) handler() http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		fail := func(code int) { w.WriteHeader(code); io.WriteString(w, "{\"ok\":false}") }
+		fail := func(status int, reason ...string) {
+			code := "REQUEST_REJECTED"
+			if len(reason) == 1 {
+				code = reason[0]
+			}
+			w.WriteHeader(status)
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "code": code})
+		}
 		select {
 		case slots <- struct{}{}:
 			defer func() { <-slots }()
@@ -537,7 +588,11 @@ func (s store) handler() http.Handler {
 		}
 		host, _, err := net.SplitHostPort(r.RemoteAddr)
 		address := net.ParseIP(host)
-		if err != nil || !s.allowedPeer(address) || r.Header.Get("Origin") != "" {
+		if err != nil || !s.allowedPeer(address) {
+			fail(403, "SOURCE_DENIED")
+			return
+		}
+		if r.Header.Get("Origin") != "" {
 			fail(403)
 			return
 		}
@@ -586,11 +641,11 @@ func (s store) handler() http.Handler {
 		provided := r.Header.Get("Authorization")
 		expected := "Bearer " + m.Token
 		if len(provided) != len(expected) || subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) != 1 {
-			fail(403)
+			fail(403, "AUTH_FAILED")
 			return
 		}
 		if m.Token == blockedToken {
-			fail(403)
+			fail(403, "AUTH_FAILED")
 			return
 		}
 		secret, err := s.storedCredential(m)
@@ -603,7 +658,7 @@ func (s store) handler() http.Handler {
 			// External password changes must not turn repeated imports into lockouts.
 			blockedToken = m.Token
 			_ = s.rotate(true)
-			fail(403)
+			fail(403, "AUTH_FAILED")
 			return
 		}
 		// Fixed response fields only; never echo caller input, code, or token.

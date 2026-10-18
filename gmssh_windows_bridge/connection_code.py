@@ -102,13 +102,19 @@ def redeem_code(text, target):
         connection.request('POST', '/v1/connect', body=b'{"schema":1}', headers={
             'Content-Type': 'application/json', 'Authorization': 'Bearer ' + code['token']})
         response = connection.getresponse()
-        if response.status in (401, 403):
-            raise ValueError('连接码已失效或被重置，请从 Windows 服务端重新复制。')
-        if response.status != 200:
-            raise ValueError('Windows 一键接入暂不可用，请检查服务端状态或使用手动添加。')
         raw = response.read(MAX_REPLY + 1)
         if len(raw) > MAX_REPLY:
             raise ValueError('Windows 接入响应无效。')
+        if response.status in (401, 403):
+            try: reason = json.loads(raw, object_pairs_hook=_object).get('code')
+            except (ValueError, AttributeError): reason = None
+            if reason == 'SOURCE_DENIED':
+                raise ValueError('此管理端的 IPv6 来源尚未获准。请在 Windows 服务端的「IPv6 接入」中添加管理端地址或网段，再重试。')
+            if reason == 'AUTH_FAILED' or response.status == 401:
+                raise ValueError('连接码已失效或被重置，请从 Windows 服务端重新复制。')
+            raise ValueError('服务端拒绝接入，请核对 IPv6 来源授权和连接码；旧版服务端无法区分这两种原因。')
+        if response.status != 200:
+            raise ValueError('Windows 一键接入暂不可用，请检查服务端状态或使用手动添加。')
         try:
             result = json.loads(raw, object_pairs_hook=_object)
         except (ValueError, UnicodeError):

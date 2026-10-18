@@ -8,6 +8,15 @@ const {PairingManager,loopbackRequest}=require('../gmssh_windows_bridge/pairing.
 
 const fixture={schema:1,id:'a'.repeat(32),computer:'LAB-PC',username:'gmssh',addresses:['192.0.2.42'],sshPort:22,
   sshHostPublicKey:'ssh-ed25519 synthetic-public',sshHostFingerprint:'SHA256:synthetic',adapters:[]};
+test('code auto-address probes only before redeeming and explicit selection does not fall back',async()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'gmssh-auto-route-'));const {manager,events,records}=harness(root);const original=manager.request.bind(manager);
+ try{
+  manager.request=async request=>{if(request.operation==='choose-target'){events.push('choose-target');return {target:'192.0.2.42',verified:true};}return original(request);};
+  await manager.inspect('GMSSH-CONNECT1.synthetic');await manager.connect({id:fixture.id,target:'192.0.2.42',name:'Automatic',autoTarget:true});
+  assert.ok(events.indexOf('choose-target')<events.indexOf('redeem-code'));assert.equal(records.length,1);
+  events.length=0;await manager.inspect('GMSSH-CONNECT1.synthetic');await manager.connect({id:fixture.id,target:'192.0.2.42',name:'Explicit'});assert.ok(!events.includes('choose-target'));
+ }finally{await Promise.all([...manager.running.values()].map(value=>value.stop?.()));fs.rmSync(root,{recursive:true,force:true});}
+});
 function harness(root,options={}) {
   const events=[],records=[],starts=[];
   let nextPort=35000,adds=0;

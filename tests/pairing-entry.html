@@ -80,13 +80,15 @@ document.getElementById('run').onclick=async()=>{
   assert(last.refreshPassword===true&&last.password==='synthetic-rotated-secret'&&closes===1&&opens===3&&!isOpen()&&!field('password').value,'改密成功仅重建原设备桌面，清除输入并保持同一入口');
   await openWindows();mode='code';field('paste').click();await settle();
   assert(field('password-label').hidden&&!field('connect').disabled&&field('computer').textContent==='LAB-PC','粘贴连接码自动填写电脑，无需再次输入密码');
-  field('connect').click();await settle();assert(last.password===''&&opens===4&&!isOpen(),'连接码接入不经过网页密码字段');
+  assert(!field('auto-target-label').hidden&&field('auto-target').checked,'连接码默认自动选择通过身份核对的可用地址');
+  field('connect').click();await settle();assert(last.password===''&&last.autoTarget===true&&opens===4&&!isOpen(),'连接码自动选址接入不经过网页密码字段');
   await openWindows();mode='existing-code';field('paste').click();await settle();
   assert(field('password-label').hidden&&field('refresh-label').hidden&&!field('connect').disabled,'同设备长效码自动更新原卡片，保留免输入流程');
   assert(field('name').value==='原生卡片名称'&&field('name').readOnly&&field('connect').textContent==='连接并打开桌面','已有设备显示原名称并保持只读，连接码按钮不会误称修改密码');
   field('connect').click();await settle();assert(last.refreshPassword&&last.password===''&&closes===2&&opens===5,'旧设备粘贴新码后沿原入口重连');
   await openWindows();mode='code';field('code').value='GMSSH-CONNECT1.synthetic';field('parse').click();await settle();
   assert(!field('code').value&&field('password-label').hidden&&!field('connect').disabled,'直接粘贴或输入的连接码识别后立即清除输入，沿用免密码流程');
+  field('target').value='2001:db8::42';field('target').dispatchEvent(new Event('input'));assert(!field('auto-target').checked,'显式填写 IPv6 后保留用户地址，不自动回退到 IPv4');
   field('cancel').click();await settle();
   await openWindows();const paste=new Event('paste',{bubbles:true,cancelable:true});Object.defineProperty(paste,'clipboardData',{value:{getData:()=> 'GMSSH-CONNECT1.synthetic-pasted'}});field('code').dispatchEvent(paste);await settle();
   assert(paste.defaultPrevented&&!field('code').value&&field('password-label').hidden,'系统粘贴事件直接识别连接码，原始码不留在输入框');field('cancel').click();await settle();
@@ -128,7 +130,8 @@ document.getElementById('run').onclick=async()=>{
 };
 document.getElementById('preview').onclick=()=>{
  window.gmsshPairingController?.remove();
- window.electronAPI={invoke:async(_channel,request)=>request.type==='gmssh-pair-file'?{status:'ok',data:{id:'a'.repeat(32),computer:'实验室工作站',username:'gmssh',sshPort:22,addresses:['192.0.2.42','192.0.2.43'],sshHostFingerprint:'SHA256:DEMO-PUBLIC-IDENTITY-FOR-UI-PREVIEW',desktopAuth:'shared-ssh',canRememberDesktop:true}}:{status:'error',message:'本页仅作模拟预览，请在增强版 GMSSH 内接入真实电脑。'}};
+ const previewData={id:'a'.repeat(32),computer:'实验室工作站',username:'gmssh',sshPort:22,addresses:['2001:db8::42','192.0.2.42'],sshHostFingerprint:'SHA256:DEMO-PUBLIC-IDENTITY-FOR-UI-PREVIEW',desktopAuth:'shared-ssh',canRememberDesktop:true};
+ window.electronAPI={invoke:async(_channel,request)=>['gmssh-pair-file','gmssh-pair-paste','gmssh-pair-text'].includes(request.type)?{status:'ok',data:{...previewData,fromCode:request.type!=='gmssh-pair-file'}}:{status:'error',message:'本页仅作模拟预览，请在增强版 GMSSH 内接入真实电脑。'}};
  installGMSSHPairing().open();
 };
 </script></html>

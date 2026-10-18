@@ -87,6 +87,7 @@ window.installGMSSHPairing = function () {
           <label><span>连接地址</span><input data-pair="target" list="gm-pair-targets" autocomplete="off" placeholder="IPv4 / IPv6 地址"><datalist id="gm-pair-targets" data-pair="targets"></datalist></label>
           <label class="gm-pair-port"><span>端口</span><input data-pair="port" type="number" readonly aria-label="SSH 端口"></label>
         </div>
+        <label class="gm-pair-remember" data-pair="auto-target-label" hidden><input data-pair="auto-target" type="checkbox">自动选择连接码中的可用地址</label>
         <label class="gm-pair-remember" data-pair="refresh-label" hidden><input data-pair="refresh" type="checkbox">更新本机保存的连接密码</label>
         <label data-pair="password-label"><span>连接密码</span><input data-pair="password" type="password" maxlength="1024" autocomplete="off" placeholder="Windows 安装时设置的密码"></label>
         <label class="gm-pair-remember" data-pair="remember-label" hidden><input data-pair="remember" type="checkbox" checked>记住桌面密码（本机钥匙串）</label>
@@ -105,6 +106,7 @@ window.installGMSSHPairing = function () {
     const coded=preview?.fromCode===true,changed=!!preview?.existing&&field('target').value.trim()!==preview.existing.target;
     const refresh=!!preview?.existing&&(coded||field('refresh').checked||changed);
     field('refresh-label').hidden=!preview?.existing||coded;
+    field('auto-target-label').hidden=!coded;
     field('password-label').hidden=coded||(!!preview?.existing&&!refresh);
     field('remember-label').hidden=(!refresh&&!!preview?.existing)||preview?.desktopAuth!=='shared-ssh'||!preview?.canRememberDesktop;
     field('password-label').querySelector('span').textContent=preview?.authorization?'独立授权凭据（也可重新粘贴完整授权码）':'连接密码';
@@ -120,6 +122,7 @@ window.installGMSSHPairing = function () {
   function showPreview(reply){
     if(reply?.status!=='ok')throw Error(reply?.message||'连接信息读取失败。');
     preview=reply.data;field('refresh').checked=false;field('password').value=field('code').value='';field('computer').textContent=preview.computer;
+    field('auto-target').checked=preview.fromCode===true;
     const authorization=preview.authorization;field('account').textContent=authorization?'独立授权 · '+authorization.controller.name:'SSH 账号 '+preview.username+' · 端口 '+preview.sshPort;field('authorization-info').hidden=!authorization;if(authorization){const names={view:'查看桌面',input:'键鼠',clipboard:'剪贴板',files:'文件读写',terminal:'终端',power:'电源'};field('authorization-info').textContent='允许：'+Object.entries(authorization.controller.permissions).filter(([,enabled])=>enabled).map(([key])=>names[key]).join('、')+'。授权长期有效，可在服务端单独撤销；最终权限以服务端当前设置为准。';}
     field('fingerprint').textContent=preview.sshHostFingerprint;
     const native=/^[a-f0-9]{32}$/.test(preview.existing?.machineId||'')?document.querySelector('[data-machine-id="'+preview.existing.machineId+'"]'):null;
@@ -144,9 +147,9 @@ window.installGMSSHPairing = function () {
   }
   async function connect(){
     if(!preview||busy)return;
-    lock(true);status('正在核对主机身份并接入，请稍候…');
+    lock(true);status(field('auto-target').checked&&preview.fromCode?'正在自动选择地址并核对主机身份，请稍候…':'正在核对主机身份并接入，请稍候…');
     try{
-      const reply=await invoke('gmssh-pair-connect',{id:preview.id,target:field('target').value,name:field('name').value,password:field('password').value,refreshPassword:!!preview.existing&&(preview.fromCode===true||field('refresh').checked),rememberDesktop:preview.desktopAuth==='shared-ssh'&&preview.canRememberDesktop===true&&field('remember').checked});
+      const reply=await invoke('gmssh-pair-connect',{id:preview.id,target:field('target').value,name:field('name').value,password:field('password').value,autoTarget:preview.fromCode===true&&field('auto-target').checked,refreshPassword:!!preview.existing&&(preview.fromCode===true||field('refresh').checked),rememberDesktop:preview.desktopAuth==='shared-ssh'&&preview.canRememberDesktop===true&&field('remember').checked});
       field('password').value='';
       if(reply?.status!=='ok')throw Error(reply?.message||'接入未完成，请重试。');
       const id=reply.data.machineId;
@@ -173,7 +176,7 @@ window.installGMSSHPairing = function () {
   panel.ondrop=async event=>{event.preventDefault();panel.classList.remove('gm-pair-dragging');if(busy)return;const files=event.dataTransfer?.files;if(files?.length!==1||!files[0].name.toLowerCase().endsWith('.json')||files[0].size>65536){status('请拖入一份不超过 64 KB 的 GMSSH 连接文件。');return;}const epoch=++sourceEpoch;try{const text=await files[0].text();if(!disposed&&epoch===sourceEpoch&&(nativeHost?.classList.contains('gm-add-windows')||dialog.open))parseText(text);}catch{if(!disposed&&epoch===sourceEpoch)status('无法读取连接文件，请重新选择。');}};
   field('manual').onclick=()=>{sourceEpoch++;preview=undefined;field('password').value='';field('preview').hidden=true;field('manual-fields').hidden=false;selectSource('manual');status('先核对主机身份，再输入密码连接。');update();field('manual-target').focus();void invoke('gmssh-pair-clear').catch(()=>{});};
   field('lookup').onclick=()=>chooseSource('gmssh-pair-manual',{computer:field('manual-computer').value,target:field('manual-target').value,port:Number(field('manual-port').value),username:field('manual-user').value,sharedPassword:field('manual-shared').checked});
-  field('target').oninput=update;field('file').onclick=()=>chooseSource('gmssh-pair-file');field('connect').onclick=connect;field('cancel').onclick=close;
+  field('target').oninput=()=>{field('auto-target').checked=false;update();};field('auto-target').onchange=update;field('file').onclick=()=>chooseSource('gmssh-pair-file');field('connect').onclick=connect;field('cancel').onclick=close;
   field('password').oninput=update;field('refresh').onchange=()=>{field('password').value='';update();if(field('refresh').checked)field('password').focus();};
   field('password').onkeydown=event=>{if(event.key==='Enter'&&!field('connect').disabled){event.preventDefault();void connect();}};
   dialog.addEventListener('cancel',event=>{event.preventDefault();close();});

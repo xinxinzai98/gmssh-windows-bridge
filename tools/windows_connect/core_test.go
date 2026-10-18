@@ -65,7 +65,47 @@ func fixture(t *testing.T) (store, *string) {
 		}
 		return nil
 	}}
+	s.ipv6LocalNetworks = func() ([]*net.IPNet, error) { return nil, nil }
 	return s, &password
+}
+
+func TestLocalIPv6UsesLiveInterfacePrefixAndDistinguishesSourceDenial(t *testing.T) {
+	s, password := fixture(t)
+	if err := s.initialize(*password); err != nil {
+		t.Fatal(err)
+	}
+	_, prefix, _ := net.ParseCIDR("2001:db8:10::1/64")
+	s.ipv6LocalNetworks = func() ([]*net.IPNet, error) { return []*net.IPNet{prefix}, nil }
+	for _, peer := range []string{"2001:db8:10::2", "2001:db8:10::abcd"} {
+		if !s.allowedPeer(net.ParseIP(peer)) {
+			t.Fatal("same-interface IPv6 rejected")
+		}
+	}
+	for _, peer := range []string{"2001:db8:11::2", "fe80::2", "::ffff:192.0.2.3", "ff02::1"} {
+		if s.allowedPeer(net.ParseIP(peer)) {
+			t.Fatal("unapproved source accepted", peer)
+		}
+	}
+	m, _ := s.meta()
+	request := httptest.NewRequest("POST", "/v1/connect", strings.NewReader(`{"schema":1}`))
+	request.RemoteAddr = "[2001:db8:11::2]:5000"
+	request.Header.Set("Authorization", "Bearer "+m.Token)
+	reply := httptest.NewRecorder()
+	s.handler().ServeHTTP(reply, request)
+	if reply.Code != 403 || !strings.Contains(reply.Body.String(), "SOURCE_DENIED") || strings.Contains(reply.Body.String(), m.Token) {
+		t.Fatal("source error is ambiguous or leaks credentials")
+	}
+	request.RemoteAddr = "[2001:db8:10::2]:5000"
+	request.Header.Set("Authorization", "Bearer incorrect")
+	reply = httptest.NewRecorder()
+	s.handler().ServeHTTP(reply, request)
+	if reply.Code != 403 || !strings.Contains(reply.Body.String(), "AUTH_FAILED") {
+		t.Fatal("credential error was not distinguished")
+	}
+	s.ipv6LocalNetworks = func() ([]*net.IPNet, error) { return nil, errors.New("unavailable") }
+	if s.allowedPeer(net.ParseIP("2001:db8:10::2")) {
+		t.Fatal("interface lookup failed open")
+	}
 }
 
 func TestLoopbackHealthChecksTheStoreWithoutLoginOrCredentialDisclosure(t *testing.T) {

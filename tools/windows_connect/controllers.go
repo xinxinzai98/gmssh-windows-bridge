@@ -589,7 +589,11 @@ func (b *controllerBroker) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	address := net.ParseIP(host)
-	if err != nil || !b.store.allowedPeer(address) || r.Header.Get("Origin") != "" || r.Method != "POST" || r.URL.RawQuery != "" || r.ContentLength < 0 || r.ContentLength > 128*1024 {
+	if err != nil || !b.store.allowedPeer(address) {
+		fail(403, "SOURCE_DENIED")
+		return
+	}
+	if r.Header.Get("Origin") != "" || r.Method != "POST" || r.URL.RawQuery != "" || r.ContentLength < 0 || r.ContentLength > 128*1024 {
 		fail(403, "ACCESS_DENIED")
 		return
 	}

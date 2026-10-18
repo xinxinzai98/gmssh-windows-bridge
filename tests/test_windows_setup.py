@@ -6,6 +6,13 @@ from pathlib import Path
 
 @unittest.skipUnless(sys.platform == 'win32', 'native Windows argument parser required')
 class WindowsSetupTests(unittest.TestCase):
+    def test_ipv6_source_rules_and_metadata_rollback_without_system_changes(self):
+        script = Path(__file__).with_name('windows-ipv6-access-checks.ps1')
+        result = subprocess.run(['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(script)],
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('PASS:', result.stdout)
+
     def test_ping_rule_ownership_rollback_and_ipv6_exports_without_system_changes(self):
         script = Path(__file__).with_name('windows-network-checks.ps1')
         result = subprocess.run(['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(script)],

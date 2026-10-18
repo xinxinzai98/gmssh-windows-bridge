@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Develop 0.4.0a25 locally: recognize live local-interface IPv6 prefixes for LAN code enrollment; retain explicit source authorization for off-link clients. Distinguish source denial from invalid credentials in both connection-code protocols.
+- Add a Windows IPv6 source-settings dialog that synchronizes protected metadata and owned, program-bound TCP 22/22257 rules, backs up settings, and rolls back partial failures. Keep cross-subnet sources opt-in.
+- Automatically probe supplied pinned IPv4/IPv6 addresses without sending credentials, retain an available original route, and preserve an explicitly edited address. Keep native device IDs and manual enrollment.
+- Refresh desktop bindings when their backend authorization token changes, preserving unchanged sessions. Accept IPv6-only code enrollment, original-card address migration and automatic desktop recovery after a normal Mac client restart on an existing same-subnet Windows installation; no extra off-link rules or password changes.
+
 - Develop 0.4.0a24 locally: add an administrator-controlled IPv4/IPv6 ping toggle. Manage only two owned ICMP echo-request rules, validate rule identity before changing either, and roll back partial failures. Installation leaves ping unchanged.
 - Include every usable IPv4 and IPv6 address in current connection exports, shared connection codes and QR codes. Export public, ULA, temporary and deprecated IPv6 addresses; omit loopback, link-local, multicast, duplicate and tentative addresses. Independent grants use the live address list while retaining the pinned device identity.
 - Compact the device workspace toolbar: dark device selector, grouped view controls, separate file/tools/history actions, icon exit controls and a narrow-window layout. Keep existing desktop and terminal sessions mounted while switching views.

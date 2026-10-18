@@ -29,7 +29,7 @@ function pythonRequest(python, request) {
     const child=spawn(python,['-m','gmssh_windows_bridge.pairing'],{env,stdio:['pipe','pipe','ignore']});
     let output='', settled=false;
     const finish=(error,value)=>{if(settled)return;settled=true;clearTimeout(timer);error?reject(error):resolve(value);};
-    const timer=setTimeout(()=>{child.kill();finish(Error('核对连接信息超时，请检查目标地址和网络连接。'));},request.operation==='redeem-code'?25000:15000);
+    const timer=setTimeout(()=>{child.kill();finish(Error('核对连接信息超时，请检查目标地址和网络连接。'));},['redeem-code','choose-target'].includes(request.operation)?25000:15000);
     child.once('error',()=>finish(Error('无法启动本地接入检查，请检查运行环境。')));
     child.stdout.on('data',data=>{output+=data.toString();if(output.length>131072){child.kill();finish(Error('连接检查返回格式无效。'));}});
     child.once('close',()=>{
@@ -270,11 +270,16 @@ class PairingManager {
     }
     throw Error('设备列表超出此预览版的接入检查范围，已停止创建新连接。');
   }
-  async connect({id,target,name,password,rememberDesktop=false,refreshPassword=false}) {
+  async connect({id,target,name,password,rememberDesktop=false,refreshPassword=false,autoTarget=false}) {
     if(this.busy)throw Error('正在接入，请勿重复提交。');
     if(!this.preview||id!==this.preview.connection.id)throw Error('请先重新导入这台电脑的连接文件。');
     let {connection,text,code}=this.preview;
     if(typeof target!=='string'||typeof name!=='string'||!name.trim()||name.length>128||/[\x00-\x1f\x7f]/.test(name))throw Error('请选择有效地址并填写设备名称。');
+    if(autoTarget===true&&code){
+      this.busy=true;
+      try{const route=await this.request({operation:'choose-target',connection:code,preferred:this.existing(connection)?.target});if(!connection.addresses.includes(route.target)||route.verified!==true)throw Error('自动选择的地址未通过主机身份核对。');target=route.target;}
+      finally{this.busy=false;}
+    }
     if(!connection.addresses.includes(target)){
       const expectedPort=connection.authorization?.port||connection.sshPort,endpoint=await this.request({operation:'endpoint',target,port:expectedPort});
       if(endpoint.port!==expectedPort)throw Error('端口与连接信息不同，请用手动填写核对该端口的主机身份。');

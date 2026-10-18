@@ -1,6 +1,6 @@
 ﻿#requires -Version 5.1
 [CmdletBinding()]
-param([ValidateSet('Tray','Start','Stop','Password','SSHPassword','Check','EnableCode','ResetCode','EnablePing','DisablePing')][string]$Action = 'Tray')
+param([ValidateSet('Tray','Start','Stop','Password','SSHPassword','Check','EnableCode','ResetCode','EnablePing','DisablePing','IPv6Access')][string]$Action = 'Tray')
 $ErrorActionPreference = 'Stop'
 $env:PSModulePath = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\Modules'
 $root = Split-Path $PSCommandPath
@@ -18,6 +18,7 @@ if ($Action -ne 'Tray') {
     if (-not $admin) { throw 'Administrator approval is required for this operation.' }
     try {
         switch ($Action) {
+            IPv6Access { . (Join-Path $root 'credential-dialog.ps1'); Show-GMSSHIPv6Access $root $dataRoot }
             EnablePing { Set-GMSSHPingAccess $true }
             DisablePing { Set-GMSSHPingAccess $false }
             Start { Start-Service RustDesk; Start-Service sshd; if ($state.unifiedPassword -and (Test-Path (Join-Path $root 'gmssh-connect.exe'))) { Register-GMSSHConnectTask -ProgramRoot $root -DataRoot $dataRoot } }
@@ -172,11 +173,15 @@ $stopButton = New-AgentButton $panel '停止后台服务' 168 511 132 30
 $checkButton = New-AgentButton $panel '接入自检' 312 511 132 30
 $closeHint = New-AgentLabel $panel '关闭后服务继续运行' 456 515 160 24
 $closeHint.ForeColor = $muted; $closeHint.TextAlign = 'MiddleRight'
-$pingStatus = New-AgentLabel $panel 'ping（IPv4 / IPv6）：正在读取…' 24 558 412 28
+$pingStatus = New-AgentLabel $panel 'ping（IPv4 / IPv6）：正在读取…' 24 558 252 28
 $pingStatus.ForeColor = $muted
+$ipv6Button = New-AgentButton $panel 'IPv6 接入' 288 552 144 34
+$ipv6Button.Visible = [bool]$state.unifiedPassword
+$ipv6Button.Add_Click({ Invoke-AgentAction IPv6Access })
 $pingButton = New-AgentButton $panel '允许 ping' 456 552 160 34
 $tooltip = New-Object Windows.Forms.ToolTip
 $tooltip.SetToolTip($pingButton,'允许任何来源向本机发送 IPv4 / IPv6 ping 回显请求。仅管理 GMSSH 自身的回显规则；实际可达性仍以控制端测试为准。')
+$tooltip.SetToolTip($ipv6Button,'局域网 IPv6 自动支持；跨网段时指定允许接入的管理端 IPv6 来源。')
 $script:lastServiceStatus = ''
 $script:lastStatusError = ''
 function Add-AgentActivity([string]$Message) {
@@ -238,7 +243,7 @@ function Invoke-AgentAction([string]$Name) {
             Refresh-Status
             return $false
         }
-        Add-AgentActivity $(switch ($Name) { EnablePing { '已允许 IPv4 / IPv6 ping 回显请求。' }; DisablePing { 'GMSSH 的 ping 回显规则已关闭。' }; Start { '启动服务操作已完成。' }; Stop { '停止服务操作已完成。' }; Check { '接入自检已完成；检查结果见自检窗口。' }; EnableCode { '长效连接码已启用。' }; ResetCode { '连接码设置窗口已关闭。' }; default { '密码窗口已关闭；修改结果见窗口提示。' } })
+        Add-AgentActivity $(switch ($Name) { IPv6Access { 'IPv6 接入设置已关闭，保存结果见设置窗口提示。' }; EnablePing { '已允许 IPv4 / IPv6 ping 回显请求。' }; DisablePing { 'GMSSH 的 ping 回显规则已关闭。' }; Start { '启动服务操作已完成。' }; Stop { '停止服务操作已完成。' }; Check { '接入自检已完成；检查结果见自检窗口。' }; EnableCode { '长效连接码已启用。' }; ResetCode { '连接码设置窗口已关闭。' }; default { '密码窗口已关闭；修改结果见窗口提示。' } })
         Refresh-Status
         return $true
     } catch {
@@ -279,6 +284,7 @@ $start = $menu.Items.Add('启动后台服务'); $start.Add_Click({ Invoke-AgentA
 $stop = $menu.Items.Add('停止后台服务'); $stop.Add_Click({ Invoke-AgentAction Stop })
 $check = $menu.Items.Add('接入自检（管理员）'); $check.Add_Click({ Invoke-AgentAction Check })
 $pingMenu = $menu.Items.Add('允许 ping')
+if ($state.unifiedPassword) { $ipv6Menu=$menu.Items.Add('IPv6 接入设置');$ipv6Menu.Add_Click({ Invoke-AgentAction IPv6Access }) }
 function Invoke-PingToggle {
     try { $ping = Get-GMSSHPingStatus; Invoke-AgentAction $(if ($ping.enabled) { 'DisablePing' } else { 'EnablePing' }) }
     catch { Add-AgentActivity 'ping 规则无法核对，未修改防火墙。' }

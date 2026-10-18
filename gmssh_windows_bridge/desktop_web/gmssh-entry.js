@@ -233,7 +233,8 @@ window.installWindowsDesktopEntry = function ({ machineId, viewerUrl, label = "W
     if (!managed) { slot.remove(); style.remove(); }
   };
   if (!managed) window.removeWindowsDesktopEntry = remove;
-  return { open, show, reserve, hide, close, remove, frame:()=>panel?.querySelector('iframe') };
+  return { open, show, reserve, hide, close, remove, frame:()=>panel?.querySelector('iframe'),
+    matches:device=>device.viewerUrl===viewerUrl&&device.accessToken===accessToken&&!!device.autoConnect===autoConnect&&(device.label??'Windows 桌面')===label };
 };
 
 window.installWindowsDesktopEntries = function (devices) {
@@ -242,6 +243,9 @@ window.installWindowsDesktopEntries = function (devices) {
   for (const [id, controller] of controllers) if (!wanted.has(id)) { controller.remove(); controllers.delete(id); }
   for (const device of devices) {
     const id=device.machineId || 'windows-desktop:' + device.card?.host;
+    // A restarted backend has a new local token even when its port is unchanged.
+    const current=controllers.get(id);
+    if(current&&!current.matches?.(device)){current.remove();controllers.delete(id);}
     if (!controllers.has(id)) controllers.set(id,window.installWindowsDesktopEntry({...device,managed:true}));
   }
   window.removeWindowsDesktopEntry = () => {

@@ -9,6 +9,8 @@ import logging
 import re
 import socket
 import sys
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import mimetypes
@@ -109,24 +111,53 @@ def inspect_connection(text):
     return result
 
 
-def probe_identity(connection, target):
+def probe_identity(connection, target, timeout=5):
     if connection.get('authorization'):
         from .controller_access import probe_authorization
-        return probe_authorization(connection, target)
+        return probe_authorization(connection, target, timeout=timeout)
     target = normalize_address(target)
     if target not in connection['addresses']:
         raise ValueError('请选择已核对连接信息中的地址。')
-    sock = socket.create_connection((target, connection["sshPort"]), timeout=5)
+    sock = socket.create_connection((target, connection["sshPort"]), timeout=timeout)
     transport = paramiko.Transport(sock)
     try:
         transport.get_security_options().key_types = ["ssh-ed25519"]
-        transport.start_client(timeout=5)
+        transport.start_client(timeout=timeout)
         actual = transport.get_remote_server_key()
         if actual.get_name() != "ssh-ed25519" or not hmac.compare_digest(actual.get_base64(), connection["sshHostPublicKey"].split()[1]):
             raise ValueError("这台电脑的 SSH 主机身份与连接文件不一致，已停止接入。")
         return {"target": target, "fingerprint": connection["sshHostFingerprint"], "verified": True}
     finally:
         transport.close()
+
+
+def choose_target(connection, preferred=None, code=None):
+    """Probe only supplied, pinned addresses. Never send a login or bearer token."""
+    def probe(target):
+        probe_identity(connection, target, timeout=2)
+        if code is not None and not connection.get('authorization'):
+            from .connection_code import _PinnedConnection
+            client = _PinnedConnection(target, code)
+            client.timeout = 2
+            try: client.connect()
+            finally: client.close()
+        return {'target': target, 'verified': True}
+    addresses = list(connection['addresses'])
+    if preferred in addresses:
+        try: return probe(preferred)
+        except (ValueError, OSError, EOFError, paramiko.SSHException): addresses.remove(preferred)
+    pool = ThreadPoolExecutor(max_workers=4)
+    pending = {pool.submit(probe, target) for target in addresses}
+    deadline = time.monotonic()+6
+    try:
+        while pending and time.monotonic() < deadline:
+            done, pending = wait(pending, timeout=max(0, deadline-time.monotonic()), return_when=FIRST_COMPLETED)
+            for future in done:
+                try: return future.result()
+                except (ValueError, OSError, EOFError, paramiko.SSHException): pass
+        raise ValueError('自动探测未找到通过主机身份核对的可用地址。请检查 SSH / 接入服务，或从列表指定 IPv6 地址重试。')
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
 
 def inspect_manual(data):
@@ -225,12 +256,23 @@ def main():
         if len(raw) > MAX_EXPORT * 2:
             raise ValueError("请求过大。")
         request = json.loads(raw, object_pairs_hook=_object)
-        if not isinstance(request, dict) or request.get("operation") not in ("inspect", "probe", "redeem-code", "endpoint", "manual", "test-login"):
+        if not isinstance(request, dict) or request.get("operation") not in ("inspect", "probe", "redeem-code", "endpoint", "manual", "test-login", "choose-target"):
             raise ValueError("无效的接入操作。")
         text = request.get('connection')
         from .connection_code import PREFIX, inspect_code, redeem_code
         from .controller_access import PREFIX as AUTHORIZATION_PREFIX, ControllerClient, inspect_authorization, metadata_connection
-        if request['operation'] == 'endpoint':
+        if request['operation'] == 'choose-target':
+            if isinstance(text,str) and text.strip().startswith(AUTHORIZATION_PREFIX):
+                code = inspect_authorization(text)
+                connection = inspect_connection(metadata_connection(code))
+            elif isinstance(text,str) and text.strip().startswith(PREFIX):
+                code = inspect_code(text)
+                connection = code['public']
+            else:
+                code = None
+                connection = inspect_connection(text)
+            result = choose_target(connection, request.get('preferred'), code)
+        elif request['operation'] == 'endpoint':
             result = parse_endpoint(request.get('target'), request.get('port', 22))
         elif request['operation'] == 'manual':
             result = inspect_manual(request)
@@ -258,9 +300,12 @@ def main():
             result = connection if request["operation"] == "inspect" else probe_identity(connection, request.get("target"))
         print(json.dumps({"ok": True, "data": result}, ensure_ascii=False))
     except ValueError as error:
-        print(json.dumps({"ok": False, "message": str(error)}, ensure_ascii=False))
+        message = {'SOURCE_DENIED':'此管理端的 IPv6 来源尚未获准。请在 Windows 服务端的「IPv6 接入」中添加管理端地址或网段，再重试。',
+                   'AUTH_FAILED':'独立授权未通过，请核对授权码是否已撤销，以及此管理端来源是否获准接入。',
+                   'REMOTE_IO':'无法连接独立授权服务，请检查 IPv6 来源范围、TCP 22257 和服务端状态。'}.get(getattr(error,'code',None),str(error))
+        print(json.dumps({"ok": False, "message": message}, ensure_ascii=False))
         return 1
-    except (OSError, paramiko.SSHException):
+    except (OSError, EOFError, paramiko.SSHException):
         print(json.dumps({"ok": False, "message": "无法核对 Windows SSH，请检查地址、端口和网络可达性。"}, ensure_ascii=False))
         return 1
     return 0

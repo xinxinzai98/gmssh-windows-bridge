@@ -272,6 +272,31 @@ func TestIndependentControllerCodesDoNotRevealMasterCredentials(t *testing.T) {
 	}
 }
 
+func TestControllerIPv6LocalPrefixStillRequiresItsCredential(t *testing.T) {
+	b, owner := brokerFixture(t)
+	_, prefix, _ := net.ParseCIDR("2001:db8:10::/64")
+	b.store.ipv6LocalNetworks = func() ([]*net.IPNet, error) { return []*net.IPNet{prefix}, nil }
+	id, token := grantFixture(t, b, owner, "IPv6 viewer", permissions{View: true})
+	for _, test := range []struct {
+		peer, token, code string
+		status            int
+	}{
+		{"2001:db8:10::2", token, "", 200},
+		{"2001:db8:11::2", token, "SOURCE_DENIED", 403},
+		{"2001:db8:10::2", "incorrect", "ACCESS_DENIED", 403},
+	} {
+		r := httptest.NewRequest("POST", "/v2/controller", strings.NewReader(`{"action":"capabilities"}`))
+		r.RemoteAddr = net.JoinHostPort(test.peer, "5000")
+		r.Header.Set("Authorization", "Bearer "+test.token)
+		r.Header.Set("X-GMSSH-Controller", id)
+		w := httptest.NewRecorder()
+		b.serve(w, r)
+		if w.Code != test.status || test.code != "" && !strings.Contains(w.Body.String(), test.code) {
+			t.Fatal("incorrect IPv6 authentication boundary", w.Code)
+		}
+	}
+}
+
 func TestGrantCodeUsesLiveIPv6AddressesWithoutReplacingDeviceIdentity(t *testing.T) {
 	b, owner := brokerFixture(t)
 	addresses := []string{"192.168.250.2", "2001:db8::10", "2001:db8::20", "fd00::30"}

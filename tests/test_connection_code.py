@@ -80,7 +80,7 @@ class CodeTests(unittest.TestCase):
                 self.end_headers()
                 result = owner.response or {'schema': 1, 'username': owner.public['username'],
                                             'fingerprint': owner.public['sshHostFingerprint'], 'password': owner.password}
-                self.wfile.write(json.dumps(result if status == 200 else {'ok': False}).encode())
+                self.wfile.write(json.dumps(result if status == 200 else (owner.response or {'ok': False,'code':'AUTH_FAILED'})).encode())
 
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         self.tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -142,6 +142,14 @@ class CodeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '失效|重置'):
             redeem_code(old, self.public['addresses'][0])
         self.assertEqual(redeem_code(encode(self.payload), self.public['addresses'][0])['password'], self.password)
+
+    def test_source_denial_is_distinct_from_an_expired_code_and_legacy_rejection(self):
+        self.status=403;self.response={'ok':False,'code':'SOURCE_DENIED'}
+        with self.assertRaisesRegex(ValueError,'IPv6 来源尚未获准'):redeem_code(encode(self.payload),self.public['addresses'][0])
+        self.response={'ok':False,'code':'AUTH_FAILED'}
+        with self.assertRaisesRegex(ValueError,'失效|重置'):redeem_code(encode(self.payload),self.public['addresses'][0])
+        self.response={'ok':False}
+        with self.assertRaisesRegex(ValueError,'旧版服务端无法区分'):redeem_code(encode(self.payload),self.public['addresses'][0])
 
     def test_changed_ssh_identity_stops_before_the_access_credential_is_sent(self):
         self.identity_mock.side_effect = ValueError('SSH identity changed')

@@ -188,6 +188,20 @@ document.querySelector('#run').onclick = async () => {
     let independentId;const previousFiles=window.gmsshFilesController;window.gmsshFilesController={open:id=>independentId=id,hide(){}};
     window.gmsshWindowsControllers.get('second-windows').close();document.querySelector('[data-gmssh-row="second-windows"] button[title="文件互传"]').click();
     assert(independentId==='second-windows'&&!document.querySelector('[data-windows-machine="second-windows"]'),'有独立文件中心时从卡片直接打开文件，不创建桌面标签');window.gmsshFilesController=previousFiles;
+    window.gmsshWindowsControllers.get('first-windows').open();
+    const retainedFrame=window.gmsshWindowsControllers.get('first-windows').frame();
+    const oldController=window.gmsshWindowsControllers.get('second-windows');oldController.open();const oldFrame=oldController.frame();
+    const renewed={...entries[1],accessToken:'x'.repeat(43)};
+    installWindowsDesktopEntries([entries[0],renewed]);
+    const renewedController=window.gmsshWindowsControllers.get('second-windows');
+    assert(renewedController!==oldController&&!oldFrame.isConnected&&window.gmsshWindowsControllers.get('first-windows').frame()===retainedFrame,'后台重启后只替换授权已变化的桌面入口，其他设备会话保留');
+    const previousAPI=window.electronAPI;let authRequest,sent;
+    window.electronAPI={invoke:async(_channel,request)=>{authRequest=request;return {status:'ok',data:{password:'synthetic-onboarding-password',remember:true}};}};
+    renewedController.open();const renewedFrame=renewedController.frame();renewedFrame.contentWindow.postMessage=(message,origin)=>{sent={message,origin};};renewedFrame.onload();await Promise.resolve();
+    assert(authRequest?.data.machineId==='second-windows'&&sent?.message.token===renewed.accessToken&&sent.message.password==='synthetic-onboarding-password'&&sent.message.remember===true,'地址迁移后的新桌面使用最新本机授权及一键接入凭据');
+    installWindowsDesktopEntries([entries[0],renewed]);
+    assert(window.gmsshWindowsControllers.get('second-windows')===renewedController&&renewedController.frame()===renewedFrame,'相同绑定再次注入保留正在使用的新桌面');
+    window.electronAPI=previousAPI;
     multi.remove();window.removeWindowsDesktopEntry();first.remove();second.remove();
     result.textContent = checks.join('\n') + '\n全部通过';
   } catch (error) { result.textContent = checks.join('\n') + '\nFAIL ' + error.message; }

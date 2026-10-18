@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import paramiko
 
-from gmssh_windows_bridge.pairing import AssetHandler, inspect_connection, inspect_manual, probe_identity, test_credentials
+from gmssh_windows_bridge.pairing import AssetHandler, inspect_connection, inspect_manual, probe_identity, test_credentials, choose_target
 
 
 def exported():
@@ -25,6 +25,30 @@ def exported():
 
 
 class PairingTests(unittest.TestCase):
+    def test_auto_address_uses_a_pinned_ipv6_when_ipv4_is_unreachable(self):
+        connection=inspect_connection(json.dumps({**exported(),'addresses':['192.0.2.42','2001:db8::42']}))
+        checked=[]
+        def probe(value,target,timeout):
+            checked.append(target)
+            self.assertIs(value,connection);self.assertEqual(timeout,2)
+            if target=='192.0.2.42':raise OSError('unreachable')
+        with patch('gmssh_windows_bridge.pairing.probe_identity',side_effect=probe):
+            result=choose_target(connection,'192.0.2.42')
+        self.assertEqual(result,{'target':'2001:db8::42','verified':True})
+        self.assertEqual(set(checked),set(connection['addresses']))
+        with patch('gmssh_windows_bridge.pairing.probe_identity') as probe:
+            self.assertEqual(choose_target(connection,'2001:db8::42')['target'],'2001:db8::42')
+            probe.assert_called_once_with(connection,'2001:db8::42',timeout=2)
+        with patch('gmssh_windows_bridge.pairing.probe_identity',side_effect=ValueError('identity mismatch')):
+            with self.assertRaisesRegex(ValueError,'主机身份'):choose_target(connection)
+
+    def test_auto_address_checks_tls_without_sending_a_bearer_or_password(self):
+        connection=inspect_connection(json.dumps({**exported(),'addresses':['2001:db8::42']}))
+        with patch('gmssh_windows_bridge.pairing.probe_identity') as ssh,patch('gmssh_windows_bridge.connection_code._PinnedConnection') as tls:
+            result=choose_target(connection,code={'certificate':'synthetic'})
+            self.assertTrue(result['verified']);ssh.assert_called_once()
+            tls.return_value.connect.assert_called_once();tls.return_value.request.assert_not_called();tls.return_value.close.assert_called_once()
+
     def test_manual_ipv6_reads_only_the_public_key_before_password_authentication(self):
         connection=inspect_connection(json.dumps(exported()))
         key=paramiko.Ed25519Key(data=base64.b64decode(connection['sshHostPublicKey'].split()[1]))
