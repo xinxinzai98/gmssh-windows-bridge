@@ -12,6 +12,7 @@ const readonlyTools = require('./readonly-tools.cjs');
 const { FileTasks } = require('./file-tasks.cjs');
 const { LinuxFiles } = require('./linux-files.cjs');
 const { Workspace } = require('./workspace.cjs');
+const { AIAccess } = require('./ai-manager.cjs');
 const config = require('./launcher-config.json');
 const backends = [];
 const stopBackends = () => backends.forEach(child => child.kill('SIGTERM'));
@@ -31,6 +32,7 @@ const backupPage = fs.readFileSync(path.join(__dirname, 'gmssh-backup.js'), 'utf
 const toolsPage = fs.readFileSync(path.join(__dirname, 'gmssh-tools.js'), 'utf8');
 const filesPage = fs.readFileSync(path.join(__dirname, 'gmssh-files.js'), 'utf8');
 const workspacePage = fs.readFileSync(path.join(__dirname, 'gmssh-workspace.js'), 'utf8');
+const aiPage = fs.readFileSync(path.join(__dirname, 'gmssh-ai.js'), 'utf8');
 const qrPage = fs.readFileSync(path.join(__dirname, 'gmssh-qr.js'), 'utf8');
 const qrDecoder = fs.readFileSync(path.join(__dirname, 'jsQR.js'), 'utf8');
 const theme = fs.readFileSync(path.join(__dirname, 'gmssh-theme.css'), 'utf8');
@@ -41,6 +43,9 @@ const toolQueries = new WeakSet();
 const fileActivity = new Map();
 let fileQuitAllowed=false,confirmingFileQuit=false,nativeFiles,linuxFiles;
 let workspace;
+let aiAccess;
+function aiManager(){return aiAccess??=new AIAccess({python:config.python,root:path.join(app.getPath('userData'),'ai-access'),clipboard});}
+app.on('will-quit',()=>aiAccess?.close());
 function workspaceState(){return workspace??=new Workspace({root:path.join(app.getPath('userData'),'workspaces')});}
 const workspaceHeartbeat=setInterval(()=>{try{workspace?.heartbeat();}catch{}},30000);workspaceHeartbeat.unref?.();
 function fileTasks(){
@@ -88,6 +93,11 @@ autoUpdater.checkForUpdates = () => {};
 autoUpdater.quitAndInstall = () => {};
 const handle = ipcMain.handle.bind(ipcMain);
 ipcMain.handle = (channel, listener) => handle(channel, channel === 'render-to-main' ? async (event, request, ...args) => {
+  if(request?.type==='gmssh-ai'){
+    if(event.sender?.getURL().split('#')[0]!==indexUrl)return {status:'error',code:'UNTRUSTED_PAGE'};
+    try{return {status:'ok',data:await aiManager().invoke(event.sender,request.data)};}
+    catch(error){return {status:'error',code:/^[A-Z_]{1,48}$/.test(error?.code)?error.code:'AI_SETUP_FAILED',message:typeof error?.message==='string'&&error.message.length<300?error.message:'AI 接入操作未完成。'};}
+  }
   if(request?.type==='gmssh-route-info'){
     if(event.sender?.getURL().split('#')[0]!==indexUrl||!Array.isArray(request.data?.targets)||request.data.targets.length>200||request.data.targets.some(value=>typeof value!=='string'||value.length>128))return {status:'error',code:'INVALID_ROUTE'};
     try{return {status:'ok',data:await pythonRequest(config.python,{operation:'route-info',targets:request.data.targets})};}catch{return {status:'error',code:'ROUTE_UNAVAILABLE'};}
@@ -224,7 +234,7 @@ app.on('browser-window-created', (_event, window) => {
   };
   contents.on('did-finish-load', () => {
     if (contents.getURL().split('#')[0] !== indexUrl) return;
-    windows.add(contents);contents.once('destroyed',()=>{windows.delete(contents);fileActivity.delete(contents);backups.get(contents)?.clear();try{workspace?.endOwner('window-'+contents.id);}catch{}});
+    windows.add(contents);contents.once('destroyed',()=>{windows.delete(contents);fileActivity.delete(contents);backups.get(contents)?.clear();aiAccess?.clear(contents);try{workspace?.endOwner('window-'+contents.id);}catch{}});
     inject(contents).catch(error => {
       dialog.showMessageBox(window, { type: 'error', message: 'Windows 桌面入口加载失败',
         detail: error instanceof Error ? error.message : '请检查 GMSSH 版本和本地启动器配置。' });
@@ -233,6 +243,7 @@ app.on('browser-window-created', (_event, window) => {
 });
 
 async function inject(contents) {
+  await contents.executeJavaScript(aiPage+'\nif(typeof installGMSSHAI==="function")installGMSSHAI('+JSON.stringify({viewerUrl})+');void 0;');
   const bindings=[...legacyBindings.filter(value=>!pairing?.records.some(record=>record.machineId===value.machineId)),...(pairing?.bindings()||[])];
   const entries=bindings.map(value=>({machineId:value.machineId??undefined,viewerUrl:value.viewerUrl,label:value.label,
     card:value.machineId?undefined:{host:value.target,name:value.tailscaleName||value.target},autoConnect:true,accessToken:value.accessToken}));

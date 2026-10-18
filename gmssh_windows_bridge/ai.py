@@ -162,13 +162,16 @@ class Registry:
         return self.public(device)
 
     def save(self, devices):
-        file = self.root/'ai-devices.json'
+        self._save_json('ai-devices.json', {'schema': 1, 'devices': devices})
+
+    def _save_json(self, name, value):
+        file = self.root/name
         if file.is_symlink():
             raise StreamError('CONFIG_UNSAFE')
         fd, temporary = tempfile.mkstemp(prefix='.ai-devices-', dir=self.root)
         try:
             with os.fdopen(fd, 'w', encoding='utf-8') as target:
-                json.dump({'schema': 1, 'devices': devices}, target, ensure_ascii=False)
+                json.dump(value, target, ensure_ascii=False)
                 target.flush(); os.fsync(target.fileno())
             os.replace(temporary, file)
         finally:
@@ -186,6 +189,96 @@ class Registry:
                 raise StreamError('DEVICE_NOT_ENABLED')
             device['allow'] = sorted(set(allow))
             self.save(devices)
+            self._invalidate_check(device_id)
+            return self.public(device)
+
+    def checks(self):
+        try:
+            value = private_json(self.root/'ai-status.json', 131072)
+        except FileNotFoundError:
+            return {}
+        if not isinstance(value, dict) or set(value) != {'schema', 'devices'} or type(value['schema']) is not int or value['schema'] != 1 or not isinstance(value['devices'], dict) or len(value['devices']) > 50:
+            raise StreamError('CONFIG_UNSAFE')
+        for device_id, result in value['devices'].items():
+            identifier(device_id)
+            if not isinstance(result, dict) or result.get('state') not in {'passed', 'partial', 'failed'} or not isinstance(result.get('checkedAt'), str) or len(result['checkedAt']) > 40 or not isinstance(result.get('code'), str) or re.fullmatch('[A-Z_]{1,48}', result['code']) is None:
+                raise StreamError('CONFIG_UNSAFE')
+            if set(result)-{'state','code','checkedAt','effective','features','transport'} or not isinstance(result.get('effective'),dict) or set(result['effective'])-PERMISSIONS or any(type(v) is not bool for v in result['effective'].values()):
+                raise StreamError('CONFIG_UNSAFE')
+            features = result.get('features')
+            if not isinstance(features,dict) or set(features)-{'durableTasks','desktopProtocol','desktopState'}:
+                raise StreamError('CONFIG_UNSAFE')
+            if any(type(v) is not bool for k,v in features.items() if k!='desktopState') or features.get('desktopState','unchecked') not in {'unchecked','ready','paused','locked','unavailable'}:
+                raise StreamError('CONFIG_UNSAFE')
+        return value['devices']
+
+    def _invalidate_check(self, device_id):
+        records = self.checks()
+        if records.pop(device_id, None) is not None:
+            self._save_json('ai-status.json', {'schema': 1, 'devices': records})
+
+    def record_check(self, device, result):
+        # This is a dated observation, never a cached permission or connection.
+        with self.lock():
+            current = next((v for v in self.devices() if v['id'] == device['id']), None)
+            if current != device:
+                return
+            records = self.checks()
+            records[device['id']] = result
+            self._save_json('ai-status.json', {'schema': 1, 'devices': records})
+
+    def credential_present(self, device):
+        reference = device['credential']
+        if reference['kind'] == 'env':
+            return bool(os.environ.get(reference['reference']))
+        if sys.platform != 'darwin':
+            return False
+        from .keychain import DesktopKeychain
+        return DesktopKeychain(reference['reference']).exists()
+
+    def replace_authorization(self, device_id, text, allow):
+        code = inspect_authorization(text)
+        public = json.loads(metadata_connection(code))
+        connection = inspect_connection(json.dumps(public))
+        identifier(device_id)
+        if connection['id'] != device_id or not set(allow) <= PERMISSIONS or 'input' in allow and 'view' not in allow:
+            raise StreamError('IDENTITY_MISMATCH')
+        with self.lock():
+            devices = self.devices()
+            device = next((v for v in devices if v['id'] == device_id), None)
+            if not device:
+                raise StreamError('DEVICE_NOT_ENABLED')
+            if device['credential']['kind'] != 'keychain':
+                raise StreamError('CREDENTIAL_FROM_ENV')
+            if sys.platform != 'darwin':
+                raise StreamError('KEYCHAIN_UNAVAILABLE')
+            from .keychain import DesktopKeychain
+            DesktopKeychain(device['credential']['reference']).save(code['controller']['token'])
+            device['connection'] = public
+            device['allow'] = sorted(set(allow))
+            if device['target'] not in connection['addresses']:
+                device['target'] = None
+            self.save(devices)
+            self._invalidate_check(device_id)
+            return self.public(device)
+
+    def update_credential(self, device_id, value):
+        bounded_text(value, 4096)
+        if not value:
+            raise StreamError('CREDENTIAL_REQUIRED')
+        with self.lock():
+            device = next((v for v in self.devices() if v['id'] == identifier(device_id)), None)
+            if device is None:
+                raise StreamError('DEVICE_NOT_ENABLED')
+            if device['connection'].get('authorization'):
+                raise StreamError('AUTHORIZATION_CODE_REQUIRED')
+            if device['credential']['kind'] != 'keychain':
+                raise StreamError('CREDENTIAL_FROM_ENV')
+            if sys.platform != 'darwin':
+                raise StreamError('KEYCHAIN_UNAVAILABLE')
+            from .keychain import DesktopKeychain
+            DesktopKeychain(device['credential']['reference']).save(value)
+            self._invalidate_check(device_id)
             return self.public(device)
 
     @staticmethod
@@ -293,6 +386,7 @@ SELECTOR = {'window': {'type': 'string', 'pattern': '^[1-9][0-9]{0,18}$'},
 TOOLS = [
     specification('devices_list', 'List only explicitly enrolled AI devices. Never connects or retrieves credentials.'),
     specification('device_context', 'Read OS, user session, shell/tool availability, disks and effective AI capabilities.', permission='inspect'),
+    specification('device_access_check', 'Verify current authentication, effective permissions, protocol and desktop readiness without running a command or taking a screenshot. This is a dated check, not a persistent connection.', permission='access'),
     specification('system_query', 'Bounded read-only process, service or Windows event query.',
                   {'tool': {'enum': ['processes', 'services', 'logs', 'log-detail']}, 'options': {'type': 'object'}}, ('tool', 'options'), 'inspect'),
     specification('powershell_run', 'Execute arbitrary PowerShell as the managed account. Controller: durable task with idempotency key. SSH: synchronous <=60 seconds. Not read-only.',
@@ -376,21 +470,58 @@ class Operations:
                 permission = tool['permission']
                 if name == 'wait_for':
                     permission = {'ui_exists': 'view', 'ui_absent': 'view', 'service_state': 'inspect', 'file_sha256': 'files'}[arguments['condition']]
+                if name == 'device_access_check':
+                    permission = None
                 device = self.device(arguments['device'], permission)
+                if name == 'device_access_check' and not device['allow']:
+                    raise StreamError('ACCESS_DENIED')
                 if name == 'desktop_act' and 'view' not in device['allow']:
                     raise StreamError('ACCESS_DENIED')
                 with self.connector(self.registry, device) as client:
                     result = self.execute(client, device, name, arguments)
+                if name == 'device_access_check':
+                    self.registry.record_check(device, result)
             reply.update(ok=True, result=result)
         except Exception as error:
             code = error.code if isinstance(error, StreamError) else 'AUTH_FAILED' if isinstance(error, paramiko.AuthenticationException) else 'PEER_CHANGED' if isinstance(error, paramiko.BadHostKeyException) else 'NOT_FOUND' if isinstance(error, FileNotFoundError) else 'ACCESS_DENIED' if isinstance(error, PermissionError) else 'INVALID_ARGUMENT' if isinstance(error, (ValueError, TypeError, KeyError, UnicodeError)) else 'CONNECTION_FAILED'
             reply['error'] = {'code': code, 'message': error_message(code)}
             if isinstance(error, StreamError) and hasattr(error, 'recovery'):
                 reply['error']['recovery'] = error.recovery
+            if name == 'device_access_check' and 'device' in locals() and device['allow']:
+                try:
+                    self.registry.record_check(device, {'state': 'failed', 'code': code, 'checkedAt': now(), 'effective': {}, 'features': {}})
+                except (OSError, ValueError):
+                    pass
         return reply
 
     def execute(self, client, device, name, args):
         controller = getattr(client, 'controller_protocol', None) == 2
+        if name == 'device_access_check':
+            policy = client.policy if controller else {'view': False, 'input': False, 'files': True, 'terminal': True}
+            protocol = client.ai_capabilities.get('aiProtocol') if controller else None
+            effective = {key: key in device['allow'] and (key == 'inspect' or policy.get(key) is True) for key in sorted(PERMISSIONS)}
+            features = {'durableTasks': controller and protocol == 1, 'desktopProtocol': controller and protocol == 1, 'desktopState': 'unchecked'}
+            code = 'PERMISSIONS_REDUCED' if any(not effective[key] for key in device['allow']) else 'OK'
+            if controller and protocol != 1 and set(device['allow']) & {'terminal', 'view', 'input'}:
+                code = 'SERVER_UPGRADE_REQUIRED'
+            if not controller and set(device['allow']) & {'view', 'input'}:
+                code = 'SERVER_UPGRADE_REQUIRED'
+            if controller and protocol == 1 and effective['view']:
+                try:
+                    context = client.call('ai-desktop', args={'operation': 'context'})
+                    if type(context.get('paused')) is not bool or type(context.get('unlocked')) is not bool:
+                        raise StreamError('INVALID_RESPONSE')
+                    features['desktopState'] = 'paused' if context['paused'] else 'ready' if context['unlocked'] else 'locked'
+                    if features['desktopState'] != 'ready' and 'input' in device['allow'] and code == 'OK':
+                        code = 'AI_PAUSED' if context['paused'] else 'DESKTOP_LOCKED'
+                except StreamError as error:
+                    if error.code not in {'DESKTOP_LOCKED', 'DESKTOP_WORKER_UNAVAILABLE', 'NO_INTERACTIVE_SESSION', 'DESKTOP_BUSY'}:
+                        raise
+                    features['desktopState'] = 'locked' if error.code == 'DESKTOP_LOCKED' else 'unavailable'
+                    if code == 'OK':
+                        code = error.code
+            return {'state': 'passed' if code == 'OK' else 'partial', 'code': code, 'checkedAt': now(),
+                    'effective': effective, 'features': features, 'transport': 'controller' if controller else 'ssh'}
         if name == 'device_context':
             if controller:
                 if client.ai_capabilities.get('aiProtocol') == 1:
@@ -498,6 +629,20 @@ class Operations:
 
 def error_message(code):
     return {'DEVICE_NOT_ENABLED': '该设备未启用 AI 接入。', 'ACCESS_DENIED': '当前本机或服务端授权不允许此操作。',
+            'DEVICE_EXISTS': '这个授权已添加，请选择更新已有授权或在设备列表调整权限。',
+            'IDENTITY_MISMATCH': '授权身份与原设备不一致，原配置已保留。',
+            'CREDENTIAL_FROM_ENV': '连接凭据由运行环境提供，请在该环境中更新。',
+            'AUTHORIZATION_CODE_REQUIRED': '独立授权请重新粘贴服务端的完整授权码。',
+            'ENV_FORWARDING_REQUIRED': '此配置使用环境变量，请复制 Codex TOML 配置以转发变量名称。',
+            'AUTH_FAILED': '连接凭据未通过验证，独立授权可能已被撤销。',
+            'CONNECTION_FAILED': '当前未能连通设备，请检查网络和服务状态后重试。',
+            'PEER_CHANGED': '主机身份与保存的记录不一致，已停止连接。',
+            'PERMISSIONS_REDUCED': '连接已验证，部分所选操作尚未获得服务端授权。',
+            'DESKTOP_WORKER_UNAVAILABLE': '桌面组件未运行，请在 Windows 登录后打开 GMSSH 托盘。',
+            'NO_INTERACTIVE_SESSION': 'Windows 当前没有可用的交互桌面会话。',
+            'DESKTOP_BUSY': '桌面正被另一个操作使用，请稍后重试。',
+            'MCP_VERSION_MISMATCH': '本机 Python 与应用组件版本不一致，请更新运行环境。',
+            'MCP_CHECK_FAILED': 'MCP 启动检查未通过，请先准备 AI 组件再重试。',
             'CREDENTIAL_REQUIRED': '请由用户在 CLI 接入流程设置凭据；无需向 AI 提供密码。',
             'SERVER_UPGRADE_REQUIRED': '该能力需要新版 Windows 服务端与独立授权；不会自动升级设备。',
             'CONFIG_UNSAFE': 'AI 配置文件格式、所有者或访问权限不符合要求。',
@@ -535,7 +680,12 @@ def main(argv=None):
         sub = commands.add_parser(name); sub.add_argument('device'); sub.add_argument('task_id'); sub.add_argument('--offset', type=int, default=0)
     commands.add_parser('tools', help='Print shared tool schemas')
     commands.add_parser('mcp', help='Run official MCP SDK over stdio; no TCP listener')
-    commands.add_parser('mcp-config', help='Print a portable MCP client configuration; never edits client settings')
+    config = commands.add_parser('mcp-config', help='Print MCP configuration; never edits client settings')
+    config.add_argument('--format', choices=['json', 'codex', 'codex-cli'], default='json')
+    diagnose = commands.add_parser('doctor', help='Check local configuration and components without contacting devices')
+    diagnose.add_argument('--check-mcp', action='store_true')
+    credential = commands.add_parser('credential', help='User-operated update of a saved SSH password')
+    credential.add_argument('device')
     args = parser.parse_args(argv)
     registry = Registry(args.root)
     try:
@@ -543,7 +693,19 @@ def main(argv=None):
             from .ai_mcp import main as serve
             return serve(registry)
         if args.command == 'mcp-config':
-            result = {'mcpServers': {'gmssh': {'command': sys.executable, 'args': ['-m', 'gmssh_windows_bridge.ai', '--root', str(registry.root), 'mcp']}}}
+            from .ai_setup import mcp_configuration
+            content = mcp_configuration(registry, args.format)
+            if args.format != 'json':
+                print(content)
+                return 0
+            result = json.loads(content)
+        elif args.command == 'doctor':
+            from .ai_setup import doctor
+            result = doctor(registry, args.check_mcp)
+            print(json.dumps(result, ensure_ascii=False))
+            return 0 if result['ready'] else 1
+        elif args.command == 'credential':
+            result = registry.update_credential(args.device, getpass.getpass('当前 SSH 连接密码（仅更新本机钥匙串）：'))
         elif args.command == 'tools':
             result = {'tools': [{k: v for k, v in tool.items() if k not in {'permission', 'mutates'}} for tool in TOOLS]}
         elif args.command == 'enroll':

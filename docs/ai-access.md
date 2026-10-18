@@ -1,8 +1,22 @@
-# AI 接入：CLI、MCP 与第一批操作能力
+# AI 接入：管理界面、CLI 与 MCP
 
-0.4.0a27 开发候选增加 `gmssh-ai`。CLI 与 MCP 共用操作实现，复用 SSH 或固定证书的 HTTPS 独立授权，不增加 Windows 网络监听端口。AI 设备名单单独启用，不自动读取 GMSSH 机器数据库或导出其中的密码。
+0.4.0a27 增加 `gmssh-ai`，0.4.0a28 控制端候选增加图形化接入与状态检查，CLI/MCP 共用 18 个工具。复用 SSH 或固定证书的 HTTPS 独立授权，不增加 Windows 网络监听端口。AI 设备名单单独启用，不自动读取 GMSSH 机器数据库或导出其中的密码。
 
 本轮只在临时环境、回环合成服务和临时文件中验证。没有操作 A4，没有切换当前 Mac 客户端。Windows UIA 执行器、托盘暂停和原生输入仍需另行实机验收；交叉编译不等于桌面实测。
+
+## 管理端接入面板（0.4a28）
+
+首页工具栏点击“AI 接入”，依次完成：
+
+1. 在“添加授权”粘贴 Windows 托盘创建的 `GMSSH-AUTH2.` 独立授权码，核对电脑、地址和主机身份，选择本机允许的能力。默认仅设备信息；选择桌面操作时自动同时选择查看桌面。
+2. 保存后在“设备与权限”点击“检查接入”。保存配置不显示为已连接；检查返回真实授权范围、协议与桌面就绪/锁定/暂停等状态，并保留检查时间。该检查不运行命令、不截图，也不验证任意命令是否能够成功执行。
+3. 在“接入 AI 客户端”准备所需组件、检查 MCP 启动，再复制通用 JSON、Codex TOML 或 Codex 添加命令。此处不自动修改 AI 客户端配置。组件准备仅安装固定范围的可选 MCP 依赖到该 GMSSH 的 Python 环境，需要联网。
+
+面板绑定当前管理端用户目录下的 `ai-access/`；复制的配置和 CLI 命令自动带上这个目录。独立 CLI 默认目录保持原样，操作图形面板配置时应使用复制内容中的 `--root`，避免混用两个配置目录。
+
+授权码只在密码输入框或主进程中暂存。预览只返回公开身份；保存时网页发送一次性的预览编号，关闭或保存后清除暂存。更新已有授权时必须保持同一设备和授权身份，保留原设备条目；换一个授权身份应另行添加。已有 SSH 设备可更新本机钥匙串密码，Windows 账号密码不变。
+
+本机“停用”阻止新的 AI 操作，不承诺取消已经在远端执行的任务。需要时先单独取消任务，或在 Windows 托盘撤销独立授权。修改本机权限或凭据会使此前检查结果失效；检查结果始终是带时间的观察，后续操作仍重新认证和核对实时权限。
 
 ## 安装和启用
 
@@ -51,6 +65,19 @@ gmssh-ai mcp-config
 
 输出标准 `mcpServers` 配置，使用当前 Python 绝对路径及 `-m gmssh_windows_bridge.ai ... mcp`。自行填入支持 stdio MCP 的客户端；命令不会修改任何客户端设置。独立配置目录可用 `--root /path/to/private-ai`，该目录必须仅当前用户可访问。
 
+0.4a28 还支持以下命令：
+
+```bash
+gmssh-ai doctor --check-mcp
+gmssh-ai mcp-config --format codex
+gmssh-ai mcp-config --format codex-cli
+gmssh-ai credential DEVICE_ID
+```
+
+`doctor` 只检查本机配置、凭据是否存在和 MCP 工具发现，不连接设备。`credential` 由用户在隐藏输入中更新保存的现有 SSH 密码；独立授权请在面板重新粘贴完整授权码。配置导出不会读取或写入真实凭据值。
+
+Codex TOML 使用 `[mcp_servers.gmssh]`、`command` 和 `args`；需要环境变量的设备仅转发 `env_vars` 名称。格式依据 [OpenAI 官方 MCP 配置说明](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)与本机 CLI 帮助核对。使用环境变量时请选择 TOML；通用客户端的环境变量传递方式由其自身决定，不在 JSON 中填入密码。添加命令使用 POSIX shell 引号规则，Windows 可直接使用 TOML/JSON 配置。
+
 官方 SDK 处理初始化、工具发现、参数校验和结构化结果。stdout 只承载 MCP，诊断写 stderr。截图通过 MCP image 返回，不在结构化结果中重复大段 base64。
 
 ## 工具
@@ -59,6 +86,7 @@ gmssh-ai mcp-config
 |---|---|---|
 | `devices_list` | 已明确启用的设备；不联网、不读凭据 | 无 |
 | `device_context` | 系统、Shell/基础工具、磁盘、桌面状态与有效能力 | `inspect`，桌面状态另需 `view` |
+| `device_access_check` | 认证、有效权限、协议与桌面状态；结果有检查时间，不运行命令或截图 | 至少启用一项本机能力 |
 | `system_query` | 进程、服务、限时 Windows 事件日志 | `inspect` |
 | `powershell_run` | 任意 PowerShell；独立授权返回持久任务编号 | `terminal` |
 | `task_get` / `task_cancel` / `task_forget` | 分页输出、取消、清理结束任务 | `terminal` |

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Develop controller 0.4.0a28 locally: add an AI access panel for masked authorization preview, explicit permissions, same-identity credential refresh, local disable, current access checks, optional SDK preparation, stdio self-test and configuration copy. Keep setup actions outside MCP and never read the vendor credential database.
+- Add a dated `device_access_check` tool, distinguish effective grants from desktop pause/lock/worker readiness, invalidate old checks after configuration changes, and keep disabled devices off the network. Add local-only `doctor`, user-operated SSH credential refresh and Codex TOML/CLI formats without exporting credential values. Existing Windows a27 protocol remains compatible; no real device operations or application switch.
+
 - Develop 0.4.0a27 locally: add opt-in `gmssh-ai` CLI and official-SDK stdio MCP over shared bounded operations, pinned existing SSH/HTTPS transports, public device metadata and Keychain/environment credential references. Do not read the vendor machine credential database or open another Windows network listener.
 - Add environment snapshots, fixed system queries, controller-owned encrypted command jobs with exit codes/pagination/idempotency/cancel/reopen lookup, semantic UIA observations and target-bound actions, condition waits, and bounded text search/read/diff/edit/backup restore.
 - Run UIA in a tray-owned interactive user worker over a local ACL-protected named pipe, with stale-target checks, Unicode input, a user pause menu and a provider watchdog. Package the helper/scripts and include them in transactional upgrades. Keep Windows native UI acceptance pending; no A4 operations or Mac application switch in this round.

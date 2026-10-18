@@ -44,6 +44,7 @@ async function launch({ monitoring = true, failure, terminal = false, keychain =
       if (name === 'node:fs') return { readFileSync: () => '/* synthetic page entry */' };
       if (name === './launcher-config.json') return config;
       if (name === './device-backup.cjs') return require('../gmssh_windows_bridge/device-backup.cjs');
+      if (name === './ai-manager.cjs') return require('../gmssh_windows_bridge/ai-manager.cjs');
       if (name === './file-tasks.cjs') return nativeTransfers?{FileTasks:class {activeCount(){return nativeActive;}async invoke(action,id,data){nativeCalls.push({action,id,data});if(action==='pick-upload')nativeActive=1;return action==='hello'?{protocol:2}:{};}async shutdown(){nativeShutdowns++;nativeActive=0;this.closed=true;}}}:require('../gmssh_windows_bridge/file-tasks.cjs');
       if (name === './linux-files.cjs') return require('../gmssh_windows_bridge/linux-files.cjs');
       if (name === './workspace.cjs') return recordHistory?{Workspace:class{event(owner,data){history.push({owner,data});}endOwner(owner){history.push({ended:owner});}heartbeat(){}}}:require('../gmssh_windows_bridge/workspace.cjs');
@@ -76,6 +77,12 @@ test('route classification rejects untrusted pages and oversized input before sp
  const result=await launch();result.ipcMain.handle('render-to-main',async()=>({status:'vendor'}));const handler=result.handlers.get('render-to-main'),before=result.children.length;
  assert.equal((await handler({sender:{getURL:()=> 'https://example.com/'}},{type:'gmssh-route-info',data:{targets:['192.0.2.42']}})).status,'error');
  assert.equal((await handler({sender:{getURL:()=> 'file:///synthetic/app.asar/dist/index.html'}},{type:'gmssh-route-info',data:{targets:Array(201).fill('192.0.2.42')}})).status,'error');assert.equal(result.children.length,before);result.app.emit('will-quit');
+});
+
+test('AI setup rejects untrusted pages and caller-controlled commands before spawning',async()=>{
+ const result=await launch();result.ipcMain.handle('render-to-main',async()=>({status:'vendor'}));const handler=result.handlers.get('render-to-main'),before=result.children.length;
+ const denied=await handler({sender:{getURL:()=> 'https://example.com/'}},{type:'gmssh-ai',data:{action:'doctor',data:{}}});assert.equal(denied.code,'UNTRUSTED_PAGE');
+ const invalid=await handler({sender:{getURL:()=> 'file:///synthetic/app.asar/dist/index.html'}},{type:'gmssh-ai',data:{action:'doctor',data:{command:'unexpected'}}});assert.equal(invalid.code,'INVALID_ARGUMENT');assert.equal(result.children.length,before);result.app.emit('will-quit');
 });
 
 test('starts one shared SSH bridge, waits for both listeners and keeps monitoring read-only', async () => {
