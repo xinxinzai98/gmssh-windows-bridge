@@ -87,12 +87,23 @@ def transfer(value):
     if value.get('kind')=='commit':
         from .local_commit import commit
         return commit(value,prepared,emit,check,snapshot,hash_fd)
-    peer=Peer(value)
+    if 'ssh' in value:
+        from .linux_files import LinuxPeer
+        peer=LinuxPeer(value, inspect=value.get('kind')=='inspect-ssh')
+    else:
+        peer=Peer(value)
     try:
+        if value.get('kind')=='inspect-ssh':
+            return {'trust':peer.trust}
         identity=peer.call('peer',{'expected':value.get('peer')})
         if identity.get('protocol')!=1:raise StreamError('PROTOCOL_UNSUPPORTED')
         host=identity['peer'];kind=value['kind']
         if kind=='probe':return {'peer':host}
+        if kind=='list' and 'ssh' in value:return peer.listing(value['remote'])
+        if kind=='fs-mkdir' and 'ssh' in value:
+            target=peer.stream.path(value['remote']);existed=peer.stream.exists(target) is not None
+            peer.call('mkdir',{'path':target,'peer':host})
+            return {'path':target,'created':not existed}
         if kind=='walk':return peer.call('walk',{'path':value['remote'],'peer':host})
         if kind=='mkdir':return peer.call('mkdir',{'path':value['remote'],'peer':host})
         base={'path':value['remote'],'peer':host,'token':value['partToken']}
@@ -151,8 +162,8 @@ def main():
         STOPPED=True
     signal.signal(signal.SIGTERM,stop)
     try:
-        raw=sys.stdin.buffer.readline(8193)
-        if len(raw)>8192:raise StreamError('INVALID_TRANSFER')
+        raw=sys.stdin.buffer.readline(4*1024*1024+1)
+        if len(raw)>4*1024*1024:raise StreamError('INVALID_TRANSFER')
         result=transfer(json.loads(raw))
         peak=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss if resource else 0
         emit(event='done',result=result,peakRssBytes=int(peak if sys.platform=='darwin' else peak*1024))

@@ -44,3 +44,9 @@ startup-status.json
 connect-meta.dat
 connect-password.dat
 connect-identity.dat
+file-places.json
+
+linux-host-pins.json
+workspace-history.json
+controllers.dat
+controller-connection.json

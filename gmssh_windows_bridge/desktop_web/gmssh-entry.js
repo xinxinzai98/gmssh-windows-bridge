@@ -145,12 +145,34 @@ window.installWindowsDesktopEntry = function ({ machineId, viewerUrl, label = "W
     document.documentElement.removeAttribute("data-windows-desktop-active");
   }
   function close() {
+    window.gmsshWorkspaceController?.closed(boundId);
     const active = panel && !panel.hidden;
     panel?.remove(); panel = undefined;
     tab?.remove(); tab = undefined;
     if (active) { document.documentElement.removeAttribute("data-windows-desktop-active"); document.querySelector(".tab-chip--home")?.click(); }
   }
-  function open() {
+  function reserve(){
+    if(tab)return;
+      tab = document.createElement("div");
+      tab.className = "gmssh-windows-tab";
+      const select = document.createElement("button");
+      select.type = "button";
+      select.textContent = label;
+      const icon = document.createElement('img'); icon.src = windowsIcon; icon.alt = ''; select.prepend(icon);
+      select.setAttribute("role", "tab");
+      select.setAttribute("aria-controls", managed?'gmssh-windows-panel-'+boundId:'gmssh-windows-panel');
+      select.addEventListener("click", open);
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "close";
+      remove.textContent = "×";
+      remove.setAttribute("aria-label", "关闭 " + label);
+      remove.title = "关闭桌面并断开连接";
+      remove.addEventListener("click", close);
+      tab.append(select, remove);
+      slot.append(tab);
+  }
+  function show() {
     const existing = !!panel;
     window.gmsshFilesController?.hide();
     if (managed) for (const controller of window.gmsshWindowsControllers?.values() || []) controller.hide();
@@ -179,26 +201,7 @@ window.installWindowsDesktopEntry = function ({ machineId, viewerUrl, label = "W
     }
     Object.assign(panel.style, { position: "fixed", inset: "48px 0 0", zIndex: "2147483000", background: "#13181f", border: "0", borderRadius: "0" });
     Object.assign(panel.querySelector("iframe").style, { display: "block", height: "100%", width: "100%", border: "0" });
-    if (!tab) {
-      tab = document.createElement("div");
-      tab.className = "gmssh-windows-tab";
-      const select = document.createElement("button");
-      select.type = "button";
-      select.textContent = label;
-      const icon = document.createElement('img'); icon.src = windowsIcon; icon.alt = ''; select.prepend(icon);
-      select.setAttribute("role", "tab");
-      select.setAttribute("aria-controls", panel.id);
-      select.addEventListener("click", open);
-      const remove = document.createElement("button");
-      remove.type = "button";
-      remove.className = "close";
-      remove.textContent = "×";
-      remove.setAttribute("aria-label", "关闭 " + label);
-      remove.title = "关闭桌面并断开连接";
-      remove.addEventListener("click", close);
-      tab.append(select, remove);
-      slot.append(tab);
-    }
+    reserve();
     panel.hidden = false;
     tab.classList.add("active");
     tab.querySelector('[role="tab"]').setAttribute("aria-selected", "true");
@@ -206,6 +209,7 @@ window.installWindowsDesktopEntry = function ({ machineId, viewerUrl, label = "W
     mountTab();
     if (existing && autoConnect) panel.querySelector('iframe').contentWindow?.postMessage({type:'gmssh-desktop-tool',tool:'reconnect'},url.origin);
   }
+  function open(){if(managed&&window.gmsshWorkspaceController)return window.gmsshWorkspaceController.open(boundId,'desktop');return show();}
   function click(event) {
     const target = event.target instanceof Element ? event.target : undefined;
     if (target?.closest(".tabs-container .tab-chip") && !target.closest(".tab-chip__close")) {
@@ -229,7 +233,7 @@ window.installWindowsDesktopEntry = function ({ machineId, viewerUrl, label = "W
     if (!managed) { slot.remove(); style.remove(); }
   };
   if (!managed) window.removeWindowsDesktopEntry = remove;
-  return { open, hide, close, remove, frame:()=>panel?.querySelector('iframe') };
+  return { open, show, reserve, hide, close, remove, frame:()=>panel?.querySelector('iframe') };
 };
 
 window.installWindowsDesktopEntries = function (devices) {

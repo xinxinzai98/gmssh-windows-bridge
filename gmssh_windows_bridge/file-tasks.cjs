@@ -3,11 +3,13 @@ const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypt
 const {spawn}=require('node:child_process');
 const MAX_SIZE=1024**4,MAX_JOBS=2000,ACTIVE=new Set(['queued','running','committing']);
 const HEX=/^[a-f0-9]{64}$/,ID=/^[a-f0-9]{32}$/i,PEER=/^SHA256:[A-Za-z0-9+/]{43}$/;
+const MAX_PLACES=12,MAX_PLACE_DEVICES=200,MAX_PLACE_BYTES=16*1024**2;
 const unsigned=value=>BigInt.asUintN(64,BigInt(value)).toString();
 const fail=code=>Object.assign(Error(code),{code});
-function name(value){if(typeof value!=='string'||!value||value.length>255||value==='.'||value==='..'||/[<>:"/\\|?*\x00-\x1f\x7f]/.test(value)||/[. ]$/.test(value)||/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(value))throw fail('INVALID_NAME');return value;}
-function remote(value){if(typeof value!=='string'||value.length>1024||!/^[A-Za-z]:\//.test(value))throw fail('INVALID_PATH');const parts=value.slice(3).split('/').filter(Boolean);parts.forEach(name);return value[0].toUpperCase()+':/'+parts.join('/');}
-function relative(value){if(typeof value!=='string'||value.split('/').length>32)throw fail('INVALID_NAME');return value.split('/').map(name).join('/');}
+function name(value,posix=false){if(typeof value!=='string'||!value||value.length>255||value==='.'||value==='..'||/[\/\x00-\x1f\x7f\ud800-\udfff]/u.test(value)||!posix&&(/[<>:"\\|?*]/.test(value)||/[. ]$/.test(value)||/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(value)))throw fail('INVALID_NAME');return value;}
+function remote(value){if(typeof value!=='string'||value.length>1024||!(/^[A-Za-z]:\//.test(value)||value.startsWith('/')))throw fail('INVALID_PATH');const posix=value.startsWith('/'),parts=value.slice(posix?1:3).split('/').filter(Boolean);parts.forEach(part=>name(part,posix));return (posix?'/':value[0].toUpperCase()+':/')+parts.join('/');}
+function relative(value,posix=false){if(typeof value!=='string'||value.split('/').length>32)throw fail('INVALID_NAME');return value.split('/').map(part=>name(part,posix)).join('/');}
+const connection=b=>b.ssh?{ssh:b.ssh}:{url:b.viewerUrl,token:b.accessToken};
 function size(value){if(!Number.isSafeInteger(value)||value<0||value>MAX_SIZE)throw fail('TRANSFER_LIMIT');return value;}
 function proof(fd){const s=fs.fstatSync(fd,{bigint:true});if(!s.isFile())throw fail('UNSUPPORTED_FILE');return {size:size(Number(s.size)),modifiedNs:s.mtimeNs.toString(),dev:unsigned(s.dev),ino:unsigned(s.ino)};}
 function openFile(file,flags){const s=fs.lstatSync(file);if(!s.isFile()||s.isSymbolicLink())throw fail('UNSUPPORTED_FILE');return fs.openSync(file,flags|(fs.constants.O_NOFOLLOW||0));}
@@ -18,6 +20,16 @@ function closeGrant(fd){if(fd>=0){try{fs.closeSync(fd);}catch{ /* Content flush/
 function sameFile(a,b){return !!a&&!!b&&a.dev===b.dev&&a.ino===b.ino;}
 function errorCode(error){if(['ENODEV','ENXIO','ESTALE','EIO','ENOTCONN','ETIMEDOUT','ENOENT'].includes(error.code))return 'VOLUME_UNAVAILABLE';if(error.code==='EROFS')return 'READ_ONLY_VOLUME';if(error.code==='EFBIG')return 'FILE_TOO_LARGE';return ['ENOTSUP','EOPNOTSUPP','EXDEV'].includes(error.code)?'COMMIT_UNSUPPORTED':['ENOSPC','EDQUOT'].includes(error.code)?'DISK_FULL':['EACCES','EPERM'].includes(error.code)?'ACCESS_DENIED':error.code==='EEXIST'?'CONFLICT':error.code||'TRANSFER_IO';}
 function atomic(file,value){const temp=file+'.'+crypto.randomBytes(8).toString('hex')+'.tmp';let fd;try{fd=fs.openSync(temp,'wx',0o600);fs.writeFileSync(fd,JSON.stringify(value));fs.fsyncSync(fd);fs.closeSync(fd);fd=undefined;fs.renameSync(temp,file);const parent=fs.openSync(path.dirname(file),'r');try{fs.fsyncSync(parent);}finally{fs.closeSync(parent);}}finally{if(fd!==undefined)fs.closeSync(fd);if(fs.existsSync(temp))fs.unlinkSync(temp);}}
+function placeLabel(value){if(typeof value!=='string'||!value.trim()||value.length>80||/[\x00-\x1f\x7f]/.test(value))throw fail('INVALID_PLACE');return value.trim();}
+function validPlaces(value){
+  if(!value||value.schema!==1||Object.keys(value).sort().join()!=='devices,schema'||!value.devices||typeof value.devices!=='object'||Array.isArray(value.devices)||Object.keys(value.devices).length>MAX_PLACE_DEVICES)throw fail('PLACES_INVALID');
+  for(const [id,record] of Object.entries(value.devices)){
+    if(!ID.test(id)||!record||Object.keys(record).sort().join()!=='items,peer'||!PEER.test(record.peer)||!Array.isArray(record.items)||!record.items.length||record.items.length>MAX_PLACES)throw fail('PLACES_INVALID');
+    for(const item of record.items)if(!item||Object.keys(item).sort().join()!=='label,path'||remote(item.path)!==item.path||placeLabel(item.label)!==item.label)throw fail('PLACES_INVALID');
+    if(new Set(record.items.map(item=>item.path)).size!==record.items.length)throw fail('PLACES_INVALID');
+  }
+  return value.devices;
+}
 function validJob(j){
   if(!j||!Number.isSafeInteger(j.id)||j.id<1||!ID.test(j.machineId)||!ID.test(j.partToken)||!['upload','download','directory'].includes(j.kind)||!['queued','running','committing','paused','done','failed','cancelled'].includes(j.status)||typeof j.name!=='string'||j.name.length>1024||!j.local||typeof j.local!=='object'||j.peer!==null&&!PEER.test(j.peer)||j.sha256!==null&&!HEX.test(j.sha256))throw fail('JOURNAL_INVALID');
   remote(j.remote);size(j.size);size(j.bytes);if(j.bytes>j.size)throw fail('JOURNAL_INVALID');
@@ -32,9 +44,10 @@ function validJob(j){
 }
 
 class FileTasks {
-  constructor({root,python,resolveBinding,pickOpen,pickSave,spawnWorker=spawn}){
-    Object.assign(this,{root,python,resolveBinding,pickOpen,pickSave,spawnWorker});this.jobs=[];this.next=1;this.grants=new Map();this.queries=new Set();this.version=0;this.closed=false;this.dialogBusy=false;
+  constructor({root,python,resolveBinding,pickOpen,pickSave,spawnWorker=spawn,onSession}){
+    Object.assign(this,{root,python,resolveBinding,pickOpen,pickSave,spawnWorker,onSession});this.jobs=[];this.next=1;this.grants=new Map();this.queries=new Set();this.version=0;this.closed=false;this.dialogBusy=false;
     this.journal=path.join(root,'transfer-journal.json');
+    this.placesFile=path.join(root,'file-places.json');
     try{
       if(fs.existsSync(root)&&(!fs.lstatSync(root).isDirectory()||fs.lstatSync(root).isSymbolicLink()))throw fail('JOURNAL_INVALID');
       fs.mkdirSync(root,{recursive:true,mode:0o700});fs.chmodSync(root,0o700);
@@ -47,6 +60,38 @@ class FileTasks {
     }catch{this.jobs=[];this.readyError='JOURNAL_INVALID';}
   }
   save(){if(this.readyError)throw fail(this.readyError);atomic(this.journal,{schema:1,next:this.next,jobs:this.jobs});this.version++;}
+  readPlaces(){
+    if(this.placesError)throw fail(this.placesError);if(this.placeRecords)return this.placeRecords;
+    let fd;
+    try{
+      let records={};
+      try{const info=fs.lstatSync(this.placesFile);if(!info.isFile()||info.isSymbolicLink()||info.size>MAX_PLACE_BYTES)throw fail('PLACES_INVALID');fd=fs.openSync(this.placesFile,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW||0)|(fs.constants.O_NONBLOCK||0));}catch(error){if(error.code!=='ENOENT')throw error;}
+      if(fd!==undefined){const info=fs.fstatSync(fd);if(!info.isFile()||info.size>MAX_PLACE_BYTES)throw fail('PLACES_INVALID');const content=fs.readFileSync(fd,'utf8');if(Buffer.byteLength(content)>MAX_PLACE_BYTES)throw fail('PLACES_INVALID');records=validPlaces(JSON.parse(content));}
+      this.placeRecords=records;return records;
+    }catch{this.placesError='PLACES_INVALID';throw fail(this.placesError);}finally{if(fd!==undefined)fs.closeSync(fd);}
+  }
+  writePlaces(records){
+    try{const value={schema:1,devices:records};if(Buffer.byteLength(JSON.stringify(value))>MAX_PLACE_BYTES)throw fail('PLACES_LIMIT');atomic(this.placesFile,value);this.placeRecords=records;}
+    catch(error){throw fail(error.code==='PLACES_LIMIT'?'PLACES_LIMIT':'PLACES_WRITE_FAILED');}
+  }
+  async places(machineId,data){
+    if(!['list','add','remove','open'].includes(data.op))throw fail('INVALID_PLACE');
+    const allowed={list:[],add:['path','label'],remove:['path'],open:['path']}[data.op];
+    if(!allowed||Object.keys(data).some(key=>key!=='op'&&!allowed.includes(key)))throw fail('INVALID_PLACE');
+    let records=this.readPlaces(),record=records[machineId];
+    if(data.op==='list')return {items:(record?.items||[]).map(item=>({...item})),maximum:MAX_PLACES};
+    const target=remote(data.path);
+    if(data.op==='remove'){const items=(record?.items||[]).filter(item=>item.path!==target);const next={...records};if(items.length)next[machineId]={peer:record.peer,items};else delete next[machineId];this.writePlaces(next);return {items:items.map(item=>({...item})),maximum:MAX_PLACES};}
+    if(data.op==='open'){
+      if(!record?.items.some(item=>item.path===target))throw fail('PLACE_NOT_FOUND');
+      const result=await this.probe(machineId,record.peer);if(result.peer!==record.peer)throw fail('PEER_CHANGED');if(this.closed)throw fail('MANAGER_CLOSED');return {path:target};
+    }
+    const label=placeLabel(data.label),result=await this.probe(machineId,record?.peer||null);if(!PEER.test(result.peer))throw fail('INVALID_RESPONSE');if(this.closed)throw fail('MANAGER_CLOSED');
+    // Another window may have changed the collection while identity was being checked.
+    records=this.readPlaces();record=records[machineId];if(record&&record.peer!==result.peer)throw fail('PEER_CHANGED');
+    const items=[...(record?.items||[])],index=items.findIndex(item=>item.path===target);if(index<0){if(items.length>=MAX_PLACES||!record&&Object.keys(records).length>=MAX_PLACE_DEVICES)throw fail('PLACES_LIMIT');items.push({path:target,label});}else items[index]={path:target,label};
+    this.writePlaces({...records,[machineId]:{peer:result.peer,items}});return {items:items.map(item=>({...item})),maximum:MAX_PLACES};
+  }
   activeCount(){return this.jobs.filter(j=>ACTIVE.has(j.status)).length;}
   list(machineId){return {version:this.version,jobs:this.jobs.filter(j=>!machineId||j.machineId===machineId).map(j=>({id:j.id,machineId:j.machineId,device:j.device,name:j.name,kind:j.kind,status:j.status,bytes:j.bytes,size:j.size,phase:j.phase||'',copyBytes:j.copyBytes||0,code:j.code||'',sha256:j.status==='done'?j.sha256:null,started:j.started||0,createdAt:j.createdAt,source:j.kind==='download'?j.remote:j.local.source||j.local.root||'',target:j.kind==='download'?j.local.target:j.remote,needsGrant:!this.grants.has(j.id)&&j.status!=='done',cleanupPending:!!j.cleanupPending}))};}
   job(machineId,id){const j=this.jobs.find(j=>j.id===id&&j.machineId===machineId);if(!j)throw fail('TASK_NOT_FOUND');return j;}
@@ -69,30 +114,31 @@ class FileTasks {
     });
     const running={promise,stop:()=>{child.kill('SIGTERM');const timer=setTimeout(()=>child.kill('SIGKILL'),2000);promise.finally(()=>clearTimeout(timer)).catch(()=>{});}};return running;
   }
-  async query(machineId,kind,values={}){if(this.queries.size>=2)throw fail('QUERY_BUSY');const b=await this.binding(machineId),running=this.run({url:b.viewerUrl,token:b.accessToken,kind,...values});this.queries.add(running);try{return await running.promise;}finally{this.queries.delete(running);}}
+  async query(machineId,kind,values={}){if(this.queries.size>=2)throw fail('QUERY_BUSY');const b=await this.binding(machineId);if(values.remote&&values.remote.startsWith('/')!==!!b.ssh)throw fail('INVALID_PATH');const running=this.run({...connection(b),kind,...values});this.queries.add(running);try{return await running.promise;}finally{this.queries.delete(running);}}
   async probe(machineId,peer=null){return this.query(machineId,'probe',{peer});}
   async pickUpload(machineId,{remote:target,directory:folder=false,hints=[]}={}){
     target=remote(target);const b=await this.binding(machineId),identity=await this.probe(machineId);if(!PEER.test(identity.peer))throw fail('INVALID_RESPONSE');if(!Array.isArray(hints)||hints.length>2000)throw fail('TRANSFER_LIMIT');
     const chosen=await this.picker(()=>this.pickOpen({title:hints.length?'确认拖入的本机文件，授权可恢复的读取':'选择上传的'+(folder?'文件夹':'文件'),properties:hints.length?['openFile','openDirectory','multiSelections']:folder?['openDirectory']:['openFile','multiSelections']}));
     if(chosen.canceled||!chosen.filePaths?.length)return {cancelled:true};if(this.closed)throw fail('MANAGER_CLOSED');
     const sources=[],dirs=[];
-    const walk=(full,rel,depth)=>{if(depth>32||sources.length+dirs.length>=2000)throw fail('TRANSFER_LIMIT');const s=fs.lstatSync(full);if(s.isSymbolicLink())throw fail('UNSUPPORTED_FILE');if(s.isDirectory()){dirs.push(rel);for(const entry of fs.readdirSync(full))walk(path.join(full,entry),relative(rel+'/'+entry),depth+1);}else if(s.isFile()){const fd=openFile(full,fs.constants.O_RDONLY);try{sources.push({full,relative:rel,proof:proof(fd)});}finally{fs.closeSync(fd);}}else throw fail('UNSUPPORTED_FILE');};
-    for(const file of chosen.filePaths){const full=canonicalFile(file);if(folder||hints.some(h=>h.directory))walk(full,name(path.basename(full)),0);else{const fd=openFile(full,fs.constants.O_RDONLY);try{sources.push({full,relative:name(path.basename(full)),proof:proof(fd)});}finally{fs.closeSync(fd);}}}
+    if(target.startsWith('/')!==!!b.ssh)throw fail('INVALID_PATH');
+    const walk=(full,rel,depth)=>{if(depth>32||sources.length+dirs.length>=2000)throw fail('TRANSFER_LIMIT');const s=fs.lstatSync(full);if(s.isSymbolicLink())throw fail('UNSUPPORTED_FILE');if(s.isDirectory()){dirs.push(rel);for(const entry of fs.readdirSync(full))walk(path.join(full,entry),relative(rel+'/'+entry,!!b.ssh),depth+1);}else if(s.isFile()){const fd=openFile(full,fs.constants.O_RDONLY);try{sources.push({full,relative:rel,proof:proof(fd)});}finally{fs.closeSync(fd);}}else throw fail('UNSUPPORTED_FILE');};
+    for(const file of chosen.filePaths){const full=canonicalFile(file);if(folder||hints.some(h=>h.directory))walk(full,name(path.basename(full),!!b.ssh),0);else{const fd=openFile(full,fs.constants.O_RDONLY);try{sources.push({full,relative:name(path.basename(full),!!b.ssh),proof:proof(fd)});}finally{fs.closeSync(fd);}}}
     if(hints.length){const expected=hints.filter(h=>!h.directory);if(expected.length!==sources.length||sources.some(s=>!expected.some(h=>(h.relative===s.relative||h.name===path.basename(s.relative))&&h.size===s.proof.size&&Math.floor(Number(BigInt(s.proof.modifiedNs)/1000000n))===h.modified)))throw fail('SOURCE_CHANGED');}
     if(this.jobs.length+sources.length+dirs.length>MAX_JOBS)throw fail('TRANSFER_LIMIT');
     const staged=[...dirs.map(rel=>({kind:'directory',target:remote(target.replace(/\/$/,'')+'/'+rel),label:rel,known:{peer:identity.peer}})),...sources.map(s=>({kind:'upload',target:remote(target.replace(/\/$/,'')+'/'+s.relative),label:s.relative,local:{source:s.full,proof:s.proof},known:{size:s.proof.size,peer:identity.peer}}))];
     for(const row of staged){const j=this.newJob(machineId,b.label,row.kind,row.target,row.label,row.local,row.known);this.grants.set(j.id,true);}
     this.save();this.pump();return {count:sources.length};
   }
-  childTarget(root,rel){const parts=relative(rel).split('/');let current=root;for(const part of parts.slice(0,-1)){current=path.join(current,part);if(!fs.existsSync(current))fs.mkdirSync(current,0o700);const s=fs.lstatSync(current);if(!s.isDirectory()||s.isSymbolicLink())throw fail('INVALID_GRANT');}return path.join(current,parts.at(-1));}
+  childTarget(root,rel){const parts=relative(rel,true).split('/');let current=root;for(const part of parts.slice(0,-1)){current=path.join(current,part);if(!fs.existsSync(current))fs.mkdirSync(current,0o700);const s=fs.lstatSync(current);if(!s.isDirectory()||s.isSymbolicLink())throw fail('INVALID_GRANT');}return path.join(current,parts.at(-1));}
   async pickDownload(machineId,{entries}={}){
     const b=await this.binding(machineId);if(!Array.isArray(entries)||!entries.length||entries.length>2000)throw fail('INVALID_TRANSFER');
-    const files=entries.map(e=>({path:remote(e.path),name:name(e.name),directory:e.directory===true,size:size(e.size)})),identity=await this.probe(machineId);if(!PEER.test(identity.peer))throw fail('INVALID_RESPONSE');
+    const files=entries.map(e=>{const target=remote(e.path);if(target.startsWith('/')!==!!b.ssh)throw fail('INVALID_PATH');return {path:target,name:name(e.name,!!b.ssh),directory:e.directory===true,size:size(e.size)};}),identity=await this.probe(machineId);if(!PEER.test(identity.peer))throw fail('INVALID_RESPONSE');
     let root,targets=[];
     if(files.length===1&&!files[0].directory){const picked=await this.picker(()=>this.pickSave({title:'保存下载文件',defaultPath:files[0].name}));if(picked.canceled||!picked.filePath)return {cancelled:true};targets=[{file:files[0],target:canonicalFile(picked.filePath)}];}
     else{
       const picked=await this.picker(()=>this.pickOpen({title:'选择下载目录',properties:['openDirectory','createDirectory']}));if(picked.canceled||!picked.filePaths?.length)return {cancelled:true};root=directory(picked.filePaths[0]);
-      for(const file of files){if(!file.directory)targets.push({file,target:this.childTarget(root,file.name)});else{const manifest=await this.query(machineId,'walk',{remote:file.path,peer:identity.peer});if(!PEER.test(manifest.peer)||!Array.isArray(manifest.entries)||manifest.entries.length>2000)throw fail('INVALID_RESPONSE');for(const row of manifest.entries){const rel=row.relative?relative(file.name+'/'+row.relative):file.name;if(row.directory){this.childTarget(root,rel+'/placeholder');}else targets.push({file:{path:remote(file.path.replace(/\/$/,'')+'/'+row.relative),name:rel,size:size(row.size),known:{size:row.size,modified:row.modified}},target:this.childTarget(root,rel)});}}}
+      for(const file of files){if(!file.directory)targets.push({file,target:this.childTarget(root,file.name)});else{const manifest=await this.query(machineId,'walk',{remote:file.path,peer:identity.peer});if(!PEER.test(manifest.peer)||!Array.isArray(manifest.entries)||manifest.entries.length>2000)throw fail('INVALID_RESPONSE');for(const row of manifest.entries){const rel=row.relative?relative(file.name+'/'+row.relative,!!b.ssh):file.name;if(row.directory){this.childTarget(root,rel+'/placeholder');}else targets.push({file:{path:remote(file.path.replace(/\/$/,'')+'/'+row.relative),name:rel,size:size(row.size),known:{size:row.size,modified:row.modified}},target:this.childTarget(root,rel)});}}}
     }
     if(this.closed)throw fail('MANAGER_CLOSED');if(this.jobs.length+targets.length>MAX_JOBS)throw fail('TRANSFER_LIMIT');
     for(const {file,target} of targets){const j=this.newJob(machineId,b.label,'download',file.path,file.name,{target,directoryProof:directoryProof(path.dirname(target))},{size:file.size,selectedRemote:file.known||null,peer:identity.peer});this.grants.set(j.id,{parent:j.local.directoryProof,revalidate:false});}
@@ -100,7 +146,7 @@ class FileTasks {
   }
   async resume(machineId,id,newName){
     const j=this.job(machineId,id);if(j.status==='done')throw fail('TASK_FINISHED');if(ACTIVE.has(j.status))throw fail('TASK_BUSY');if(!(j.kind==='download'&&j.recoverCommit&&j.sha256))await this.probe(machineId,j.peer);
-    if(newName){if(j.kind!=='upload')throw fail('INVALID_NAME');j.remote=remote(j.remote.slice(0,j.remote.lastIndexOf('/')+1)+name(newName));j.name=j.name.split('/').slice(0,-1).concat(newName).join('/');}
+    if(newName){if(j.kind!=='upload')throw fail('INVALID_NAME');j.remote=remote(j.remote.slice(0,j.remote.lastIndexOf('/')+1)+name(newName,j.remote.startsWith('/')));j.name=j.name.split('/').slice(0,-1).concat(newName).join('/');}
     if(j.kind==='download'&&j.code==='CONFLICT')this.grants.delete(id);
     if(!this.grants.has(id)){
       if(j.kind==='upload'){
@@ -151,12 +197,14 @@ class FileTasks {
   clear(machineId,ids){const selected=ids===undefined?this.jobs.filter(j=>j.machineId===machineId):this.selectedJobs(machineId,ids),remove=new Set(selected.filter(j=>['done','cancelled'].includes(j.status)&&!j.cleanupPending));this.jobs=this.jobs.filter(j=>!remove.has(j));for(const j of remove)this.grants.delete(j.id);this.save();return {cleared:remove.size};}
   async invoke(action,machineId,data={}){
     if(this.readyError)throw fail(this.readyError);if(this.closed)throw fail('MANAGER_CLOSED');
-    const keys={hello:[],list:[],'pick-upload':['remote','directory','hints'],'pick-download':['entries'],resume:['id','name'],pause:['id'],'pause-many':['ids'],cancel:['id'],clear:['ids'],'cancel-all':[]}[action];
+    const keys={hello:[],list:[],'fs-list':['path'],'fs-mkdir':['path'],places:['op','path','label'],'pick-upload':['remote','directory','hints'],'pick-download':['entries'],resume:['id','name'],pause:['id'],'pause-many':['ids'],cancel:['id'],clear:['ids'],'cancel-all':[]}[action];
     if(!keys||(machineId!=null&&!ID.test(machineId))||!data||typeof data!=='object'||Array.isArray(data)||Object.keys(data).some(k=>!keys.includes(k))||(!['hello','list'].includes(action)&&!ID.test(machineId)))throw fail('INVALID_TRANSFER');
     if(['resume','pause','cancel'].includes(action)&&!Number.isSafeInteger(data.id))throw fail('INVALID_TRANSFER');
     try{
-    if(action==='hello')return {protocol:2,maximum:MAX_SIZE};
+    if(action==='hello')return {protocol:2,maximum:MAX_SIZE,places:true,linuxFiles:true};
     if(action==='list')return this.list(machineId);
+    if(action==='fs-list'||action==='fs-mkdir')return await this.query(machineId,action==='fs-list'?'list':action,{remote:remote(data.path)});
+    if(action==='places')return await this.places(machineId,data);
     if(action==='pick-upload')return await this.pickUpload(machineId,data);
     if(action==='pick-download')return await this.pickDownload(machineId,data);
     if(action==='resume')return await this.resume(machineId,data.id,data.name);
@@ -169,11 +217,14 @@ class FileTasks {
     }catch(error){throw fail(errorCode(error));}
   }
   pump(){if(this.running||this.closed||this.readyError)return;const job=this.jobs.find(j=>j.status==='queued');if(!job)return;const run={job,reason:null,worker:null,promise:null};this.running=run;run.promise=this.execute(run).finally(()=>{this.running=null;if(!this.closed)this.pump();});}
+  session(job,state){try{this.onSession?.({machineId:job.machineId,name:job.device,channel:'files',instance:'task-'+job.id,state,...(state==='failed'?{reason:/^[A-Z_]{1,48}$/.test(job.code)?job.code:'TRANSFER_IO'}:{})});}catch{this.historyError='HISTORY_WRITE_FAILED';}}
   async execute(run){
     const j=run.job;let fd=-1,directoryFd=-1;
     try{
       if(!this.grants.has(j.id))throw fail('REAUTHORIZE');const b=j.kind==='download'&&j.recoverCommit?null:await this.binding(j.machineId);if(run.reason)throw fail('PAUSED');j.status='running';j.started=Date.now();j.phase='verifying';j.code='';this.save();
-      if(j.kind==='directory'){const command={url:b.viewerUrl,token:b.accessToken,kind:'mkdir',remote:j.remote,peer:j.peer};run.worker=this.run(command);const result=await run.worker.promise;j.peer=result.peer;if(run.reason)throw fail('PAUSED');j.status='done';j.phase='';this.save();return;}
+      this.session(j,'connecting');
+      if(b&&j.remote.startsWith('/')!==!!b.ssh)throw fail('DEVICE_CONFIG_CHANGED');
+      if(j.kind==='directory'){const command={...connection(b),kind:'mkdir',remote:j.remote,peer:j.peer};run.worker=this.run(command);const result=await run.worker.promise;j.peer=result.peer;if(run.reason)throw fail('PAUSED');j.status='done';j.phase='';this.save();return;}
       if(j.kind==='upload'){
         fd=openFile(j.local.source,fs.constants.O_RDONLY);const p=proof(fd);if(p.size!==j.local.proof.size||p.modifiedNs!==j.local.proof.modifiedNs||p.dev!==j.local.proof.dev||p.ino!==j.local.proof.ino)throw fail('SOURCE_CHANGED');
       }else{
@@ -185,9 +236,10 @@ class FileTasks {
         if(j.local.part){fd=openFile(j.local.part,fs.constants.O_RDWR);const p=proof(fd);if(!sameFile(p,j.local.partProof)){if(!grant.revalidate||!j.local.directoryProof||sameFile(parent,j.local.directoryProof)||!j.expectedRemote?.sha256)throw fail('PARTIAL_CHANGED');run.rebind=true;}}
         else{j.local.part=path.join(path.dirname(target),'.gmssh-transfer-'+j.partToken+'.part');fd=fs.openSync(j.local.part,fs.constants.O_CREAT|fs.constants.O_EXCL|fs.constants.O_RDWR|(fs.constants.O_NOFOLLOW||0),0o600);j.local.partProof=proof(fd);this.save();}
       }
-      const command={url:b.viewerUrl,token:b.accessToken,kind:j.kind,remote:j.remote,peer:j.peer,partToken:j.partToken,sha256:j.sha256,localProof:j.local.proof,expected:j.expectedRemote||null};let lastSave=0;
+      const command={...connection(b),kind:j.kind,remote:j.remote,peer:j.peer,partToken:j.partToken,sha256:j.sha256,localProof:j.local.proof,expected:j.expectedRemote||null};let lastSave=0;
       run.worker=this.run(command,fd,async event=>{
         if(event.event==='prepared'){
+          this.session(j,'connected');
           if(!PEER.test(event.peer)||j.peer&&j.peer!==event.peer)throw fail('PEER_CHANGED');j.peer=event.peer;j.size=size(event.size);
           if(event.expected){if(j.selectedRemote&&['size','modified'].some(k=>j.selectedRemote[k]!==event.expected[k]))throw fail('SOURCE_CHANGED');if(!HEX.test(event.expected.sha256))throw fail('INVALID_RESPONSE');j.expectedRemote=event.expected;j.sha256=event.expected.sha256;}
           else{if(!HEX.test(event.sha256))throw fail('INVALID_RESPONSE');j.sha256=event.sha256;}
@@ -203,7 +255,7 @@ class FileTasks {
       j.status='done';j.phase='';j.code='';this.save();if(j.kind==='download'){j.local.part=undefined;j.recoverCommit=false;}this.grants.delete(j.id);
       if(j.kind==='upload'){try{await this.query(j.machineId,'discard',{remote:j.remote,peer:j.peer,partToken:j.partToken,size:j.size,sha256:j.sha256});}catch{j.cleanupPending=true;this.save();}}
     }catch(error){j.status=run.reason?'paused':'failed';j.code=run.reason?'PAUSED':errorCode(error);j.phase='';if(j.kind==='download'&&['VOLUME_UNAVAILABLE','TARGET_CHANGED'].includes(j.code))this.grants.delete(j.id);if(j.kind==='download'&&fd>=0){try{const p=proof(fd);if(p.dev===j.local.partProof?.dev&&p.ino===j.local.partProof?.ino&&p.size<=j.size)j.bytes=p.size;}catch{}}try{this.save();}catch{j.code='JOURNAL_WRITE_FAILED';}}
-    finally{closeGrant(fd);closeGrant(directoryFd);}
+    finally{closeGrant(fd);closeGrant(directoryFd);this.session(j,j.status==='done'?'completed':j.status==='paused'?'disconnected':'failed');}
   }
   async commit(j,run,fd,directoryFd,alreadyFinal){
     const parent=directoryProof(directoryFd),p=proof(fd);j.status='committing';j.phase='saving';j.recoverCommit=true;this.save();

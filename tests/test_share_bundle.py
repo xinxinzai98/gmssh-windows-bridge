@@ -18,6 +18,7 @@ class ShareBundleTests(unittest.TestCase):
             (root/'README.md').write_text('public guide')
             (root/'gmssh_windows_bridge/module.py').write_text('public source')
             (root/'gmssh_windows_bridge/agent.json').write_text('private fixture')
+            (root/'gmssh_windows_bridge/file-places.json').write_text('private favorite paths')
             web=root/'gmssh_windows_bridge/desktop_web';web.mkdir()
             (web/'gmssh-home.js').write_text('canonical generated asset')
             (web/'gmssh-home 2.js').write_text('pre-existing conflict copy')
@@ -26,7 +27,7 @@ class ShareBundleTests(unittest.TestCase):
             self.assertEqual((web/'gmssh-home 2.js').read_text(),'pre-existing conflict copy')
             for name in ['catalog.json', 'connection.json', 'local.app/info.json', 'bridge_host_key', 'windows_known_hosts', '.DS_Store',
                          'private/connect-password.dat', 'private/connect-meta.dat', 'private/connect-identity.dat',
-                         'personal.gmsshbackup', 'GMSSH-devices-20260101.json', 'GMSSH-connection-QR.png']:
+                         'personal.gmsshbackup', 'GMSSH-devices-20260101.json', 'GMSSH-connection-QR.png', 'private/file-places.json', 'private/linux-host-pins.json', 'private/workspace-history.json', 'private/controllers.dat', 'private/controller-connection.json']:
                 self.assertTrue(private_path(name), name)
             with self.assertRaises(ValueError): check_content('fixture.py', b'/' + b'Users/' + b'operator/project')
             with self.assertRaises(ValueError): check_content('fixture.py', b'fixture-station', ['fixture-station'])

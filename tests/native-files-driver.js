@@ -12,6 +12,16 @@ window.addEventListener('message',async event=>{
   }else if(action==='upload')document.getElementById('upload').click();
   else if(action==='tasks')document.getElementById('file-transfers-tab').click();
   else if(action==='state')result={text:document.getElementById('transfer-list').textContent,feedback:document.getElementById('file-feedback').textContent,overflow:document.documentElement.scrollWidth>innerWidth};
+  else if(action==='places-save'||action==='places-restore'){
+   const wait=async check=>{for(let i=0;i<300;i++){if(check())return;await new Promise(r=>setTimeout(r,20));}throw Error('Favorite operation timed out');};
+   document.getElementById('file-browse-tab').click();document.getElementById('file-path').value=action==='places-save'?'C:/':'C:/新建验收';document.getElementById('path-form').dispatchEvent(new Event('submit',{cancelable:true}));await wait(()=>document.getElementById('file-list').getAttribute('aria-busy')==='false');
+   const box=document.querySelector('.file-places');
+   if(action==='places-save'){
+    await wait(()=>[...document.querySelectorAll('.file-browser-tools button')].some(b=>b.textContent==='收藏目录'&&!b.disabled));[...document.querySelectorAll('.file-browser-tools button')].find(b=>b.textContent==='收藏目录').click();await wait(()=>box.querySelector('summary').textContent.includes('1 / 12'));result={saved:box.textContent.includes('C:/')};
+   }else{
+    box.open=true;box.dispatchEvent(new Event('toggle'));await wait(()=>!!box.querySelector('[aria-label="打开收藏 C:/"]')&&!box.querySelector('[aria-label="打开收藏 C:/"]').disabled);box.querySelector('[aria-label="打开收藏 C:/"]').click();await wait(()=>document.getElementById('file-path').value==='C:/'&&document.getElementById('file-list').getAttribute('aria-busy')==='false');result={restored:true};
+   }
+  }
   else if(action==='mkdir-check'){
    document.getElementById('file-browse-tab').click();document.getElementById('file-path').value='C:/';document.getElementById('path-form').dispatchEvent(new Event('submit',{cancelable:true}));
    const wait=async check=>{for(let i=0;i<300;i++){if(check())return;await new Promise(r=>setTimeout(r,20));}throw Error('Folder operation timed out');};

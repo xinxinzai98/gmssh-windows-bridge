@@ -1,0 +1,97 @@
+/* Reuse live native views in place. Reparenting a webview would destroy its guest. */
+window.installGMSSHWorkspace=function({viewerUrl}){
+  if(window.gmsshWorkspaceController)return window.gmsshWorkspaceController;
+  const base=new URL(viewerUrl),make=(tag,cls,text)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=String(text);return n;};
+  const call=(action,data={})=>window.electronAPI.invoke('render-to-main',{type:'gmssh-workspace',data:{action,data}}).then(reply=>{if(reply?.status!=='ok')throw Error(reply?.code||'WORKSPACE_UNAVAILABLE');return reply.data;});
+  const defaults=()=>({layout:'desktop',ratio:.6,zoom:'fit',quality:'balanced',display:0});
+  let saved={tabs:[],selected:null,devices:{}},selected=null,visible=false,disposed=false,paint=0,restoreTimer,historyTimer,paneMode='desktop';
+  const pinned=new Map(),nativeSessions=new Map(),desktopInstances=new Map();
+  const nodes=()=>window.gmsshHomeController?.filesDevices?.()||[],device=id=>nodes().find(n=>n.id===id),prefs=id=>saved.devices[id]||defaults();
+  const root=make('section','gm-workspace');root.hidden=true;root.setAttribute('aria-label','设备工作区');
+  const head=make('header','gm-workspace-head'),selector=make('select'),nav=make('nav'),status=make('span','gm-muted'),body=make('div','gm-workspace-body'),note=make('p','gm-workspace-note');selector.setAttribute('aria-label','切换设备工作区');nav.setAttribute('aria-label','设备工具');note.setAttribute('role','status');
+  const button=(text,fn)=>{const b=make('button','gm-ui-button',text);b.type='button';b.onclick=fn;return b;};
+  const modes=new Map();for(const [key,label] of [['overview','概览'],['desktop','桌面'],['terminal','终端'],['split','桌面与终端'],['history','记录']]){const b=button(label,()=>key==='history'?showHistory():open(selected,key));modes.set(key,b);nav.append(b);}
+  nav.append(button('文件',()=>window.gmsshFilesController?.open(selected)),button('系统工具',()=>window.gmsshToolsController?.open(selected,'processes')));
+  const ratio=make('input');ratio.type='range';ratio.min='25';ratio.max='75';ratio.setAttribute('aria-label','桌面区域比例');ratio.title='调整桌面与终端的宽度比例';ratio.oninput=()=>{saved.devices[selected]={...prefs(selected),ratio:Number(ratio.value)/100};layout();};ratio.onchange=persist;
+  const minimize=button('返回首页',()=>{hide();document.querySelector('.tabs-home .tab-chip,.tab-chip--home')?.click();}),close=button('关闭工作区',()=>closeWorkspace(selected));
+  close.title='关闭工作区视图；已打开的连接保留，可在各自桌面或终端标签中断开';head.append(selector,nav,ratio,status,minimize,close);root.append(head,note,body);document.body.append(root);
+  const tab=button('工作区',()=>open(selected||saved.selected||nodes()[0]?.id));tab.classList.add('gm-workspace-tab');
+  const style=make('style');style.textContent=`.gm-workspace{position:fixed;inset:48px 0 0;z-index:2147482999;background:#1c1c20;color:#eee;display:flex;flex-direction:column;pointer-events:none}.gm-workspace[hidden]{display:none}.gm-workspace-head{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:10px 16px;background:#202023;border-bottom:1px solid #ffffff18;pointer-events:auto}.gm-workspace-head nav{display:flex;flex-wrap:wrap;gap:6px}.gm-workspace-head select{max-width:220px;min-width:100px}.gm-workspace-head input[type=range]{width:95px}.gm-workspace-head .gm-muted{font-size:12px;margin-left:auto}.gm-workspace-note{margin:0;padding:5px 16px;font-size:12px;background:#242429;pointer-events:auto}.gm-workspace-note:empty{display:none}.gm-workspace-body{flex:1;min-height:0;overflow:auto}.gm-workspace-body:not(:empty){pointer-events:auto;padding:20px}.gm-workspace-body .gm-device-details{max-width:720px;overflow:visible;height:auto}.gm-workspace-history{display:grid;gap:10px;max-width:1100px;margin:auto}.gm-workspace-history article{padding:10px 12px;border:1px solid #ffffff15;border-radius:8px;font-size:13px}.gm-workspace-history article p{margin:5px 0;color:#aaa}.gm-workspace-head button[aria-pressed=true]{background:#625cff;color:white}.gm-workspace-tab{margin-left:6px;white-space:nowrap}@media(max-width:900px){.gm-workspace-head{padding:7px;gap:5px}.gm-workspace-head select{max-width:150px}.gm-workspace-head .gm-ui-button{padding:6px 8px}.gm-workspace-head .gm-muted{display:none}}`;
+  document.head.append(style);
+  function mount(){const host=document.querySelector('.tabs-container');if(host&&!tab.isConnected)host.append(tab);if(visible){const bottom=host?.getBoundingClientRect().bottom||48;root.style.top=Math.max(40,bottom)+'px';layout();}}
+  async function persist(){if(disposed)return;try{await call('layout',{tabs:saved.tabs,selected:saved.selected,devices:saved.devices});}catch{note.textContent='工作区布局未能保存，请检查本机存储空间和权限。';}}
+  function restorePins(){for(const [node,props] of pinned){for(const [key,[value,priority]] of props){if(value)node.style.setProperty(key,value,priority);else node.style.removeProperty(key);}node.removeAttribute('data-gmssh-workspace-view');}pinned.clear();}
+  function pin(node,rect){
+    if(!node||!node.isConnected)return;
+    const changes={position:'fixed',left:rect.left+'px',top:rect.top+'px',width:rect.width+'px',height:rect.height+'px',right:'auto',bottom:'auto',opacity:'1',visibility:'visible',display:'block','z-index':'2147483000','pointer-events':'auto'};
+    if(!pinned.has(node))pinned.set(node,new Map(Object.keys(changes).map(key=>[key,[node.style.getPropertyValue(key),node.style.getPropertyPriority(key)]])));
+    node.setAttribute('data-gmssh-workspace-view',selected);for(const [key,value] of Object.entries(changes))if(node.style.getPropertyValue(key)!==value||node.style.getPropertyPriority(key)!=='important')node.style.setProperty(key,value,'important');
+  }
+  function nativeView(id,terminal){
+    return [...document.querySelectorAll('webview.home-container-view')].find(n=>{try{const u=new URL(n.getAttribute('src')||'');const p=new URLSearchParams(u.hash.slice(u.hash.indexOf('?')+1));return u.protocol==='http:'&&['127.0.0.1','localhost'].includes(u.hostname)&&/^\/(?:newweb|web)\/?$/.test(u.pathname)&&p.get('machineId')===id&&(p.get('onlyTerm')==='1')===terminal;}catch{return false;}});
+  }
+  function trackNative(node,id,channel){
+    if(!node||nativeSessions.has(node)||device(id)?.windows)return;
+    const instance='native-'+crypto.randomUUID(),name=device(id)?.name||'设备';nativeSessions.set(node,{id,channel,instance,name});
+    const event=(state,reason)=>call('session',{machineId:id,name,channel,instance,state,...(reason?{reason}:{})}).catch(()=>{note.textContent='连接历史未能保存。';});
+    event('opened'); // A mounted native view is observable; its SSH status stays in the native UI.
+    node.addEventListener('did-fail-load',()=>event('failed','NATIVE_VIEW_FAILED'),{once:true});
+    node.addEventListener('render-process-gone',()=>event('failed','NATIVE_VIEW_CLOSED'),{once:true});
+  }
+  function layout(){
+    if(!visible||!selected||paneMode==='history')return;
+    const p=prefs(selected),area=body.getBoundingClientRect(),split=p.layout==='split'&&area.width>=900;
+    ratio.hidden=p.layout!=='split';ratio.value=String(Math.round(p.ratio*100));
+    if(p.layout==='split'&&!split)note.textContent='窗口较窄，先显示桌面；可切到终端，放大窗口后恢复并排。';
+    const desired=new Set(),current=device(selected);
+    if(['desktop','split'].includes(p.layout)){
+      const node=current?.windows?window.gmsshWindowsControllers?.get(selected)?.frame()?.closest('section'):nativeView(selected,false);
+      if(node){desired.add(node);pin(node,{left:area.left,top:area.top,width:split?Math.floor(area.width*p.ratio)-3:area.width,height:area.height});if(!current?.windows)trackNative(node,selected,'desktop');}
+    }
+    if(p.layout==='terminal'||split){const node=nativeView(selected,true);if(node){desired.add(node);pin(node,{left:split?area.left+Math.floor(area.width*p.ratio)+3:area.left,top:area.top,width:split?area.width-Math.floor(area.width*p.ratio)-3:area.width,height:area.height});trackNative(node,selected,'terminal');}}
+    for(const [node,props] of pinned)if(!desired.has(node)){for(const [key,[value,priority]] of props){if(value)node.style.setProperty(key,value,priority);else node.style.removeProperty(key);}node.removeAttribute('data-gmssh-workspace-view');pinned.delete(node);}
+  }
+  function sendPreferences(id){const frame=window.gmsshWindowsControllers?.get(id)?.frame();if(frame)frame.contentWindow?.postMessage({type:'gmssh-workspace-preferences',preferences:prefs(id)},new URL(frame.src).origin);}
+  async function open(id,mode){
+    if(disposed||!device(id)||!/^[a-f0-9]{32}$/i.test(id))return;
+    if(mode&&!['overview','desktop','terminal','split'].includes(mode))return;
+    const permissions=device(id).permissions,wanted=mode||prefs(id).layout;if(permissions&&(wanted==='terminal'&&!permissions.terminal||wanted==='desktop'&&!permissions.view||wanted==='split'&&(!permissions.view||!permissions.terminal)))mode=permissions.view?'desktop':'overview';
+    const current=device(id);window.gmsshFilesController?.hide();restorePins();for(const [other,controller] of window.gmsshWindowsControllers||[])if(other!==id)controller.hide();
+    clearInterval(historyTimer);paint++;paneMode=mode||prefs(id).layout;selected=saved.selected=id;if(!saved.tabs.includes(id)){if(saved.tabs.length>=50){note.textContent='最多打开 50 台设备工作区，请先关闭不使用的工作区。';return;}saved.tabs.push(id);}
+    saved.devices[id]={...prefs(id),...(mode?{layout:mode}:{})};visible=true;root.hidden=false;tab.setAttribute('aria-pressed','true');body.replaceChildren();note.textContent='';
+    selector.replaceChildren(...saved.tabs.map(value=>{const option=make('option','',device(value)?.name||'已移除的设备');option.value=value;return option;}));selector.value=id;
+    for(const [key,b] of modes){b.setAttribute('aria-pressed',String(key===prefs(id).layout));b.disabled=!!permissions&&(key==='desktop'&&!permissions.view||key==='terminal'&&!permissions.terminal||key==='split'&&(!permissions.view||!permissions.terminal));}
+    if(prefs(id).layout==='overview'){const pane=window.gmsshHomeController?.workspaceOverview?.(id);if(pane)body.append(pane);}
+    if(['desktop','split'].includes(prefs(id).layout)){if(current.windows)window.gmsshWindowsControllers?.get(id)?.show?.();else window.gmsshHomeController?.openNative?.(id,'desktop');}
+    if(['terminal','split'].includes(prefs(id).layout))window.gmsshHomeController?.openNative?.(id,'terminal');
+    status.textContent=current.name;mount();sendPreferences(id);await persist();
+  }
+  function hide(){visible=false;root.hidden=true;tab.setAttribute('aria-pressed','false');restorePins();clearInterval(historyTimer);}
+  function closed(id){saved.tabs=saved.tabs.filter(value=>value!==id);if(saved.selected===id)saved.selected=saved.tabs.at(-1)||null;if(selected===id){selected=saved.selected;hide();}void persist();}
+  function closeWorkspace(id){closed(id);}
+  async function showHistory(){
+    if(!selected)return;paneMode='history';restorePins();for(const c of window.gmsshWindowsControllers?.values()||[])c.hide();body.replaceChildren();ratio.hidden=true;const epoch=++paint,container=make('div','gm-workspace-history');body.append(container);for(const [key,b] of modes)b.setAttribute('aria-pressed',String(key==='history'));
+    const filter=make('select'),retention=make('select'),exportButton=button('导出连接历史',()=>call('export').then(()=>{note.textContent='连接历史已导出；设备配置和凭据请使用配置备份。';}).catch(()=>{note.textContent='历史导出未完成。';})),rows=make('div');filter.setAttribute('aria-label','筛选历史设备');retention.setAttribute('aria-label','连接历史保留时间');
+    for(const [id,name] of [['','全部设备'],...nodes().map(n=>[n.id,n.name])]){const o=make('option','',name);o.value=id;filter.append(o);}filter.value=selected;for(const days of [7,30,90,365]){const o=make('option','',days+' 天');o.value=String(days);retention.append(o);}container.append(make('p','gm-muted','仅记录连接时间、结果和原因；原生终端的“已打开”表示窗口已打开，SSH 状态以终端内显示为准。'),filter,retention,exportButton,rows);
+    const labels={connecting:'连接中',connected:'已连接',opened:'已打开原生窗口',failed:'连接失败',interrupted:'应用异常退出',completed:'已完成',disconnected:'已断开'},channels={desktop:'桌面',terminal:'终端',files:'文件',tools:'系统工具'};let limit=100,data;
+    function render(){rows.replaceChildren();const list=data.sessions.filter(s=>!filter.value||s.machineId===filter.value).reverse();for(const s of list.slice(0,limit)){const row=make('article');row.append(make('strong','',s.name+' · '+channels[s.channel]+' · '+labels[s.state]),make('p','',new Date(s.started).toLocaleString()+' → '+(s.ended===null?'进行中':new Date(s.ended).toLocaleString())),make('p','',Math.round(s.duration/1000)+' 秒'+(s.reason?' · '+s.reason:'')));rows.append(row);}if(!list.length)rows.append(make('p','gm-muted','尚无连接记录'));if(list.length>limit)rows.append(button('显示更多',()=>{limit+=100;render();}));}
+    async function refresh(){try{data=await call('get');if(epoch!==paint||!visible||disposed)return;retention.value=String(data.retention);render();}catch{note.textContent='历史记录无法读取，原文件已保留。';}}
+    filter.onchange=()=>{limit=100;render();};retention.onchange=()=>call('retention',{days:Number(retention.value)}).then(refresh).catch(()=>{note.textContent='保留时间未能保存。';});await refresh();clearInterval(historyTimer);historyTimer=setInterval(refresh,2000);
+  }
+  selector.onchange=()=>open(selector.value);
+  function receive(event){
+    if(event.data?.type!=='gmssh-workspace-desktop')return;
+    for(const [id,c] of window.gmsshWindowsControllers||[]){const frame=c.frame();if(!frame||event.source!==frame.contentWindow||event.origin!==new URL(frame.src).origin)continue;
+      const d=event.data,current=device(id);if(!current)return;
+      if(d.permissions){const p=d.permissions;if(Object.keys(p).sort().join()==='clipboard,files,input,power,terminal,view'&&Object.values(p).every(value=>typeof value==='boolean'))window.gmsshHomeController?.permissions?.(id,p);return;}
+      if(d.preferences){const p=d.preferences;if(['fit','100'].includes(p.zoom)&&['low','balanced','best'].includes(p.quality)&&Number.isInteger(p.display)&&p.display>=0&&p.display<=31){saved.devices[id]={...prefs(id),zoom:p.zoom,quality:p.quality,display:p.display};void persist();}return;}
+      if(typeof d.instance!=='string'||!/^[\w-]{1,100}$/.test(d.instance)||!['connecting','connected','disconnected','failed'].includes(d.state))return;
+      desktopInstances.set(id,d.instance);void call('session',{machineId:id,name:current.name,channel:'desktop',instance:d.instance,state:d.state,...(typeof d.reason==='string'&&/^[A-Z_]{1,48}$/.test(d.reason)?{reason:d.reason}:{})}).catch(()=>{note.textContent='连接历史未能保存。';});sendPreferences(id);return;
+    }
+  }
+  const observer=new MutationObserver(()=>{mount();for(const [node,s] of nativeSessions)if(!node.isConnected){nativeSessions.delete(node);void call('session',{machineId:s.id,name:s.name,channel:s.channel,instance:s.instance,state:'disconnected',reason:'NATIVE_VIEW_CLOSED'}).catch(()=>{});}for(const [id,instance] of desktopInstances)if(!window.gmsshWindowsControllers?.get(id)?.frame()?.isConnected){desktopInstances.delete(id);void call('session',{machineId:id,name:device(id)?.name||'设备',channel:'desktop',instance,state:'disconnected',reason:'TAB_CLOSED'}).catch(()=>{});}});
+  observer.observe(document.body,{childList:true,subtree:true});window.addEventListener('resize',mount);window.addEventListener('message',receive);document.addEventListener('click',click,true);
+  function click(event){if(event.target instanceof Element&&event.target.closest('.tabs-container .tab-chip')&&!event.target.closest('.gm-workspace-tab'))hide();}
+  const controller={open,hide,closed,remove(){disposed=true;hide();clearInterval(restoreTimer);observer.disconnect();window.removeEventListener('resize',mount);window.removeEventListener('message',receive);document.removeEventListener('click',click,true);root.remove();tab.remove();style.remove();delete window.gmsshWorkspaceController;}};window.gmsshWorkspaceController=controller;mount();
+  void call('get').then(value=>{if(disposed)return;saved={tabs:value.tabs,selected:value.selected,devices:value.devices};for(const id of saved.tabs)window.gmsshWindowsControllers?.get(id)?.reserve?.();let attempts=0;restoreTimer=setInterval(()=>{if(disposed||++attempts>40){clearInterval(restoreTimer);return;}if(saved.selected&&device(saved.selected)){clearInterval(restoreTimer);void open(saved.selected);}},500);}).catch(()=>{note.textContent='本机工作区记录暂不可用；仍可手动打开设备。';});return controller;
+};

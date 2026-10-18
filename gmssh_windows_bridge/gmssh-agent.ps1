@@ -27,7 +27,7 @@ if ($Action -ne 'Tray') {
             }
             ResetCode {
                 Add-Type -AssemblyName System.Windows.Forms
-                if ([Windows.Forms.MessageBox]::Show('重置后旧连接码将无法再用于添加设备。已保存的连接保留；若要让它们也失效，请修改连接密码。','GMSSH Windows · 重置连接码','OKCancel') -ne 'OK') { return }
+                if ([Windows.Forms.MessageBox]::Show('重置后旧连接码将无法再用于添加设备。已保存的共享密码连接保留；如需使其失效，请修改连接密码。独立授权请在「会话与授权」中撤销。','GMSSH Windows · 重置连接码','OKCancel') -ne 'OK') { return }
                 Reset-GMSSHConnectCode $root $dataRoot
                 [Windows.Forms.Clipboard]::SetText((Get-GMSSHConnectCode $root $dataRoot))
                 [void][Windows.Forms.MessageBox]::Show('新连接码已复制，旧码已失效。','GMSSH Windows')
@@ -239,6 +239,14 @@ function Show-Panel {
     $panel.Activate()
 }
 $open = $menu.Items.Add('打开管理面板'); $open.Add_Click({ Show-Panel })
+if (Test-Path (Join-Path $root 'controller-panel.ps1')) {
+    . (Join-Path $root 'controller-panel.ps1')
+    $sessionsMenu = $menu.Items.Add('会话与独立授权'); $sessionsMenu.Add_Click({ Show-GMSSHControllers })
+    $closeHint.Visible = $false
+    $sessionsButton = New-AgentButton $panel '会话与授权' 456 511 160 30
+    $sessionsButton.Add_Click({ Show-GMSSHControllers })
+    $tooltip.SetToolTip($sessionsButton,'管理当前独立授权会话；关闭窗口后后台服务继续运行')
+}
 $password = $menu.Items.Add($passwordLabel); $password.Add_Click({ Invoke-AgentAction Password })
 if ($state.unifiedPassword) { $resetCode = $menu.Items.Add('重置连接码'); $resetCode.Add_Click({ Invoke-AgentAction ResetCode }) }
 $publicCopy = $menu.Items.Add('复制普通连接信息（不含密码）')

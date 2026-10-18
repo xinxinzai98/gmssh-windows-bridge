@@ -108,6 +108,9 @@ def validate_result(value, tool):
 
 
 def query(client, tool, values, timeout, run):
+    if getattr(client, 'controller_protocol', None) == 2:
+        options_for(tool, values)
+        return validate_result(json.loads(client.readonly(tool, values).decode('utf-8-sig')), tool)
     script = script_for(tool, values).encode('utf-8')
     return validate_result(json.loads(run(client, STDIN_COMMAND, timeout, max_output=262144, stdin=script).decode('utf-8-sig')), tool)
 
@@ -135,12 +138,14 @@ def probe_tcp(target, port, timeout=2):
 
 def diagnostics(session, config, run, system_command):
     sampled = now()
+    controller = bool(getattr(config, 'controller_connection', None))
     snapshot = session.pool.snapshot() if session.pool and hasattr(session.pool, 'snapshot') else {}
     if not isinstance(snapshot, dict):
         snapshot = {}
     stages = [{'id': 'target', 'state': 'passed', 'code': 'SAVED_TARGET', 'sampledAt': sampled}]
     if isinstance(getattr(config, 'target', None), str) and type(getattr(config, 'target_port', None)) is int:
-        stages.append({'id': 'tcp', **probe_tcp(config.target, config.target_port, session.timeout)})
+        port = config.controller_configuration['port'] if controller else config.target_port
+        stages.append({'id': 'tcp', **probe_tcp(config.target, port, session.timeout)})
     else:
         stages.append({'id': 'tcp', 'state': 'unchecked', 'code': 'TARGET_UNKNOWN', 'sampledAt': sampled})
     code = snapshot.get('code', 'SSH_NOT_OBSERVED')
@@ -148,6 +153,9 @@ def diagnostics(session, config, run, system_command):
     authenticated = snapshot.get('borrowable') is True
     stages.append({'id': 'identity', 'state': 'passed' if authenticated else 'failed' if code == 'BadHostKeyException' else 'unchecked', 'code': 'SSH_PIN_VERIFIED' if authenticated else 'HOST_KEY_CHANGED' if code == 'BadHostKeyException' else 'IDENTITY_NOT_OBSERVED', 'sampledAt': auth_time})
     stages.append({'id': 'auth', 'state': 'passed' if authenticated else 'failed' if code == 'AuthenticationException' else 'unchecked', 'code': 'SSH_AUTHENTICATED' if authenticated else 'SSH_AUTH_FAILED' if code == 'AuthenticationException' else 'SSH_SESSION_REQUIRED', 'sampledAt': auth_time})
+    if controller:
+        stages[-2]['code'] = 'TLS_PIN_VERIFIED' if authenticated else 'TLS_PIN_CHANGED' if code == 'BadHostKeyException' else 'IDENTITY_NOT_OBSERVED'
+        stages[-1]['code'] = 'CONTROLLER_AUTHENTICATED' if authenticated else 'CONTROLLER_AUTH_FAILED' if code == 'AuthenticationException' else 'CONTROLLER_SESSION_REQUIRED'
     if authenticated:
         try:
             session.ssh_nowait()
@@ -158,8 +166,12 @@ def diagnostics(session, config, run, system_command):
         except Exception:
             stages.append({'id': 'monitor', 'state': 'failed', 'code': 'MONITOR_QUERY_FAILED', 'sampledAt': now()})
         try:
+            if controller and session.client.policy.get('files') is not True:
+                raise PermissionError()
             session.files()
-            stages.append({'id': 'files', 'state': 'passed', 'code': 'SFTP_READY', 'sampledAt': now()})
+            stages.append({'id': 'files', 'state': 'passed', 'code': 'CONTROLLER_FILES_READY' if controller else 'SFTP_READY', 'sampledAt': now()})
+        except PermissionError:
+            stages.append({'id': 'files', 'state': 'failed', 'code': 'ACCESS_DENIED', 'sampledAt': now()})
         except Exception:
             stages.append({'id': 'files', 'state': 'failed', 'code': 'SFTP_UNAVAILABLE', 'sampledAt': now()})
     else:

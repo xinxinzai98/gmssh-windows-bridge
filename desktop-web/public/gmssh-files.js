@@ -42,7 +42,7 @@ window.installGMSSHFileCenter=function({viewerUrl,devices=[]}){
   for(const filter of [taskDevice,taskStatus])filter.onchange=()=>{taskLimit=50;feedback('');renderTasks();};
   taskSearch.oninput=()=>{taskLimit=50;renderTasks();};
   const nativeInvoke=(action,machineId=null,data={})=>Promise.resolve(window.electronAPI?.invoke('render-to-main',{type:'gmssh-transfer',data:{action,machineId,data}})).then(value=>value||{status:'error',code:'UNSUPPORTED'}).catch(()=>({status:'error',code:'UNSUPPORTED'}));
-  const nativeReady=nativeInvoke('hello').then(async reply=>{if(disposed)return reply;if(reply.status==='ok'&&reply.data?.protocol===2){nativeProtocol=true;controller.native=true;await pollNative();nativePoll=setInterval(pollNative,700);}return reply;});
+  const nativeReady=nativeInvoke('hello').then(async reply=>{if(disposed)return reply;if(reply.status==='ok'&&reply.data?.protocol===2){nativeProtocol=true;controller.native=true;controller.linux=reply.data.linuxFiles===true;await pollNative();if(!root.hidden)show(mode);nativePoll=setInterval(pollNative,700);}return reply;});
   async function pollNative(){if(!nativeProtocol||disposed||nativePolling)return;nativePolling=true;try{const reply=await nativeInvoke('list');if(disposed)return;if(reply.status==='ok'&&Array.isArray(reply.data?.jobs)){nativeTasks=reply.data.jobs;report();if(!root.hidden&&mode==='tasks')renderTasks();}}finally{nativePolling=false;}}
   const leaseMessage=(record,type,requestId)=>record.frame?.contentWindow?.postMessage({type,requestId},new URL(record.device.viewerUrl).origin);
   function pumpLeases(){while(!holder&&leaseQueue.length){const next=leaseQueue.shift();if(next.record.pending||next.record.removed){leaseMessage(next.record,'gmssh-file-lease-error',next.requestId);continue;}holder=next;report().then(reply=>{if(holder!==next||disposed)return;if(reply?.status==='ok')leaseMessage(next.record,'gmssh-file-lease',next.requestId);else{next.record.frame?.contentWindow?.postMessage({type:'gmssh-file-lease-error',requestId:next.requestId,code:'FILE_CENTER_UNAVAILABLE'},new URL(next.record.device.viewerUrl).origin);releaseLease(next.record,next.requestId);}});}}
@@ -61,7 +61,7 @@ window.installGMSSHFileCenter=function({viewerUrl,devices=[]}){
   }
   function publicDevices(){
     const native=window.gmsshHomeController?.filesDevices?.()||[],list=[];
-    for(const [id,record] of records){const node=native.find(n=>n.id===id);list.push({id,name:node?.name||record.device.label||record.device.target||'设备',windows:true,removed:record.removed});}
+    for(const [id,record] of records){const node=native.find(n=>n.id===id);list.push({id,name:node?.name||record.device.label||record.device.target||'设备',windows:record.device.platform!=='posix',removed:record.removed});}
     for(const node of native)if(!node.windows&&!list.some(item=>item.id===node.id))list.push(node);
     return list;
   }
@@ -72,7 +72,7 @@ window.installGMSSHFileCenter=function({viewerUrl,devices=[]}){
     if(selected)selector.value=selected;selector.disabled=!list.length;
   }
   const send=(record,tool)=>{if(!record)return;if(!record.frame||!record.loaded){record.pendingTool=tool;return;}record.frame.contentWindow?.postMessage({type:'gmssh-file-tool',tool},new URL(record.device.viewerUrl).origin);};
-  function access(record){if(!record.frame)return;record.frame.contentWindow?.postMessage({type:'gmssh-file-access',token:record.device.accessToken,label:publicDevices().find(n=>n.id===record.device.machineId)?.name||record.device.label||record.device.target},new URL(record.device.viewerUrl).origin);if(record.pendingTool){const tool=record.pendingTool;delete record.pendingTool;record.frame.contentWindow?.postMessage({type:'gmssh-file-tool',tool},new URL(record.device.viewerUrl).origin);}}
+  function access(record){if(!record.frame)return;record.frame.contentWindow?.postMessage({type:'gmssh-file-access',token:record.device.accessToken,platform:record.device.platform,label:publicDevices().find(n=>n.id===record.device.machineId)?.name||record.device.label||record.device.target},new URL(record.device.viewerUrl).origin);if(record.pendingTool){const tool=record.pendingTool;delete record.pendingTool;record.frame.contentWindow?.postMessage({type:'gmssh-file-tool',tool},new URL(record.device.viewerUrl).origin);}}
   function frameFor(record){
     if(record.frame)return record.frame;
     const frame=make('iframe');frame.src=new URL('files.html',record.device.viewerUrl).href;frame.title=(record.device.label||record.device.target||'设备')+' · 文件互传';frame.referrerPolicy='no-referrer';record.frame=frame;record.loaded=false;frame.onload=()=>{if(record.loaded){releaseLease(record);if(record.state.active){record.state={...record.state,active:0,failed:record.state.failed+record.state.active,tasks:record.state.tasks.map(t=>['running','queued'].includes(t.status)?{...t,status:'failed',message:'文件页已重新载入，请重新选择未完成的文件。'}:t)};report();}}record.loaded=true;access(record);};frames.append(frame);return frame;
@@ -80,8 +80,10 @@ window.installGMSSHFileCenter=function({viewerUrl,devices=[]}){
   function show(next){
     mode=next;head.dataset.mode=next;selector.hidden=next==='tasks';browse.setAttribute('aria-pressed',String(next==='files'));transfers.setAttribute('aria-pressed',String(next==='tasks'));tasksPane.hidden=next!=='tasks';frames.hidden=next!=='files';nativePane.hidden=true;
     for(const [id,r] of records)if(r.frame)r.frame.hidden=id!==selected;
-    if(next==='tasks'){note.textContent='文件任务独立于桌面标签。可筛选设备和状态；清除记录不删除文件，未清理的临时文件记录会保留。Linux 使用原生文件工具。';renderTasks();return;}
-    const record=records.get(selected);note.textContent=nativeProtocol?'文件直接落盘，校验后保存。收起中心继续传输，退出时暂停并保存任务。':'收起文件中心或关闭桌面标签不会取消传输。浏览器兼容任务在退出后需重新选择文件。';
+    if(next==='tasks'){note.textContent='文件任务独立于桌面标签。可筛选设备和状态；清除记录不删除文件，未清理的临时文件记录会保留。Linux 与 Windows 共用本机恢复队列。';renderTasks();return;}
+    let record=records.get(selected);
+    if(!record&&nativeProtocol&&publicDevices().some(n=>n.id===selected&&!n.windows)){record={device:{machineId:selected,viewerUrl:base.href,accessToken:'0'.repeat(43),platform:'posix',label:publicDevices().find(n=>n.id===selected)?.name},state:stateEmpty()};records.set(selected,record);}
+    note.textContent=nativeProtocol?'文件直接落盘，校验后保存。收起中心继续传输，退出时暂停并保存任务。':'收起文件中心或关闭桌面标签不会取消传输。浏览器兼容任务在退出后需重新选择文件。';
     if(record){
       if(record.pending||record.removed){nativePane.hidden=false;frames.hidden=true;nativePane.replaceChildren(make('h3','','设备配置已变化'),make('p','gm-muted',record.state.active?'原通道的任务仍在处理，结束后可重新打开文件通道。不会把任务自动转给其他设备。':'原任务记录已保留；更新通道后需重新选择失败的文件。'));
         if(!record.state.active&&!record.removed)nativePane.append(button('更新文件通道',()=>{record.frame?.remove();record.frame=undefined;record.device=record.pending;record.pending=undefined;record.state=stateEmpty();report();show('files');}));
@@ -142,7 +144,7 @@ window.installGMSSHFileCenter=function({viewerUrl,devices=[]}){
     if(counts().total>all.length)taskEmpty.textContent+=' 旧版兼容通道的完整任务请进入对应设备。';
   }
   function hide(){root.hidden=true;tab.classList.remove('active');tab.setAttribute('aria-selected','false');document.documentElement.removeAttribute('data-gmssh-files-active');}
-  function open(id){if(disposed)return;for(const c of window.gmsshWindowsControllers?.values()||[])c.hide();document.documentElement.removeAttribute('data-windows-desktop-active');refreshSelector();if(id&&publicDevices().some(n=>n.id===id))selected=id;if(selected)selector.value=selected;root.hidden=false;tab.classList.add('active');tab.setAttribute('aria-selected','true');document.documentElement.setAttribute('data-gmssh-files-active','');mount();show('files');}
+  function open(id){if(disposed)return;window.gmsshWorkspaceController?.hide();for(const c of window.gmsshWindowsControllers?.values()||[])c.hide();document.documentElement.removeAttribute('data-windows-desktop-active');refreshSelector();if(id&&publicDevices().some(n=>n.id===id))selected=id;if(selected)selector.value=selected;root.hidden=false;tab.classList.add('active');tab.setAttribute('aria-selected','true');document.documentElement.setAttribute('data-gmssh-files-active','');mount();show('files');}
   selector.onchange=()=>{selected=selector.value;show('files');};
   function cancelAll(){for(const r of records.values())if(r.state.active)send(r,'cancel-all');if(nativeProtocol)for(const id of new Set(nativeTasks.filter(t=>['queued','running','committing','paused','failed'].includes(t.status)).map(t=>t.machineId)))void nativeInvoke('cancel-all',id).then(pollNative);}
   function update(values){
@@ -155,17 +157,17 @@ window.installGMSSHFileCenter=function({viewerUrl,devices=[]}){
       if(record){record.removed=false;if(record.frame&&record.device.viewerUrl!==device.viewerUrl)record.pending={...device};else{record.device={...device};record.pending=undefined;access(record);}}
       else records.set(device.machineId,{device:{...device},state:stateEmpty()});
     }
-    for(const [id,record] of records)if(!ids.has(id)){if(record.frame||record.state.total)record.removed=true;else records.delete(id);}
+    for(const [id,record] of records)if(!ids.has(id)&&!(record.device.platform==='posix'&&(window.gmsshHomeController?.filesDevices?.()||[]).some(n=>n.id===id&&!n.windows))){if(record.frame||record.state.total)record.removed=true;else records.delete(id);}
     refreshSelector();if(!root.hidden)show(mode);report();
   }
   function receive(event){
     const record=[...records.values()].find(r=>r.frame?.contentWindow===event.source);
     if(record&&event.origin===new URL(record.device.viewerUrl).origin){
       if(event.data?.type==='gmssh-file-native'){
-        const data=event.data;if(!Number.isSafeInteger(data.requestId)||data.requestId<1||!['hello','list','pick-upload','pick-download','resume','pause','cancel','clear','cancel-all'].includes(data.action)||!data.data||typeof data.data!=='object'||Array.isArray(data.data))return;
+        const data=event.data;if(!Number.isSafeInteger(data.requestId)||data.requestId<1||!['hello','list','fs-list','fs-mkdir','places','pick-upload','pick-download','resume','pause','cancel','clear','cancel-all'].includes(data.action)||!data.data||typeof data.data!=='object'||Array.isArray(data.data))return;
         void nativeReady.then(async ready=>{
           let reply=ready;
-          if(nativeProtocol)reply=(record.pending||record.removed)&&!['hello','list'].includes(data.action)?{status:'error',code:'DEVICE_CONFIG_CHANGED'}:data.action==='hello'?{status:'ok',data:{protocol:2}}:await nativeInvoke(data.action,record.device.machineId,data.data);
+          if(nativeProtocol)reply=(record.pending||record.removed)&&!['hello','list'].includes(data.action)?{status:'error',code:'DEVICE_CONFIG_CHANGED'}:data.action==='hello'?{status:'ok',data:{protocol:2,places:ready?.data?.places===true,linuxFiles:ready?.data?.linuxFiles===true}}:await nativeInvoke(data.action,record.device.machineId,data.data);
           if(!disposed)record.frame?.contentWindow?.postMessage({type:'gmssh-file-native-result',requestId:data.requestId,reply},event.origin);
           void pollNative();
         });return;
@@ -188,6 +190,6 @@ window.installGMSSHFileCenter=function({viewerUrl,devices=[]}){
   }
   function click(event){if(event.target instanceof Element&&event.target.closest('.tabs-container')&&!event.target.closest('.gm-files-tab'))hide();}
   window.addEventListener('message',receive);document.addEventListener('click',click,true);
-  const controller={open,hide,update,cancelAll,native:false,pending:()=>counts().active,remove(){disposed=true;clearInterval(nativePoll);if(!nativeProtocol)cancelAll();observer.disconnect();window.removeEventListener('resize',mount);window.removeEventListener('message',receive);document.removeEventListener('click',click,true);root.remove();tabSlot.remove();records.clear();leaseQueue.length=0;holder=undefined;document.documentElement.removeAttribute('data-gmssh-files-active');delete window.gmsshFilesController;void window.electronAPI?.invoke('render-to-main',{type:'gmssh-files-state',data:{active:0,failed:0}}).catch(()=>{});}};
+  const controller={open,hide,update,cancelAll,native:false,linux:false,pending:()=>counts().active,remove(){disposed=true;clearInterval(nativePoll);if(!nativeProtocol)cancelAll();observer.disconnect();window.removeEventListener('resize',mount);window.removeEventListener('message',receive);document.removeEventListener('click',click,true);root.remove();tabSlot.remove();records.clear();leaseQueue.length=0;holder=undefined;document.documentElement.removeAttribute('data-gmssh-files-active');delete window.gmsshFilesController;void window.electronAPI?.invoke('render-to-main',{type:'gmssh-files-state',data:{active:0,failed:0}}).catch(()=>{});}};
   window.gmsshFilesController=controller;update(devices);return controller;
 };

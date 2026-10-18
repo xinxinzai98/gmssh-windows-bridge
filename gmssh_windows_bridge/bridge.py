@@ -2,6 +2,7 @@
 import argparse
 import base64
 import hashlib
+import json
 import logging
 import os
 from pathlib import Path
@@ -9,6 +10,7 @@ import socket
 import sys
 import threading
 import time
+import uuid
 
 import paramiko
 
@@ -16,6 +18,7 @@ from . import __version__
 from .relay import relay
 
 LOG = logging.getLogger("gmssh_windows_bridge")
+SESSION_EVENT_LOCK = threading.Lock()
 SCRIPT = Path(__file__).with_name("collector.ps1").read_text(encoding="utf-8")
 LOGIN_SCRIPT = Path(__file__).with_name("login.ps1").read_text(encoding="utf-8")
 POWERSHELL_SCRIPT = Path(__file__).with_name("powershell.ps1").read_text(encoding="utf-8")
@@ -61,6 +64,8 @@ def login_probe(command):
 
 
 def collect(remote, mode, timeout):
+    if getattr(remote, 'controller_protocol', None) == 2:
+        return remote.collect(mode)
     # The only remotely executed payload is our packaged collector.
     script = LOGIN_SCRIPT if mode == "login" else "$MetricMode = '" + mode + "'\n" + SCRIPT
     # This fixed script has no significant indentation. Removing blank/comment
@@ -119,6 +124,16 @@ class Session(paramiko.ServerInterface):
         self.cache_lock = threading.Lock()
         self.cache = {}
         self.attempts = 0
+        self.session_id = uuid.uuid4().hex
+
+    def history(self, channel, state, reason=None):
+        if not getattr(self.config, 'session_events', False):
+            return
+        value = {'channel': 'terminal', 'instance': self.session_id+':'+str(channel.get_id()), 'state': state}
+        if reason:
+            value['reason'] = reason
+        with SESSION_EVENT_LOCK:
+            print('GMSSH_SESSION '+json.dumps(value, separators=(',', ':')), flush=True)
 
     def get_allowed_auths(self, username):
         return "password"
@@ -252,6 +267,8 @@ class Session(paramiko.ServerInterface):
             else:
                 upstream.exec_command(payload)
             LOG.info("Native %s channel opened", kind)
+            if kind == 'shell':
+                self.history(channel, 'connected')
             relay(channel, upstream, self.config.timeout)
         finally:
             try:
@@ -265,7 +282,17 @@ class Session(paramiko.ServerInterface):
         try:
             channel.settimeout(self.config.timeout)
             if kind in ("exec", "shell", "sftp"):
-                self.forward(channel, kind, payload)
+                if kind == 'shell':
+                    self.history(channel, 'connecting')
+                try:
+                    self.forward(channel, kind, payload)
+                except Exception:
+                    if kind == 'shell':
+                        self.history(channel, 'failed', 'TERMINAL_FAILED')
+                    raise
+                else:
+                    if kind == 'shell':
+                        self.history(channel, 'disconnected', 'CHANNEL_CLOSED')
                 return
             if kind not in ("metrics", "identity"):
                 channel.sendall_stderr(b"Monitoring only: shell, sudo, SFTP and arbitrary commands are unsupported.\n")
@@ -314,7 +341,7 @@ def serve(client, host_key, config, slots):
     transport.banner_timeout = config.timeout
     transport.handshake_timeout = config.timeout
     transport.auth_timeout = config.timeout
-    session = Session(config)
+    session = getattr(config, 'session_factory', Session)(config)
     workers = []
     deadline = time.monotonic() + config.timeout * 2
     try:
@@ -376,9 +403,11 @@ def main():
     parser.add_argument("--wake-broadcast", help="Connected LAN broadcast IPv4; private address ending in .255, fixed UDP 9")
     parser.add_argument("--rustdesk-port", type=int, default=21118, help="Windows loopback RustDesk direct-access port; used only with --desktop-port")
     parser.add_argument("--known-hosts", type=Path, default=Path.home() / ".ssh/known_hosts")
+    parser.add_argument('--controller-connection', type=Path, help='Public, pinned independent-authorization metadata; no bearer token in this file')
     parser.add_argument("--host-key", type=Path, default=Path.home() / ".gmssh-windows-bridge/host_key")
     parser.add_argument("--timeout", type=int, default=15)
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument('--session-events', action='store_true', help='Emit bounded connection lifecycle metadata for the local manager')
     parser.add_argument("--shell", choices=("default", "cmd", "powershell"), default="default",
                         help="Interactive shell only; leaves Windows OpenSSH DefaultShell unchanged")
     parser.add_argument("--background", action="store_true", help="Start a detached local bridge and return its PID")
@@ -403,6 +432,12 @@ def main():
         parser.error(str(error))
     if config.gmssh_terminal:
         config.enable_terminal = True
+    if config.controller_connection:
+        from .controller_session import prepare
+        try:
+            prepare(config)
+        except ValueError as error:
+            parser.error(str(error))
     if not (1 <= config.target_port <= 65535 and 1 <= config.listen_port <= 65535 and 3 <= config.timeout <= 120):
         parser.error("ports must be 1..65535 and timeout must be 3..120 seconds")
     if config.desktop_port is not None and (not 1 <= config.desktop_port <= 65535 or

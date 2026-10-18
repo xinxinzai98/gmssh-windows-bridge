@@ -17,17 +17,18 @@ function nativeAdd(title='添加机器'){
 document.querySelector('.btn.add').onclick=()=>nativeAdd();
 document.getElementById('run').onclick=async()=>{
  const result=document.getElementById('result'),checks=[];const assert=(value,text)=>{if(!value)throw Error(text);checks.push('PASS '+text);};const settle=()=>new Promise(resolve=>setTimeout(resolve,30));
- let mode='cancel',pendingFile,last,opens=0,closes=0,refreshes=0,cleared=0;
+ let mode='cancel',pendingFile,last,opens=0,closes=0,refreshes=0,cleared=0,fileOpens=0;
  const data={id:'a'.repeat(32),computer:'LAB-PC',username:'gmssh',sshPort:22,addresses:['192.0.2.42','192.0.2.43'],sshHostFingerprint:'SHA256:synthetic-public-identity',desktopAuth:'shared-ssh',canRememberDesktop:true};
  const nativeId='1'.repeat(32);
  window.electronAPI={invoke:async(_channel,request)=>{
   if(request.type==='gmssh-pair-clear'){cleared++;return {status:'ok'};}
+  if(mode==='authorization'&&['gmssh-pair-paste','gmssh-pair-text'].includes(request.type))return {status:'ok',data:{...data,desktopAuth:'controller',authorization:{schema:2,port:22257,controller:{id:'b'.repeat(32),name:'值班文件权限',permissions:{view:false,input:false,clipboard:false,files:true,terminal:false,power:false}}},fromCode:true,fromAuthorization:true}};
   if((request.type==='gmssh-pair-paste'||request.type==='gmssh-pair-text'))return {status:'ok',data:{...data,fromCode:request.type==='gmssh-pair-paste'||request.data.text.startsWith('GMSSH-CONNECT1.'),existing:mode==='existing-code'?{machineId:nativeId,target:'192.0.2.42'}:null}};
   if(request.type==='gmssh-pair-file'&&mode==='pending')return new Promise(resolve=>pendingFile=resolve);
   if(request.type==='gmssh-pair-file')return mode==='cancel'?{status:'cancelled'}:mode==='bad'?{status:'error',message:'连接文件未通过身份检查'}:{status:'ok',data:{...data,existing:mode==='existing'?{machineId:nativeId,target:'192.0.2.42'}:null}};
   if(request.type==='gmssh-pair-edit')return {status:'ok',data:{...data,existing:{machineId:nativeId,target:'192.0.2.42'}}};
   if(request.type==='gmssh-pair-manual'){last=structuredClone(request.data);return {status:'ok',data:{...data,sshPort:2222,addresses:['2001:db8::42'],fromManual:true,existing:null}};}
-  last=structuredClone(request.data);return mode==='auth-failed'?{status:'error',message:'连接认证未通过'}:{status:'ok',data:{machineId:nativeId,existing:mode==='existing',credentialsUpdated:request.data.refreshPassword===true||request.data.target.includes(':')}};
+  last=structuredClone(request.data);return mode==='auth-failed'?{status:'error',message:'连接认证未通过'}:{status:'ok',data:{machineId:nativeId,existing:mode==='existing',credentialsUpdated:request.data.refreshPassword===true||request.data.target.includes(':'),...(mode==='authorization'?{permissions:{view:false,input:false,clipboard:false,files:true,terminal:false,power:false}}:{})}};
  }};
  window.gmsshWindowsControllers=new Map([[nativeId,{open:()=>opens++,close:()=>closes++}]]);window.gmsshHomeController={select:id=>{assert(id===nativeId,'定位原生机器 ID，不使用名称模糊匹配');}};
  document.querySelector('.action-btn').onclick=()=>refreshes++;
@@ -118,6 +119,7 @@ document.getElementById('run').onclick=async()=>{
   assert(!isOpen()&&!field('password').value,'Escape 关闭统一窗口并清除 Windows 临时密码');
   assert(nativeTests===1&&nativeAdds===1,'所有 Windows 接入分支均未触发 Linux 测试或添加');
   native=nativeAdd('编辑机器');await settle();assert(!native.querySelector('.gm-add-platform'),'原生编辑机器窗口不插入新增系统选择');native.querySelector('.n-dialog__close').click();await settle();
+  mode='authorization';await openWindows();window.gmsshFilesController={open:id=>{if(id===nativeId)fileOpens++;}};field('code').value='GMSSH-AUTH2.synthetic';field('parse').click();await settle();assert(field('account').textContent.includes('独立授权')&&field('port').value==='22257','独立授权显示正确的服务端口与名称');assert(field('password-label').hidden&&field('remember-label').hidden,'独立授权不要求 Windows 或桌面密码');assert(field('authorization-info').textContent.includes('文件读写')&&!field('authorization-info').textContent.includes('允许：查看桌面'),'预览明确列出授权范围');const beforeAuth=opens;field('connect').click();await settle();assert(fileOpens===1&&opens===beforeAuth,'仅文件授权直接进入文件中心，不尝试未授权桌面');
   await openWindows();native=document.querySelector('.n-dialog');
   window.gmsshPairingController.remove();
   assert(!document.querySelector('.gm-add-platform')&&!document.querySelector('.gm-pair-dialog')&&getComputedStyle(native.querySelector('.modal-content')).display!=='none','移除增强入口后恢复原生 Linux 添加窗口和原加号');native.querySelector('.n-dialog__close').click();

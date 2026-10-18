@@ -1,30 +1,31 @@
 import type { Operations, DownloadProgress } from './operations';
 
 export type UploadEntry = { file?:File; relative:string; directory?:boolean };
+export type PlacesCall=(op:'list'|'add'|'remove'|'open',values?:{path:string;label?:string})=>Promise<{items?:{path:string;label:string}[];path?:string;maximum?:number}>;
 export type TransferTask = {
   id:number; kind:'upload'|'download'|'directory'; name:string; path:string; relative?:string; file?:File; directory?:boolean;
   status:'queued'|'running'|'committing'|'paused'|'done'|'failed'|'cancelled'; bytes:number; size:number; started:number; phase:string; message:string; cleanupPending?:boolean;copyBytes?:number;source?:string;target?:string;code?:string;createdAt?:string;sha256?:string|null;
 };
-export type TransferCollection = {items:TransferTask[];addUploads:(entries:UploadEntry[],base:string)=>void|Promise<void>;addDownloads:(entries:{path:string;name:string;directory:boolean;size:number}[])=>void|Promise<void>;retry:(id:number,name?:string)=>void|Promise<void>;cancel:(id:number)=>void|Promise<void>;cancelAll:()=>void|Promise<void>;clearFinished:()=>void|Promise<void>} & {native?:boolean;pause?:(id:number)=>void|Promise<void>;dispose?:()=>void;chooseUploads?:(remote:string,directory:boolean)=>void|Promise<void>};
+export type TransferCollection = {items:TransferTask[];addUploads:(entries:UploadEntry[],base:string)=>void|Promise<void>;addDownloads:(entries:{path:string;name:string;directory:boolean;size:number}[])=>void|Promise<void>;retry:(id:number,name?:string)=>void|Promise<void>;cancel:(id:number)=>void|Promise<void>;cancelAll:()=>void|Promise<void>;clearFinished:()=>void|Promise<void>} & {native?:boolean;places?:PlacesCall;pause?:(id:number)=>void|Promise<void>;dispose?:()=>void;chooseUploads?:(remote:string,directory:boolean)=>void|Promise<void>};
 type Worker = Pick<Operations,'mkdir'|'upload'|'download'|'close'>;
 const MAX_FILE=512*1024*1024,MAX_QUEUE=2000;
-export function validateRelativePath(value:string):string {
+export function validateRelativePath(value:string,posix=false):string {
   const parts=value.split('/');
-  if(!value||parts.length>32||parts.some(part=>!part||part==='.'||part==='..'||part.length>255||/[<>:"\\|?*\x00-\x1f\x7f]/.test(part)||/[. ]$/.test(part)||/^(CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.|$)/i.test(part)))throw Error('文件夹层级或文件名不适合 Windows，请更名后重新选择。');
+  if(!value||parts.length>32||parts.some(part=>!part||part==='.'||part==='..'||part.length>255||/[\x00-\x1f\x7f]/.test(part)||!posix&&(/[<>:"\\|?*]/.test(part)||/[. ]$/.test(part)||/^(CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.|$)/i.test(part))))throw Error(posix?'文件夹层级或文件名无效，请更名后重新选择。':'文件夹层级或文件名不适合 Windows，请更名后重新选择。');
   return parts.join('/');
 }
 const join=(base:string,relative:string)=>base.replace(/\/?$/,'/')+relative;
 
-export function selectedUploads(files:Iterable<File>):UploadEntry[] {
-  return [...files].map(file=>({file,relative:validateRelativePath(file.webkitRelativePath||file.name)}));
+export function selectedUploads(files:Iterable<File>,posix=false):UploadEntry[] {
+  return [...files].map(file=>({file,relative:validateRelativePath(file.webkitRelativePath||file.name,posix)}));
 }
-export async function droppedUploads(data:DataTransfer,signal?:AbortSignal):Promise<UploadEntry[]> {
+export async function droppedUploads(data:DataTransfer,signal?:AbortSignal,posix=false):Promise<UploadEntry[]> {
   const output:UploadEntry[]=[];
   const check=()=>{if(signal?.aborted)throw Error('已取消读取文件夹。');};
-  const add=(item:UploadEntry)=>{if(output.length>=MAX_QUEUE)throw Error('一次拖入最多 2000 个文件和文件夹，请分批选择。');validateRelativePath(item.relative);output.push(item);};
+  const add=(item:UploadEntry)=>{if(output.length>=MAX_QUEUE)throw Error('一次拖入最多 2000 个文件和文件夹，请分批选择。');validateRelativePath(item.relative,posix);output.push(item);};
   const visit=async(entry:FileSystemEntry,parent=''):Promise<void>=>{
     check();
-    const relative=validateRelativePath(parent+entry.name);
+    const relative=validateRelativePath(parent+entry.name,posix);
     if(entry.isFile){const file=await new Promise<File>((resolve,reject)=>(entry as FileSystemFileEntry).file(resolve,reject));check();add({file,relative});}
     else if(entry.isDirectory){
       add({relative,directory:true});const reader=(entry as FileSystemDirectoryEntry).createReader();
@@ -33,7 +34,7 @@ export async function droppedUploads(data:DataTransfer,signal?:AbortSignal):Prom
   };
   check();const entries=[...data.items].filter(item=>item.kind==='file').map(item=>item.webkitGetAsEntry?.());
   if(entries.length&&entries.every(Boolean)){for(const entry of entries)await visit(entry!);return output;}
-  return selectedUploads(data.files);
+  return selectedUploads(data.files,posix);
 }
 
 export class TransferQueue {

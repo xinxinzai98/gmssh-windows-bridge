@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Add the 0.4.0a23 source candidate across the accepted four-phase plan. Native device acceptance and a new installer release remain pending.
+- Add pinned Linux SFTP with password/private-key authentication and bastion chains to the native, resumable file queue. Keep POSIX path semantics, favorites, folder creation and current-directory refresh.
+- Add device workspaces, in-place desktop/terminal split views, per-device display preferences and local metadata-only connection history with retention and export. Restore inactive desktop tabs without opening duplicate sessions.
+- Add permanent independent controller grants, QR sharing, per-channel server policy, single-session disconnect and individual revocation. Keep Windows/desktop passwords on the server and preserve legacy shared-password connections.
+- Add bounded HTTPS file operations, Windows ConPTY bindings, fixed read-only collectors and genuine Windows terminal lifecycle events. Windows native execution remains a separate acceptance step.
+
+- Develop 0.4.0a22 locally: persist up to 12 favorite remote directories per device in the controller. Display paths and remove only favorite metadata; do not automatically open a stored location or grant local file access.
+- Bind favorites to the verified SSH peer. Check that peer before saving or opening, preserve paths on identity/connection failures and ignore an opening result when the user has already navigated elsewhere.
+- Keep favorites in a separate private, bounded atomic store. A corrupt favorite record leaves transfers usable; failed writes preserve prior metadata. Refresh the favorite list on demand and negotiate the capability so older controllers retain their existing file tools. Exclude favorites from source exports and device backups.
+
 - Develop 0.4.0a21 locally: add per-device backward/forward directory navigation with a bounded 64-entry in-memory history. Restore search, sort and scroll positions only after successful reads; failed navigation and refreshes do not corrupt the forward branch.
 - Create a single folder inside the displayed directory through the existing authenticated file channel. Validate the name and target length, show the exact parent, lock navigation while submitting and distinguish newly created from existing directories.
 - Require acknowledgement of the exact creation target, retain input when the result is unconfirmed, preserve same-name files and allow explicit refresh/retry. Reuse existing mkdir support without a Windows service upgrade or new listener.

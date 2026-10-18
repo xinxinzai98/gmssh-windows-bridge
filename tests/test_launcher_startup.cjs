@@ -8,8 +8,8 @@ const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../gmssh_windows_bridge/launcher.cjs'), 'utf8')
   .replace('start().catch(', 'globalThis.completion = start().catch(');
 
-async function launch({ monitoring = true, failure, terminal = false, keychain = true, wake = false, pairingOnly = false, clipboardText = '', adopted = false, fileQuitResponse=0, nativeTransfers=false } = {}) {
-  const children = [], dialogs = [], copies = [], pickers = [], nativeCalls=[];let nativeActive=0,nativeShutdowns=0;
+async function launch({ monitoring = true, failure, terminal = false, keychain = true, wake = false, pairingOnly = false, clipboardText = '', adopted = false, fileQuitResponse=0, nativeTransfers=false, recordHistory=false } = {}) {
+  const children = [], dialogs = [], copies = [], pickers = [], nativeCalls=[],history=[];let nativeActive=0,nativeShutdowns=0;
   const app = new EventEmitter();
   const handlers = new Map();
   const ipcMain = {handle:(channel,listener)=>handlers.set(channel,listener)};
@@ -37,7 +37,7 @@ async function launch({ monitoring = true, failure, terminal = false, keychain =
     return child;
   };
   const context = { __dirname: '/synthetic', process: { env: { PYTHONPATH: '/must-not-inherit', PYTHONHOME: '/must-not-inherit' } },
-    setTimeout, clearTimeout, URL, URLSearchParams, Buffer,
+    setTimeout, clearTimeout, setInterval, clearInterval, URL, URLSearchParams, Buffer,
     require: name => {
       if (name === 'electron') return { app, ipcMain, autoUpdater, clipboard:{writeText:value=>copies.push(value),readText:()=>{clipboardReads++;return clipboardText;}}, dialog: { showMessageBox: async value => {dialogs.push(value);return {response:fileQuitResponse};},showOpenDialog:async value=>{pickers.push(value);return {canceled:true,filePaths:[]};} } };
       if (name === 'node:child_process') return { spawn };
@@ -45,6 +45,8 @@ async function launch({ monitoring = true, failure, terminal = false, keychain =
       if (name === './launcher-config.json') return config;
       if (name === './device-backup.cjs') return require('../gmssh_windows_bridge/device-backup.cjs');
       if (name === './file-tasks.cjs') return nativeTransfers?{FileTasks:class {activeCount(){return nativeActive;}async invoke(action,id,data){nativeCalls.push({action,id,data});if(action==='pick-upload')nativeActive=1;return action==='hello'?{protocol:2}:{};}async shutdown(){nativeShutdowns++;nativeActive=0;this.closed=true;}}}:require('../gmssh_windows_bridge/file-tasks.cjs');
+      if (name === './linux-files.cjs') return require('../gmssh_windows_bridge/linux-files.cjs');
+      if (name === './workspace.cjs') return recordHistory?{Workspace:class{event(owner,data){history.push({owner,data});}endOwner(owner){history.push({ended:owner});}heartbeat(){}}}:require('../gmssh_windows_bridge/workspace.cjs');
       if (name === './readonly-tools.cjs') return require('../gmssh_windows_bridge/readonly-tools.cjs');
       if (name === './pairing.cjs') {
         const module=require('../gmssh_windows_bridge/pairing.cjs');
@@ -61,7 +63,7 @@ async function launch({ monitoring = true, failure, terminal = false, keychain =
     } };
   vm.runInNewContext(source, context, { importModuleDynamically: async () => { imported = true; return import('node:assert/strict'); } });
   await context.completion;
-  return { children, app, dialogs, copies, pickers, imported, exitCode, ipcMain, autoUpdater, handlers, nativeInstallCalls:()=>nativeInstallCalls, clipboardReads:()=>clipboardReads,quits:()=>quits,nativeCalls,nativeShutdowns:()=>nativeShutdowns };
+  return { children, app, dialogs, copies, pickers, imported, exitCode, ipcMain, autoUpdater, handlers, nativeInstallCalls:()=>nativeInstallCalls, clipboardReads:()=>clipboardReads,quits:()=>quits,nativeCalls,history,nativeShutdowns:()=>nativeShutdowns };
 }
 
 test('starts one shared SSH bridge, waits for both listeners and keeps monitoring read-only', async () => {
@@ -244,4 +246,11 @@ test('quitting a native transfer pauses and saves main-owned tasks instead of ca
   const request=action=>({type:'gmssh-transfer',data:{action,machineId:action==='hello'?null:'1'.repeat(32),data:action==='hello'?{}:{remote:'C:/'}}});
   assert.equal((await invoke(event,request('hello'))).data.protocol,2);assert.equal((await invoke(event,request('pick-upload'))).status,'ok');
   let prevented=false;result.app.emit('before-quit',{preventDefault(){prevented=true;}});await new Promise(r=>setImmediate(r));assert.equal(prevented,true);assert.equal(result.nativeShutdowns(),1);assert.equal(result.quits(),1);assert.ok(result.dialogs.at(-1).buttons.includes('暂停并退出'));assert.equal(result.nativeCalls.some(c=>c.action==='cancel-all'),false);result.app.emit('will-quit');
+});
+
+test('backend terminal lifecycle is bounded metadata from the trusted child, with no command or credential fields',async()=>{
+ const r=await launch({terminal:true,adopted:true,recordHistory:true}),child=r.children[0],instance='a'.repeat(32)+':1';
+ child.stdout.emit('data',Buffer.from('GMSSH_SESSION '+JSON.stringify({channel:'terminal',instance,state:'connected'})+'\n'));
+ child.stdout.emit('data',Buffer.from('GMSSH_SESSION '+JSON.stringify({channel:'terminal',instance,state:'connected',command:'forbidden input'})+'\n'));
+ assert.equal(r.history.length,1);assert.equal(r.history[0].data.machineId,'1'.repeat(32));assert.equal(r.history[0].data.channel,'terminal');assert.equal(r.history[0].data.state,'connected');assert.ok(!JSON.stringify(r.history).includes('forbidden input'));r.app.emit('will-quit');assert.equal(r.history.length,2);
 });

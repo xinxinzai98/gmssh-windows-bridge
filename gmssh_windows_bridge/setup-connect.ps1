@@ -24,7 +24,7 @@ function Get-GMSSHConnectState([string]$DataRoot) {
 }
 
 function Invoke-GMSSHConnectHelper {
-    param([string]$ProgramRoot,[string]$DataRoot,[ValidateSet('init','code','reset','revoke','status','qr')][string]$Operation,[string]$InputJson)
+    param([string]$ProgramRoot,[string]$DataRoot,[ValidateSet('init','code','reset','revoke','status','qr','manage')][string]$Operation,[string]$InputJson)
     $file = Get-GMSSHConnectHelper $ProgramRoot
     $directory = [IO.Path]::GetFullPath($DataRoot)
     if ($directory -match '["\x00-\x1f]') { throw '接入目录无效。' }
@@ -50,7 +50,7 @@ function Invoke-GMSSHConnectHelper {
         if (-not $process.WaitForExit($waitMilliseconds)) { $process.Kill(); throw '一键接入操作超时。' }
         $output = $stdout.GetAwaiter().GetResult().Trim()
         [void]$stderr.GetAwaiter().GetResult()
-        if ($process.ExitCode -ne 0 -or $output.Length -gt 32768) { throw '一键接入未完成，请检查连接密码或运行升级 / 修复。' }
+        if ($process.ExitCode -ne 0 -or $output.Length -gt $(if ($Operation -eq 'manage') { 65536 } else { 32768 })) { throw '一键接入未完成，请检查连接密码或运行升级 / 修复。' }
         $output
     } finally { $InputJson = $null; $process.Dispose() }
 }

@@ -140,6 +140,11 @@ def send_reply(websocket, request_id=None, **fields):
 
 def run_command(client, command, timeout, max_output=MAX_CHUNK, stdin=None):
     """Run only packaged allowlisted commands; discard remote stderr details."""
+    if getattr(client, 'controller_protocol', None) == 2:
+        output = client.run_command(command, timeout, stdin)
+        if len(output) > max_output:
+            raise OperationError('返回内容超过大小限制。')
+        return output
     deadline = time.monotonic() + timeout
     channel = client.get_transport().open_session(timeout=timeout)
     output = bytearray()
@@ -193,6 +198,9 @@ class OperationsSession:
 
     def files(self):
         if self.sftp is None:
+            if getattr(self.ssh(), 'controller_protocol', None) == 2:
+                self.sftp = self.client.open_sftp()
+                return self.sftp
             channel = self.ssh().get_transport().open_session(timeout=self.timeout)
             try:
                 channel.settimeout(self.timeout)
@@ -371,6 +379,10 @@ class OperationsSession:
             send_reply(self.websocket, request_id, ok=True, info=info)
         elif op == "list":
             path = normalize_path(data["path"], allow_root=True)
+            if path != '/' and getattr(self.ssh(), 'controller_protocol', None) == 2:
+                listing = self.files().listing(path)
+                send_reply(self.websocket, request_id, ok=True, **listing)
+                return
             if path == "/":
                 drives = json.loads(run_command(self.ssh(), DRIVE_COMMAND, self.timeout).decode("utf-8-sig"))
                 if not isinstance(drives, list) or any(not isinstance(d, str) or re.fullmatch(r"[A-Za-z]:", d) is None for d in drives):

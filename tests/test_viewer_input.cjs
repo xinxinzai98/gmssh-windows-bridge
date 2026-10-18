@@ -10,9 +10,9 @@ const compiled=esbuild.build({entryPoints:[path.join(__dirname,'../desktop-web/s
 }]});
 async function harness(config,embedded=false){
   const nodes=new Map(),wire=[],connections=[],windowListeners=new Map();let client;
-  function node(id){if(!nodes.has(id))nodes.set(id,{value:'',disabled:true,classList:{add(){},remove(){},toggle(){}},listeners:new Map(),attributes:new Map(),append(){},before(){},after(){},setAttribute(name,value){this.attributes.set(name,value)},getAttribute(name){return this.attributes.get(name)},addEventListener(name,handler){this.listeners.set(name,handler)},focus(){},setPointerCapture(){},width:1920,height:1080,getBoundingClientRect:()=>({left:10,top:40,width:1280,height:800})});return nodes.get(id)}
+  function node(id){if(!nodes.has(id))nodes.set(id,{value:'',disabled:true,classList:{add(){},remove(){},toggle(){}},listeners:new Map(),attributes:new Map(),append(){},before(){},after(){},querySelectorAll:()=>[],setAttribute(name,value){this.attributes.set(name,value)},getAttribute(name){return this.attributes.get(name)},addEventListener(name,handler){this.listeners.set(name,handler)},focus(){},setPointerCapture(){},width:1920,height:1080,getBoundingClientRect:()=>({left:10,top:40,width:1280,height:800})});return nodes.get(id)}
   const posts=[],window={setTimeout,clearTimeout,addEventListener:(name,handler)=>{if(!windowListeners.has(name))windowListeners.set(name,[]);windowListeners.get(name).push(handler)},removeEventListener:(name,handler)=>{const list=windowListeners.get(name)||[];const index=list.indexOf(handler);if(index>=0)list.splice(index,1);}};window.parent=embedded?{postMessage:(data,origin)=>posts.push({data,origin})}:window;
-  const scope={window,setTimeout,clearTimeout,document:{getElementById:node,createElement:tag=>node(Symbol(tag)),querySelectorAll:()=>[],addEventListener(){}},location:{hash:'',href:'http://127.0.0.1/test'},URL,URLSearchParams,TextEncoder,
+  const scope={window,setTimeout,clearTimeout,document:{getElementById:node,createElement:tag=>node(Symbol(tag)),querySelectorAll:()=>[],addEventListener(){}},location:{hash:'',href:'http://127.0.0.1/test'},URL,URLSearchParams,TextEncoder,crypto:require('node:crypto').webcrypto,
     fetch:config?async()=>({ok:true,json:async()=>({transport:'monitor',keychain:true,has_saved_password:true,capabilities:{},...config})}):()=>new Promise(()=>{}),
     requestAnimationFrame:()=>1,recordMouse:event=>wire.push(JSON.parse(JSON.stringify(event))),recordConnect:args=>connections.push(JSON.parse(JSON.stringify(args))),setClient:value=>{client=value}};
   vm.runInNewContext((await compiled).outputFiles[0].text,scope);
@@ -63,4 +63,9 @@ test('the embedded desktop files button delegates to the independent center with
 test('an older parent that does not acknowledge independent files retains the existing sidebar',async()=>{
   const h=await harness({capabilities:{files:true}},true);h.node('file-panel').hidden=true;h.node('files').onclick();
   h.message({type:'gmssh-file-center-opened',requestId:h.posts[0].data.requestId},{});await new Promise(resolve=>setTimeout(resolve,1250));assert.equal(h.node('file-panel').hidden,false);assert.equal(h.connections.length,0);
+});
+
+test('failed desktop authentication stops saved-credential retries until an explicit login submission',async()=>{
+  const h=await harness({});h.client.events.lifecycle('failed','DESKTOP_AUTH_FAILED');h.reopen();h.reopen();assert.equal(h.connections.length,0);
+  h.node('desktop-password').value='synthetic-new-login';h.node('login').listeners.get('submit')({preventDefault(){}});assert.equal(h.connections.length,1);assert.equal(h.node('desktop-password').value,'');
 });

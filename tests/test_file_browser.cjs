@@ -1,8 +1,13 @@
 const test=require('node:test'),assert=require('node:assert/strict'),path=require('node:path'),vm=require('node:vm');
 const esbuild=require('../desktop-web/node_modules/esbuild');
-const compiled=esbuild.build({stdin:{contents:"export {browseEntries,folderTarget} from './src/file-panel';export {Operations} from './src/operations';",resolveDir:path.join(__dirname,'../desktop-web')},bundle:true,platform:'node',format:'cjs',write:false});
-const api=compiled.then(value=>{const scope={module:{exports:{}},exports:{}};scope.exports=scope.module.exports;vm.runInNewContext(value.outputFiles[0].text,scope);return scope.module.exports;});
+const compiled=esbuild.build({stdin:{contents:"export {browseEntries,folderTarget} from './src/file-panel';export {Operations} from './src/operations';export {NativeTransfers} from './src/native-transfers';",resolveDir:path.join(__dirname,'../desktop-web')},bundle:true,platform:'node',format:'cjs',write:false});
+const api=compiled.then(value=>{const scope={module:{exports:{}},exports:{},window:{setInterval:()=>0},clearInterval(){}};scope.exports=scope.module.exports;vm.runInNewContext(value.outputFiles[0].text,scope);return scope.module.exports;});
 const entry=(name,size=0,modified=0,directory=false)=>({name,size,modified,directory});
+
+test('favorite connection errors do not claim that file bytes or a partial transfer were saved',async()=>{
+  const {NativeTransfers}=await api,queue=new NativeTransfers(async action=>{if(action==='list')return {jobs:[]};throw Object.assign(Error('old transfer message'),{code:'TRANSFER_IO'});},()=>{},true);
+  try{await assert.rejects(queue.places('open',{path:'C:/资料'}),error=>/无法核对设备连接/.test(error.message)&&!error.message.includes('已传部分'));}finally{queue.dispose();}
+});
 
 test('current-directory search is Unicode aware, sorts naturally, keeps folders first and never mutates its snapshot',async()=>{
   const {browseEntries}=await api,values=[entry('报告10.txt',20,200),entry('报告2.txt',10,300),entry('资料',0,100,true),entry('NOTES.TXT',0,0)];const before=JSON.stringify(values);

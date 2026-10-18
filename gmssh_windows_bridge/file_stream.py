@@ -41,8 +41,13 @@ def metadata(info):
 
 
 class FileStream:
-    def __init__(self, owner):
+    def __init__(self, owner, path_validator=path, name_validator=None):
         self.owner = owner
+        self.path = path_validator
+        if name_validator is None:
+            from .desktop_operations import validate_name
+            name_validator = validate_name
+        self.name = name_validator
         self.file = None
         self.mode = None
         self.pending = None
@@ -80,7 +85,7 @@ class FileStream:
         return full.hexdigest(), head
 
     def part_names(self, options):
-        destination = path(options['path']); token = options['token']
+        destination = self.path(options['path']); token = options['token']
         if not isinstance(token,str) or re.fullmatch('[0-9a-f]{32}',token) is None: raise StreamError('INVALID_TRANSFER')
         part = posixpath.join(posixpath.dirname(destination),'.gmssh-transfer-'+token+'.part')
         return destination, part, part+'.json'
@@ -131,12 +136,12 @@ class FileStream:
         if not isinstance(action,str) or action not in fields or not isinstance(options,dict) or set(options)!=fields[action]:raise StreamError('INVALID_TRANSFER')
         if action=='peer':return {'protocol':1,'peer':self.peer(options['expected']),'chunk':CHUNK,'maximum':MAX_SIZE}
         if action=='mkdir':
-            peer=self.peer(options['peer']);name=path(options['path']);info=self.exists(name)
+            peer=self.peer(options['peer']);name=self.path(options['path']);info=self.exists(name)
             if info is None:self.sftp.mkdir(name)
             elif not stat.S_ISDIR(info.st_mode or 0):raise StreamError('CONFLICT')
             return {'peer':peer,'created':True}
         if action=='walk':
-            peer=self.peer(options['peer']);root=path(options['path']);rows=[];pending=[('',0)]
+            peer=self.peer(options['peer']);root=self.path(options['path']);rows=[];pending=[('',0)]
             while pending:
                 relative,depth=pending.pop()
                 if depth>32:raise StreamError('TRANSFER_LIMIT')
@@ -145,8 +150,7 @@ class FileStream:
                 rows.append({'relative':relative,'directory':True,'size':0,'modified':0})
                 iterator=self.sftp.listdir_iter(directory,read_aheads=1)
                 for item in iterator:
-                    from .desktop_operations import validate_name
-                    child=posixpath.join(relative,validate_name(item.filename));path(posixpath.join(root,child))
+                    child=posixpath.join(relative,self.name(item.filename));self.path(posixpath.join(root,child))
                     if len(rows)+len(pending)>=2000:raise StreamError('TRANSFER_LIMIT')
                     if stat.S_ISDIR(item.st_mode or 0):pending.append((child,depth+1))
                     else:rows.append({'relative':child,'directory':False,**metadata(item)})
@@ -177,10 +181,10 @@ class FileStream:
                 except Exception:
                     self.sftp.remove(sidecar);raise
             else:self.file=self.sftp.open(part,'r+b',bufsize=0)
-            self.file.seek(offset);self.mode='upload';self.offset=offset;self.details=wanted;self.destination=path(options['path']);self.part=part;self.sidecar=sidecar
+            self.file.seek(offset);self.mode='upload';self.offset=offset;self.details=wanted;self.destination=self.path(options['path']);self.part=part;self.sidecar=sidecar
             return state
         if action=='prepare-download':
-            self.peer(options['peer']);name=path(options['path']);info=metadata(self.sftp.lstat(name));expected=options['expected']
+            self.peer(options['peer']);name=self.path(options['path']);info=metadata(self.sftp.lstat(name));expected=options['expected']
             if expected is not None and (not isinstance(expected,dict) or set(expected)!={'size','modified','sha256'}):raise StreamError('INVALID_TRANSFER')
             if expected is not None and any(expected.get(k)!=v for k,v in info.items()):raise StreamError('SOURCE_CHANGED')
             offset=integer(options['offset']);prefix=digest(options['prefixSha256'])

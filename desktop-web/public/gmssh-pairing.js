@@ -81,7 +81,7 @@ window.installGMSSHPairing = function () {
       </section>
       <section data-pair="preview" hidden>
         <div class="gm-pair-summary"><strong data-pair="computer"></strong><span data-pair="account"></span><code data-pair="fingerprint"></code></div>
-        <p>请核对上方主机指纹与 Windows 服务端一致。</p>
+        <p>请核对上方主机指纹与服务端一致。</p><p data-pair="authorization-info" hidden></p>
         <label data-pair="name-label"><span>设备名称</span><input data-pair="name" maxlength="128" autocomplete="off"></label>
         <div class="gm-pair-address-row">
           <label><span>连接地址</span><input data-pair="target" list="gm-pair-targets" autocomplete="off" placeholder="IPv4 / IPv6 地址"><datalist id="gm-pair-targets" data-pair="targets"></datalist></label>
@@ -107,7 +107,8 @@ window.installGMSSHPairing = function () {
     field('refresh-label').hidden=!preview?.existing||coded;
     field('password-label').hidden=coded||(!!preview?.existing&&!refresh);
     field('remember-label').hidden=(!refresh&&!!preview?.existing)||preview?.desktopAuth!=='shared-ssh'||!preview?.canRememberDesktop;
-    field('connect').textContent=changed?'更新地址并连接':coded?'连接并打开桌面':preview?.existing?(refresh?'保存密码并连接':'打开已有设备'):'接入并打开桌面';
+    field('password-label').querySelector('span').textContent=preview?.authorization?'独立授权凭据（也可重新粘贴完整授权码）':'连接密码';
+    field('connect').textContent=preview?.authorization?'添加授权连接':changed?'更新地址并连接':coded?'连接并打开桌面':preview?.existing?(refresh?'保存密码并连接':'打开已有设备'):'接入并打开桌面';
     field('connect').hidden=!preview;field('lookup').hidden=!!preview||field('manual-fields').hidden;
     field('connect').disabled=busy||!preview||!field('target').value.trim()||(!coded&&(!preview.existing||refresh)&&!field('password').value);
   };
@@ -119,14 +120,14 @@ window.installGMSSHPairing = function () {
   function showPreview(reply){
     if(reply?.status!=='ok')throw Error(reply?.message||'连接信息读取失败。');
     preview=reply.data;field('refresh').checked=false;field('password').value=field('code').value='';field('computer').textContent=preview.computer;
-    field('account').textContent='SSH 账号 '+preview.username+' · 端口 '+preview.sshPort;
+    const authorization=preview.authorization;field('account').textContent=authorization?'独立授权 · '+authorization.controller.name:'SSH 账号 '+preview.username+' · 端口 '+preview.sshPort;field('authorization-info').hidden=!authorization;if(authorization){const names={view:'查看桌面',input:'键鼠',clipboard:'剪贴板',files:'文件读写',terminal:'终端',power:'电源'};field('authorization-info').textContent='允许：'+Object.entries(authorization.controller.permissions).filter(([,enabled])=>enabled).map(([key])=>names[key]).join('、')+'。授权长期有效，可在服务端单独撤销；最终权限以服务端当前设置为准。';}
     field('fingerprint').textContent=preview.sshHostFingerprint;
     const native=/^[a-f0-9]{32}$/.test(preview.existing?.machineId||'')?document.querySelector('[data-machine-id="'+preview.existing.machineId+'"]'):null;
     const existingName=native?.querySelector('.machine-name .name-txt')?.textContent.trim()||native?.querySelector('.windows-card-name')?.textContent.trim()||native?.querySelector('.machine-name')?.textContent.trim()||preview.existing?.name;
     field('name').value=existingName||preview.computer;field('name').readOnly=!!preview.existing;field('name-label').hidden=!!preview.existing&&!existingName;
     field('targets').replaceChildren(...preview.addresses.map(address=>{const option=document.createElement('option');option.value=address;return option;}));
     field('target').value=preview.existing&&preview.addresses.includes(preview.existing.target)?preview.existing.target:preview.addresses[0];
-    field('port').value=String(preview.sshPort);field('existing').hidden=!preview.existing;
+    field('port').value=String(preview.authorization?.port||preview.sshPort);field('port').setAttribute('aria-label',preview.authorization?'授权服务端口':'SSH 端口');field('existing').hidden=!preview.existing;
     field('preview').hidden=false;field('manual-fields').hidden=true;
     selectSource(preview.fromManual?'manual':preview.fromCode?'paste':'file');
     status(preview.fromManual?'已读取主机身份，请与 Windows 端指纹核对一致后输入密码连接。':preview.fromCode?'连接码已识别，可直接接入；已有设备沿用原卡片。':preview.existing?'检测到同一设备；可以打开原连接，或填写新的 IPv4 / IPv6 地址。':'连接文件已检查，请核对电脑并输入连接密码。');
@@ -157,7 +158,7 @@ window.installGMSSHPairing = function () {
         else if(Date.now()<deadline)setTimeout(select,200);
       };
       select();
-      lock(false);close();const controller=window.gmsshWindowsControllers?.get(id);if(reply.data.credentialsUpdated)controller?.close?.();controller?.open();
+      const permissions=reply.data.permissions||preview.authorization?.controller.permissions;lock(false);close();const controller=window.gmsshWindowsControllers?.get(id);if(reply.data.credentialsUpdated)controller?.close?.();if(permissions?.view===false){if(permissions.files)window.gmsshFilesController?.open(id);else window.gmsshWorkspaceController?.open(id,permissions.terminal?'terminal':'overview');}else controller?.open();
     }catch(error){field('password').value='';status(error.message||'接入未完成，请重试。');}
     finally{lock(false);}
   }

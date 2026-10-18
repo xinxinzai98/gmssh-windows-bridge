@@ -110,9 +110,16 @@ class PairingManager {
       if(fs.lstatSync(knownHosts).isSymbolicLink()||fs.readFileSync(knownHosts,'utf8').trim().split('\n').some(line=>!known.trim().split('\n').includes(line)))throw Error('已保存的 SSH 主机身份不一致，已停止连接。');
     }
     if(!fs.existsSync(knownHosts)||fs.readFileSync(knownHosts,'utf8')!==known){const temporary=knownHosts+'.'+randomUUID()+'.tmp';try{fs.writeFileSync(temporary,known,{flag:'wx',mode:0o600});fs.renameSync(temporary,knownHosts);}finally{if(fs.existsSync(temporary))fs.unlinkSync(temporary);}}
+    let authorization;
+    if(connection.authorization){
+      const file=path.join(folder,'controller-connection.json'),temporary=file+'.'+randomUUID()+'.tmp';
+      if(fs.existsSync(file)&&fs.lstatSync(file).isSymbolicLink())throw Error('独立授权的本机配置包含链接，已停止启动。');
+      try{fs.writeFileSync(temporary,record.connection,{flag:'wx',mode:0o600});fs.renameSync(temporary,file);}finally{if(fs.existsSync(temporary))fs.unlinkSync(temporary);}
+      authorization={file,permissions:connection.authorization.controller.permissions};
+    }
     const adapter=connection.adapters.find(value=>value.address===record.target);
     const legacy=record.legacyMachineId?this.legacy.find(value=>value.machineId===record.legacyMachineId):null;
-    return {target:record.target,label:record.name,machineId:record.machineId,port:record.desktopPort,keychain:this.keychain,
+    return {target:record.target,label:record.name,machineId:record.machineId,port:record.desktopPort,keychain:authorization?false:this.keychain,...(authorization?{authorization}:{}),
       credentialAliases:record.previousTargets||[],
       monitor:{port:record.monitorPort,targetPort:connection.sshPort,username:connection.username,knownHosts,hostKey:legacy?.monitor.hostKey||path.join(folder,'bridge_host_key'),forwardTerminal:true},
       wake:adapter?{mac:adapter.mac,broadcast:adapter.broadcast}:null};
@@ -134,9 +141,9 @@ class PairingManager {
     const timer=setTimeout(()=>{if(this.initialAuth.get(machineId)===value)this.initialAuth.delete(machineId);},120000);timer.unref?.();
   }
   existing(connection) {
-    return [...this.records.filter(value=>value.machineId).map(value=>({machineId:value.machineId,name:value.name,target:value.target,fingerprint:value.public.sshHostFingerprint,username:value.public.username,sshPort:value.public.sshPort,monitorPort:value.monitorPort})),
+    return [...this.records.filter(value=>value.machineId).map(value=>({machineId:value.machineId,name:value.name,target:value.target,fingerprint:value.public.sshHostFingerprint,username:value.public.username,sshPort:value.public.sshPort,monitorPort:value.monitorPort,...(value.public.authorization?{authorizationId:value.public.authorization.controller.id}:{})})),
       ...this.legacy.map(value=>({machineId:value.machineId,target:value.target,fingerprint:value.fingerprint,username:value.monitor?.username,sshPort:value.monitor?.targetPort,monitorPort:value.monitor?.port}))]
-      .find(value=>value.machineId&&value.fingerprint===connection.sshHostFingerprint&&value.username===connection.username&&value.sshPort===connection.sshPort);
+      .find(value=>value.machineId&&value.fingerprint===connection.sshHostFingerprint&&value.username===connection.username&&value.sshPort===connection.sshPort&&(value.authorizationId||null)===(connection.authorization?.controller.id||null));
   }
   async manual(data) {
     if(this.busy)throw Error('正在接入，请等待当前操作完成。');
@@ -269,8 +276,8 @@ class PairingManager {
     let {connection,text,code}=this.preview;
     if(typeof target!=='string'||typeof name!=='string'||!name.trim()||name.length>128||/[\x00-\x1f\x7f]/.test(name))throw Error('请选择有效地址并填写设备名称。');
     if(!connection.addresses.includes(target)){
-      const endpoint=await this.request({operation:'endpoint',target,port:connection.sshPort});
-      if(endpoint.port!==connection.sshPort)throw Error('端口与连接信息不同，请用手动填写核对该端口的主机身份。');
+      const expectedPort=connection.authorization?.port||connection.sshPort,endpoint=await this.request({operation:'endpoint',target,port:expectedPort});
+      if(endpoint.port!==expectedPort)throw Error('端口与连接信息不同，请用手动填写核对该端口的主机身份。');
       target=endpoint.target;
       connection={...connection,addresses:[...new Set([target,...connection.addresses])]};text=connectionText(connection);
     }
@@ -281,6 +288,7 @@ class PairingManager {
     const resolvePassword=async()=>{
       if(!code)return;
       const result=await this.request({operation:'redeem-code',connection:code,target});
+      if(connection.authorization&&result.permissions&&Object.keys(result.permissions).sort().join()==='clipboard,files,input,power,terminal,view'&&Object.values(result.permissions).every(value=>typeof value==='boolean')){Object.assign(connection.authorization.controller.permissions,result.permissions);text=connectionText(connection);const record=this.records.find(value=>value.id===connection.id);if(record){record.public=connection;record.connection=text;this.options(record);this.save();const running=this.running.get(record.id);if(running?.authorization)running.authorization.permissions=connection.authorization.controller.permissions;}}
       if(typeof result.password!=='string'||!result.password||Buffer.byteLength(result.password)>1024)throw Error('Windows 接入响应无效。');
       password=result.password;result.password='';
     };
@@ -288,7 +296,8 @@ class PairingManager {
     try {
       await this.request({operation:'probe',connection:text,target});
       if(existing){
-        if(addressChanged){await resolvePassword();const result=await this.replaceTarget(existing,connection,target,password,rememberDesktop);if(code)delete this.preview.code;return result;}
+        const authorizationChanged=connection.authorization&&this.records.some(value=>value.machineId===existing.machineId&&JSON.stringify(value.public.authorization)!==JSON.stringify(connection.authorization));
+        if(addressChanged||authorizationChanged){await resolvePassword();const result=await this.replaceTarget(existing,connection,target,password,rememberDesktop);if(code)delete this.preview.code;return result;}
         const managed=this.records.find(record=>record.machineId===existing.machineId);
         if(managed){await this.start(managed);this.save();}
         if(refreshPassword===true){
@@ -310,9 +319,9 @@ class PairingManager {
             if(connection.desktopAuth==='shared-ssh')this.queueDesktopAuth(existing.machineId,password,rememberDesktop);
           }finally{data.authValue='';password='';}
         }
-        await this.changed();if(code)delete this.preview.code;return {machineId:existing.machineId,existing:true,credentialsUpdated:refreshPassword===true};
+        await this.changed();if(code)delete this.preview.code;return {machineId:existing.machineId,existing:true,credentialsUpdated:refreshPassword===true,...(connection.authorization?{permissions:connection.authorization.controller.permissions}:{})};
       }
-      for(const value of [...this.legacy,...this.bindings()])if(value.target===target)throw Error('此地址已配置为另一台电脑，已停止创建重复连接。');
+      for(const value of [...this.legacy,...this.bindings()])if(value.target===target&&!connection.authorization)throw Error('此地址已配置为另一台电脑，已停止创建重复连接。');
       let native=await this.nativeRecords();
       let record=this.records.find(value=>value.id===id);
       if(record&&record.target!==target)throw Error('这台电脑已有待完成的接入，请使用原先选择的地址重试。');
@@ -329,7 +338,7 @@ class PairingManager {
       await resolvePassword();
       const initial=connection.desktopAuth==='shared-ssh'?{password,remember:rememberDesktop}:null;
       {
-        const data={name:record.name,ip:'127.0.0.1',port:record.monitorPort,userName:connection.username,authType:'pass',authValue:password,groupId:'',desc:connection.computer+' · '+target+' · 监控/终端/桌面',sudoPolicy:'skip'};
+        const data={name:record.name,ip:'127.0.0.1',port:record.monitorPort,userName:connection.username,authType:'pass',authValue:password,groupId:'',desc:connection.computer+' · '+target+(connection.authorization?' · 独立授权，权限由服务端管理':' · 监控/终端/桌面'),sudoPolicy:'skip'};
         try{
           const tested=await this.api('/node/test',data);
           if(![0,200].includes(tested.code))throw Error('连接认证未通过，请核对 Windows 安装时设置的 GMSSH 连接密码后重试。');
@@ -344,7 +353,7 @@ class PairingManager {
       record.machineId=node.id;this.save();
       if(initial)this.queueDesktopAuth(record.machineId,initial.password,initial.remember);
       await this.changed();if(code)delete this.preview.code;
-      return {machineId:record.machineId,existing:false};
+      return {machineId:record.machineId,existing:false,...(connection.authorization?{permissions:connection.authorization.controller.permissions}:{})};
     }finally{password='';this.busy=false;}
   }
 }

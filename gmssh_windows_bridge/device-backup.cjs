@@ -111,7 +111,7 @@ class DeviceBackup {
       for(const item of payload.devices)if(item.kind==='windows'){
         const connection=await this.pairing.request({operation:'inspect',connection:item.windows.connection});
         if(connection.fromCode||connection.connectionText||connection.username!==item.username||connection.sshPort!==item.port||!connection.addresses.includes(item.address))throw Error('Windows 备份的主机身份与地址不一致。');
-        item.identity=connection.id;
+        item.identity=connection.id;if(connection.authorization)item.credentialKind='authorization';
       }
       for(const item of payload.devices){const key=item.kind+'\0'+(item.identity||endpoint(item));if(identities.has(key))throw Error('备份中包含重复的设备连接。');identities.add(key);}
       if(run!==this.epoch)throw Error('已取消读取备份。');
@@ -123,7 +123,7 @@ class DeviceBackup {
     return {id:this.preview.id,createdAt:this.preview.createdAt,canRememberDesktop:this.pairing.keychain===true,devices:this.preview.devices.map(item=>{
       const existing=item.kind==='windows'?this.pairing.records.some(record=>record.id===item.identity&&nodes.some(node=>node.id===record.machineId))||this.pairing.legacy.some(record=>nodes.some(node=>node.id===record.machineId)&&record.fingerprint===JSON.parse(item.windows.connection).sshHostFingerprint&&record.monitor?.username===item.username&&record.monitor?.targetPort===item.port):nodes.some(node=>!this.windowBinding(node)&&endpoint(node)===endpoint(item));
       const conflict=item.kind==='windows'&&[...this.pairing.records,...this.pairing.legacy].some(record=>record.target===item.address&&record.id!==item.identity&&(record.public?.sshHostFingerprint||record.fingerprint)!==JSON.parse(item.windows.connection).sshHostFingerprint);
-      return {ref:item.ref,kind:item.kind,name:item.name,address:item.address,port:item.port,username:item.username,group:item.group,authType:item.authType,bastion:item.bastion,hasCredentials:!!item.credentials,keyPassRequired:item.authType==='ca'&&!item.credentials,status:conflict?'conflict':existing?'existing':'new'};
+      return {ref:item.ref,kind:item.kind,name:item.name,address:item.address,port:item.port,username:item.username,group:item.group,authType:item.authType,bastion:item.bastion,hasCredentials:!!item.credentials,keyPassRequired:item.authType==='ca'&&!item.credentials,status:conflict?'conflict':existing?'existing':'new',...(item.credentialKind?{credentialKind:item.credentialKind}:{})};
     })};
   }
   async import({id,ids,auth={},rememberDesktop=false}){

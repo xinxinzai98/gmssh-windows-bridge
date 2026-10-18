@@ -11,7 +11,7 @@ import tempfile
 
 def source_files():
     source = Path(__file__).resolve().parent / 'windows_connect'
-    files = {name: (source / name).read_bytes() for name in ('core.go', 'main.go', 'platform_windows.go', 'qr_png.go')}
+    files = {name: (source / name).read_bytes() for name in ('core.go', 'main.go', 'platform_windows.go', 'qr_png.go', 'controllers.go', 'controller_desktop.go', 'controller_files.go', 'controller_platform_windows.go', 'controller_info.go', 'controller_terminal.go', 'controller_conpty_windows.go')}
     for file in sorted((source / 'qr').rglob('*')):
         if file.is_file() and (file.suffix == '.go' or file.name in {'LICENSE', 'PROVENANCE.json'}):
             files[file.relative_to(source).as_posix()] = file.read_bytes()
@@ -38,7 +38,7 @@ def build(output, go='go'):
             executable = output.resolve() / 'gmssh-connect.exe'
             roots = [name for name in files if '/' not in name and name.endswith('.go')]
             subprocess.run([str(go), 'build', '-trimpath', '-buildvcs=false', '-ldflags=-s -w -H=windowsgui', '-o', str(executable), *roots], cwd=stage, env=environment, check=True)
-        metadata = {'filename': executable.name, 'protocol': 1, 'sha256': hashlib.sha256(executable.read_bytes()).hexdigest(), 'sourceSha256': digest}
+        metadata = {'filename': executable.name, 'protocol': 1, 'controllerProtocol': 2, 'sha256': hashlib.sha256(executable.read_bytes()).hexdigest(), 'sourceSha256': digest}
         (output / 'connect-payload.json').write_text(json.dumps(metadata, indent=2) + '\n')
         return metadata
     except Exception:

@@ -10,6 +10,8 @@ const { PairingManager, loopbackRequest } = require('./pairing.cjs');
 const { DeviceBackup, writeBackup, MAX_FILE } = require('./device-backup.cjs');
 const readonlyTools = require('./readonly-tools.cjs');
 const { FileTasks } = require('./file-tasks.cjs');
+const { LinuxFiles } = require('./linux-files.cjs');
+const { Workspace } = require('./workspace.cjs');
 const config = require('./launcher-config.json');
 const backends = [];
 const stopBackends = () => backends.forEach(child => child.kill('SIGTERM'));
@@ -28,6 +30,7 @@ const pairingPage = fs.readFileSync(path.join(__dirname, 'gmssh-pairing.js'), 'u
 const backupPage = fs.readFileSync(path.join(__dirname, 'gmssh-backup.js'), 'utf8');
 const toolsPage = fs.readFileSync(path.join(__dirname, 'gmssh-tools.js'), 'utf8');
 const filesPage = fs.readFileSync(path.join(__dirname, 'gmssh-files.js'), 'utf8');
+const workspacePage = fs.readFileSync(path.join(__dirname, 'gmssh-workspace.js'), 'utf8');
 const qrPage = fs.readFileSync(path.join(__dirname, 'gmssh-qr.js'), 'utf8');
 const qrDecoder = fs.readFileSync(path.join(__dirname, 'jsQR.js'), 'utf8');
 const theme = fs.readFileSync(path.join(__dirname, 'gmssh-theme.css'), 'utf8');
@@ -36,13 +39,23 @@ const legacyBindings = [], windows = new Set();
 const backups = new WeakMap();
 const toolQueries = new WeakSet();
 const fileActivity = new Map();
-let fileQuitAllowed=false,confirmingFileQuit=false,nativeFiles;
+let fileQuitAllowed=false,confirmingFileQuit=false,nativeFiles,linuxFiles;
+let workspace;
+function workspaceState(){return workspace??=new Workspace({root:path.join(app.getPath('userData'),'workspaces')});}
+const workspaceHeartbeat=setInterval(()=>{try{workspace?.heartbeat();}catch{}},30000);workspaceHeartbeat.unref?.();
 function fileTasks(){
   if(!nativeFiles||nativeFiles.closed)nativeFiles=new FileTasks({root:path.join(app.getPath('userData'),'file-transfers'),python:config.python,
+    onSession:value=>workspaceState().event('transfers',value),
     pickOpen:options=>dialog.showOpenDialog(options),pickSave:options=>dialog.showSaveDialog(options),
     resolveBinding:async machineId=>{
       const binding=[...(pairing?.bindings()||[]),...legacyBindings].find(value=>value.machineId===machineId);
-      if(!binding?.monitor)throw Object.assign(Error('DEVICE_CONFIG_UNAVAILABLE'),{code:'DEVICE_CONFIG_UNAVAILABLE'});
+      if(!binding){
+        linuxFiles??=new LinuxFiles({root:path.join(app.getPath('userData'),'file-transfers'),api:nativeRequest,
+          inspect:ssh=>fileTasks().run({kind:'inspect-ssh',ssh}).promise,
+          confirm:async value=>(await dialog.showMessageBox({type:'question',message:'核对 '+value.name+' 的 SSH 主机身份',detail:(value.bastion?'跳板机 ':'')+value.host+':'+value.port+'\n'+value.algorithm+'\n'+value.peer+'\n请与服务器上的主机指纹核对，确认一致后继续。凭据只会发送给已确认的主机。',buttons:['取消','指纹一致，继续'],defaultId:0,cancelId:0,noLink:true})).response===1});
+        return linuxFiles.resolve(machineId);
+      }
+      if(!binding.monitor)throw Object.assign(Error('DEVICE_CONFIG_UNAVAILABLE'),{code:'DEVICE_CONFIG_UNAVAILABLE'});
       const reply=await nativeRequest('/node/detail',{id:machineId}),node=reply?.data;
       if(![0,200].includes(reply?.code)||node?.id!==machineId||!['127.0.0.1','localhost'].includes(node.ip)||Number(node.port)!==binding.monitor.port||node.userName!==binding.monitor.username)throw Object.assign(Error('DEVICE_CONFIG_CHANGED'),{code:'DEVICE_CONFIG_CHANGED'});
       return binding;
@@ -74,6 +87,20 @@ autoUpdater.checkForUpdates = () => {};
 autoUpdater.quitAndInstall = () => {};
 const handle = ipcMain.handle.bind(ipcMain);
 ipcMain.handle = (channel, listener) => handle(channel, channel === 'render-to-main' ? async (event, request, ...args) => {
+  if(request?.type==='gmssh-workspace'){
+    if(event.sender?.getURL().split('#')[0]!==indexUrl)return {status:'error',code:'UNTRUSTED_PAGE'};
+    try{
+      if(!request.data||Object.keys(request.data).sort().join()!=='action,data')throw Object.assign(Error(),{code:'INVALID_WORKSPACE'});
+      const {action,data}=request.data,manager=workspaceState();
+      if(action==='session')return {status:'ok',data:manager.event('window-'+event.sender.id,data)};
+      const result=manager.invoke(action,data);
+      if(action==='export'){
+        const picked=await dialog.showSaveDialog({title:'导出连接历史（不包含设备凭据）',defaultPath:'GMSSH-connection-history-'+new Date().toISOString().slice(0,10)+'.json',filters:[{name:'连接历史',extensions:['json']}]});
+        if(picked.canceled||!picked.filePath)return {status:'cancelled'};writeBackup(picked.filePath,Buffer.from(JSON.stringify(result,null,2)));return {status:'ok',data:{count:result.sessions.length}};
+      }
+      return {status:'ok',data:result};
+    }catch(error){return {status:'error',code:/^[A-Z_]{1,48}$/.test(error?.code)?error.code:'WORKSPACE_WRITE_FAILED'};}
+  }
   if(request?.type==='gmssh-transfer'){
     if(event.sender?.getURL().split('#')[0]!==indexUrl)return {status:'error',code:'UNTRUSTED_PAGE'};
     const value=request.data;
@@ -192,7 +219,7 @@ app.on('browser-window-created', (_event, window) => {
   };
   contents.on('did-finish-load', () => {
     if (contents.getURL().split('#')[0] !== indexUrl) return;
-    windows.add(contents);contents.once('destroyed',()=>{windows.delete(contents);fileActivity.delete(contents);backups.get(contents)?.clear();});
+    windows.add(contents);contents.once('destroyed',()=>{windows.delete(contents);fileActivity.delete(contents);backups.get(contents)?.clear();try{workspace?.endOwner('window-'+contents.id);}catch{}});
     inject(contents).catch(error => {
       dialog.showMessageBox(window, { type: 'error', message: 'Windows 桌面入口加载失败',
         detail: error instanceof Error ? error.message : '请检查 GMSSH 版本和本地启动器配置。' });
@@ -204,23 +231,32 @@ async function inject(contents) {
   const bindings=[...legacyBindings.filter(value=>!pairing?.records.some(record=>record.machineId===value.machineId)),...(pairing?.bindings()||[])];
   const entries=bindings.map(value=>({machineId:value.machineId??undefined,viewerUrl:value.viewerUrl,label:value.label,
     card:value.machineId?undefined:{host:value.target,name:value.tailscaleName||value.target},autoConnect:true,accessToken:value.accessToken}));
-  const devices=bindings.map(value=>({machineId:value.machineId,viewerUrl:value.viewerUrl,target:value.target,label:value.label,targetPort:value.monitor?.targetPort,accessToken:value.accessToken}));
+  const devices=bindings.map(value=>({machineId:value.machineId,viewerUrl:value.viewerUrl,target:value.target,label:value.label,targetPort:value.monitor?.targetPort,accessToken:value.accessToken,...(value.authorization?{permissions:value.authorization.permissions}:{})}));
   const policies=bindings.filter(value=>value.monitor).map(value=>({bridgePort:value.monitor.port,username:value.monitor.username}));
   const first=devices[0]||{viewerUrl};
   const bootstrap=entry+'\nif(typeof installWindowsDesktopEntries==="function")installWindowsDesktopEntries('+JSON.stringify(entries)+');else if('+entries.length+')installWindowsDesktopEntry('+JSON.stringify(entries[0]||{})+');\n'+home+'\ninstallWindowsMachinePolicy('+JSON.stringify(policies)+');\nglobalThis.gmsshHomeController=installGMSSHHome('+JSON.stringify({...first,viewerUrl,css:theme,devices})+');\n'+pairingPage+'\nif(typeof installGMSSHPairing==="function")installGMSSHPairing();\n'+backupPage+'\nif(typeof installGMSSHBackup==="function")installGMSSHBackup('+JSON.stringify({viewerUrl})+');\n'+(vendorUpdateNotice?'installWindowsUpdateNotice('+JSON.stringify(vendorUpdateNotice)+');\n':'')+'void 0;';
-  await contents.executeJavaScript('(()=>{const module={exports:{}};const exports=module.exports;'+qrDecoder+'\nwindow.jsQR=module.exports;})();\n'+qrPage+'\n'+bootstrap+'\n'+toolsPage+'\nif(typeof installGMSSHTools==="function")installGMSSHTools('+JSON.stringify({viewerUrl})+');\n'+filesPage+'\nif(typeof installGMSSHFileCenter==="function")installGMSSHFileCenter('+JSON.stringify({viewerUrl,devices:devices.filter(d=>d.machineId)})+');void 0;');
+  await contents.executeJavaScript('(()=>{const module={exports:{}};const exports=module.exports;'+qrDecoder+'\nwindow.jsQR=module.exports;})();\n'+qrPage+'\n'+bootstrap+'\n'+toolsPage+'\nif(typeof installGMSSHTools==="function")installGMSSHTools('+JSON.stringify({viewerUrl})+');\n'+filesPage+'\nif(typeof installGMSSHFileCenter==="function")installGMSSHFileCenter('+JSON.stringify({viewerUrl,devices:devices.filter(d=>d.machineId)})+');\n'+workspacePage+'\nif(typeof installGMSSHWorkspace==="function")installGMSSHWorkspace('+JSON.stringify({viewerUrl})+');void 0;');
 }
 
 async function nativeRequest(endpoint,data) {
   return loopbackRequest(nativeApiPort,endpoint,data);
 }
 
-async function startService(args, label, isReady, target=config.target) {
+async function startService(args, label, isReady, target=config.target, onSession) {
   const environment = { ...process.env, PYTHONUNBUFFERED: '1' };
   delete environment.PYTHONPATH;
   delete environment.PYTHONHOME;
   const child = spawn(config.python, args, { env: environment, stdio: ['ignore', 'pipe', 'pipe'] });
   backends.push(child);
+  if(onSession){
+    let events='';child.stdout.on('data',data=>{
+      events=(events+data.toString()).slice(-16384);let newline;
+      while((newline=events.indexOf('\n'))>=0){const line=events.slice(0,newline);events=events.slice(newline+1);if(!line.startsWith('GMSSH_SESSION '))continue;
+        try{const value=JSON.parse(line.slice(14));if(value.channel!=='terminal'||!['connecting','connected','disconnected','failed'].includes(value.state)||typeof value.instance!=='string'||!/^[a-f0-9]{32}:\d{1,10}$/.test(value.instance)||Object.keys(value).some(k=>!['channel','instance','state','reason'].includes(k))||value.reason!==undefined&&!/^[A-Z_]{1,48}$/.test(value.reason))continue;onSession(value,'backend-'+(child.pid||args.join('|')));}catch{}
+      }
+    });
+    child.once('exit',()=>{try{workspace?.endOwner('backend-'+(child.pid||args.join('|')),'BACKEND_EXIT');}catch{}});
+  }
   let errors = '', lastUpstreamError;
   const upstreamErrors = {
     PermissionError: '系统拒绝了后台服务的访问，请检查本机应用权限。',
@@ -277,7 +313,8 @@ async function startDevice(device) {
       '--target-port', String(m.targetPort), '--username', m.username,
       '--listen-port', String(m.port), '--known-hosts', m.knownHosts, '--host-key', m.hostKey,
       '--desktop-port', String(device.port), '--desktop-shared-auth'];
-    if (m.forwardTerminal) args.push('--gmssh-terminal', '--shell', 'powershell');
+    if (m.forwardTerminal) args.push('--gmssh-terminal', '--shell', 'powershell','--session-events');
+    if (device.authorization) args.push('--controller-connection',device.authorization.file);
     if (device.wake) args.push('--wake-mac', device.wake.mac, '--wake-broadcast', device.wake.broadcast);
     if (device.keychain) args.push('--desktop-keychain');
     for(const target of device.credentialAliases||[])args.push('--desktop-credential-alias',target);
@@ -286,7 +323,10 @@ async function startDevice(device) {
       if (line.trim() === `Monitoring bridge ready: 127.0.0.1:${m.port}`) monitorStarted = true;
       if (desktopReady(line)) desktopStarted = true;
       return monitorStarted && desktopStarted;
-    },device.target);
+    },device.target,(event,owner)=>{
+      const machineId=device.machineId||pairing?.records.find(record=>record.monitorPort===m.port&&record.desktopPort===device.port)?.machineId;
+      if(machineId)workspaceState().event(owner,{...event,machineId,name:device.label||'设备'});
+    });
   } else {
     const args = ['-m', 'gmssh_windows_bridge.desktop', '--target', device.target,
       '--direct-tailscale', '--tailscale-name', device.tailscaleName,

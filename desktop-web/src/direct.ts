@@ -6,7 +6,8 @@ import { Vp9CanvasRenderer } from "../vendor/video";
 import { clipboardText, multiClipboard } from './clipboard';
 import { DesktopDiagnostics } from './diagnostics';
 
-type Events = { status(text: string): void; peer(name: string): void; frame(): void; stopped(): void; credential?(saved: boolean): void; clipboard?(text:string):void; displays?(items:DisplayInfo[],current:number):void };
+export type DesktopPermissions=Record<'view'|'input'|'clipboard'|'files'|'terminal'|'power',boolean>;
+type Events = { status(text: string): void; peer(name: string): void; frame(): void; stopped(): void; credential?(saved: boolean): void; clipboard?(text:string):void; displays?(items:DisplayInfo[],current:number):void; lifecycle?(state:'connecting'|'connected'|'disconnected'|'failed',code?:string):void;permissions?(value:DesktopPermissions):void };
 
 export async function challengeResponse(password: Uint8Array, salt: string, challenge: string): Promise<Uint8Array> {
   if (!password.length) return new Uint8Array(); // Native RustDesk may request interactive confirmation.
@@ -33,6 +34,7 @@ export class DirectClient {
   #displays:DisplayInfo[] = [];
   #generation = 0;
   #timer = 0;
+  #permissions:DesktopPermissions={view:true,input:true,clipboard:true,files:true,terminal:true,power:true};
 
   constructor(private canvas: HTMLCanvasElement, private events: Events) {}
   get connected(): boolean { return this.#stage === "connected" && this.#socket?.readyState === WebSocket.OPEN; }
@@ -40,6 +42,7 @@ export class DirectClient {
   connect(sshPassword: string, desktopPassword: string, transport = "ssh", options: { saved: boolean; remember: boolean; token?: string } = { saved: false, remember: false }): void {
     this.disconnect();
     this.diagnostics.begin();
+    this.events.lifecycle?.('connecting');
     const generation = this.#generation;
     this.#password = utf8.encode(desktopPassword);
     if (options.remember && desktopPassword) this.#remember = utf8.encode(desktopPassword);
@@ -50,7 +53,7 @@ export class DirectClient {
     let chain = Promise.resolve();
     const fail = (error: unknown, code?: string): void => {
       if (generation !== this.#generation) return;
-      this.diagnostics.failed(code);this.disconnect(true);
+      this.diagnostics.failed(code);this.events.lifecycle?.('failed',code||'DESKTOP_FAILED');this.disconnect(true);
       this.events.status(error instanceof Error ? error.message : "连接失败。");
     };
     socket.addEventListener("open", () => socket.send(JSON.stringify({ password: sshPassword,
@@ -61,6 +64,10 @@ export class DirectClient {
         if (generation !== this.#generation) return;
         if (typeof event.data === "string") {
           const result = JSON.parse(event.data);
+          if(result.type==='controller_permissions'){
+            const p=result.permissions;if(!p||Object.keys(p).sort().join()!=='clipboard,files,input,power,terminal,view'||Object.values(p).some(value=>typeof value!=='boolean'))throw Error('授权权限响应无效。');
+            this.#permissions={...p};this.events.permissions?.(this.#permissions);return;
+          }
           if (result.type === "desktop_credential" && this.#stage === "hash" && typeof result.password === "string" && utf8.encode(result.password).length <= 4096) {
             wipe(this.#password); this.#password = utf8.encode(result.password); return;
           }
@@ -134,6 +141,7 @@ export class DirectClient {
       this.#displays = reply.peerInfo.displays;
       this.events.displays?.(this.#displays,this.#display);
       this.#stage = "connected";
+      this.events.lifecycle?.('connected');
       if (this.#remember) {
         this.#socket?.send(JSON.stringify({ remember: new TextDecoder().decode(this.#remember) }));
         wipe(this.#remember); this.#remember = undefined;
@@ -169,10 +177,10 @@ export class DirectClient {
     if (this.#socket?.readyState !== WebSocket.OPEN) return;
     this.#socket.send(Message.encode(Message.fromPartial(message)).finish());
   }
-  mouse(event: MouseEvent): void { if (this.connected) { const display=this.#displays[this.#display]; this.#send({ mouseEvent: (event.mask&7)===3 ? event : {...event,x:event.x+(display?.x||0),y:event.y+(display?.y||0)} }); } }
-  key(event: KeyEvent): void { if (this.connected) this.#send({ keyEvent: event }); }
-  text(text:string):void { if(new TextEncoder().encode(text).length>8192)throw Error('单次文本输入暂限 8 KiB。');if(this.connected)this.#send({keyEvent:{seq:text,mode:KeyboardMode.Legacy}}); }
-  clipboard(text:string):void { const content=utf8.encode(text);if(content.length>8192)throw Error('单次发送剪贴板暂限 8 KiB。');if(this.connected)this.#send({clipboard:{content,format:ClipboardFormat.Text,compress:false}}); }
+  mouse(event: MouseEvent): void { if (this.connected&&this.#permissions.input) { const display=this.#displays[this.#display]; this.#send({ mouseEvent: (event.mask&7)===3 ? event : {...event,x:event.x+(display?.x||0),y:event.y+(display?.y||0)} }); } }
+  key(event: KeyEvent): void { if (this.connected&&this.#permissions.input) this.#send({ keyEvent: event }); }
+  text(text:string):void { if(!this.#permissions.input)throw Error('此授权仅允许查看，未允许键盘输入。');if(new TextEncoder().encode(text).length>8192)throw Error('单次文本输入暂限 8 KiB。');if(this.connected)this.#send({keyEvent:{seq:text,mode:KeyboardMode.Legacy}}); }
+  clipboard(text:string):void { if(!this.#permissions.clipboard)throw Error('此授权未允许剪贴板同步。');const content=utf8.encode(text);if(content.length>8192)throw Error('单次发送剪贴板暂限 8 KiB。');if(this.connected)this.#send({clipboard:{content,format:ClipboardFormat.Text,compress:false}}); }
   shortcut(name:string):void {
     const base={down:false,press:true,modifiers:[] as ControlKey[],mode:KeyboardMode.Legacy};
     if(name==='ctrl-alt-del') this.key({...base,controlKey:ControlKey.CtrlAltDel});
@@ -184,6 +192,7 @@ export class DirectClient {
   selectDisplay(index:number):void { if(this.connected&&this.#displays[index])this.#send({misc:{switchDisplay:{display:index}}}); }
   quality(value:string):void { if(this.connected)this.#send({misc:{option:{imageQuality:value==='low'?ImageQuality.Low:value==='best'?ImageQuality.Best:ImageQuality.Balanced}}}); }
   disconnect(preserveDiagnostics=false): void {
+    if(!preserveDiagnostics&&this.#socket)this.events.lifecycle?.('disconnected','USER_DISCONNECTED');
     if(!preserveDiagnostics)this.diagnostics.disconnected();
     this.#generation++;
     this.#socket?.close(); this.#socket = undefined;

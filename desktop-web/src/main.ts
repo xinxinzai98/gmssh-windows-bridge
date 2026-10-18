@@ -26,6 +26,11 @@ let peer = "";
 let transport = "ssh";
 let keychain = false;
 let savedPasswordAvailable = false;
+let blockAutoReconnect=false;
+let controlPermissions={view:true,input:true,clipboard:true,files:true,terminal:true,power:true};
+let desktopPreferences={zoom:'fit',quality:'balanced',display:0};
+const instance=crypto.randomUUID();
+function workspaceMessage(value:Record<string,unknown>){if(embedded)window.parent.postMessage({type:'gmssh-workspace-desktop',instance,...value},'*');}
 let initialAuth: {password:string;remember:boolean}|undefined;
 let accessToken = new URLSearchParams(location.hash.slice(1)).get("token") || "";
 const operations=new Operations(()=>accessToken);
@@ -47,12 +52,14 @@ const keys = new Map<string, KeyboardEvent>();
 const buttons = new Map<number, PointerEvent>();
 const client = new DirectClient(canvas, {
   status,
+  lifecycle(state,code){if(state==='failed'&&(code==='DESKTOP_AUTH_FAILED'||client.diagnostics?.snapshot().stages.some(s=>s.id==='desktopAuth'&&s.state==='failed')))blockAutoReconnect=true;workspaceMessage({state,...(code?{reason:code}:{})});},
+  permissions(value){controlPermissions={...value};workspaceMessage({permissions:value});filesAvailable=value.files;powerAvailable=value.power;get('transport-note').textContent=value.input?'独立授权连接，权限由服务端管理。':'仅查看桌面，键鼠由服务端禁用。';},
   credential(saved) { savedPasswordAvailable = saved; get("credential-note").textContent = saved ? "已保存至本机钥匙串，后续启动自动连接此设备。" : "钥匙串操作未完成，可以重新输入此设备的桌面连接密码。"; },
   peer(name) { peer = name;get('session-label').textContent=name; status(`${name} 已批准连接，等待画面…`); },
-  frame() { frames++; canvas.hidden = false; empty.hidden = true; keyboardInput.disabled=false; fullscreen.disabled = false;get('connection-label').textContent='已连接';get('connection-label').classList.add('online');get<HTMLButtonElement>('keyboard').disabled=get<HTMLButtonElement>('clipboard').disabled=get<HTMLSelectElement>('quality').disabled=false;get('screen-size').textContent=`${canvas.width} × ${canvas.height}`; if(frames===1){get('login-wrap').hidden=true;status(`${peer} · 桌面连接正常`);} },
+  frame() { frames++; canvas.hidden = false; empty.hidden = true; keyboardInput.disabled=!controlPermissions.input; fullscreen.disabled = false;get('connection-label').textContent='已连接';get('connection-label').classList.add('online');get<HTMLButtonElement>('keyboard').disabled=!controlPermissions.input;get<HTMLButtonElement>('clipboard').disabled=!controlPermissions.clipboard;get<HTMLSelectElement>('quality').disabled=false;get('screen-size').textContent=`${canvas.width} × ${canvas.height}`; if(frames===1){get('login-wrap').hidden=true;status(`${peer} · 桌面连接正常`);} },
   stopped() { keys.clear(); buttons.clear(); frames = 0; viewport.classList.remove("expanded"); canvas.hidden = true; empty.hidden = false;keyboardInput.disabled=true;get('input-hint').textContent='';get('login-wrap').hidden=false;get('connection-label').textContent='未连接';get('connection-label').classList.remove('online');get<HTMLButtonElement>('keyboard').disabled=get<HTMLButtonElement>('clipboard').disabled=get<HTMLSelectElement>('quality').disabled=true; connect.disabled = false; disconnect.disabled = fullscreen.disabled = true; },
   clipboard(text){get<HTMLTextAreaElement>('clipboard-text').value=text;get('clipboard-note').textContent='已收到 Windows 复制的文本。';},
-  displays(items,current){const select=get<HTMLSelectElement>('display');select.replaceChildren(...items.map((item,index)=>{const option=document.createElement('option');option.value=String(index);option.textContent=`显示器 ${index+1}`;return option;}));select.value=String(current);select.disabled=items.length<2;},
+  displays(items,current){const select=get<HTMLSelectElement>('display');select.replaceChildren(...items.map((item,index)=>{const option=document.createElement('option');option.value=String(index);option.textContent=`显示器 ${index+1}`;return option;}));const wanted=items[desktopPreferences.display]?desktopPreferences.display:current;select.value=String(wanted);select.disabled=items.length<2;queueMicrotask(()=>{if(wanted!==current)client.selectDisplay(wanted);client.quality(desktopPreferences.quality);});},
 });
 
 fetch("/config.json").then(response => {
@@ -60,6 +67,7 @@ fetch("/config.json").then(response => {
   return response.json();
 }).then(async config => {
   transport = config.transport;
+  if(config.authorization){controlPermissions={...config.authorization};get('login-wrap').querySelector('label:has(#desktop-password)')?.setAttribute('hidden','');password.required=false;get('credential-note').textContent='此连接使用独立授权，无需 Windows 或桌面密码。';}
   keychain = config.keychain === true;
   savedPasswordAvailable = config.has_saved_password === true;
   filesAvailable=config.capabilities?.files===true;powerAvailable=config.capabilities?.power===true;
@@ -72,14 +80,15 @@ fetch("/config.json").then(response => {
   get("ssh-label").hidden = direct || shared;
   get("target").textContent = config.target;
   get('power-target').textContent=`目标电脑：${config.target}`;
-  get("transport-note").textContent = shared ? '监控、桌面和文件复用这台电脑的 SSH 连接。' : '画面通过现有加密连接传输。';
+  get("transport-note").textContent = config.authorization ? '独立授权连接；设备配置不保存 Windows 或桌面密码。' : shared ? '监控、桌面和文件复用这台电脑的 SSH 连接。' : '画面通过现有加密连接传输。';
   if (config.requires_token && !accessToken) {
     status("正在建立本机授权，请从桌面启动器打开此页面。 ");
     await tokenReady;
   }
-  connect.disabled = false;
+  connect.disabled = config.authorization?.view===false;
+  if(config.authorization?.view===false){status('此授权未允许查看桌面，可使用其他已授权工具。');empty.textContent='此授权未允许查看桌面';}
   if (keychain && !config.has_saved_password) status("首次连接：输入安装时设置的固定密码，验证成功后记住。");
-  if ((direct || shared) && (initialAuth || !keychain || config.has_saved_password) && new URL(location.href).searchParams.get("autoconnect") === "1") {
+  if (controlPermissions.view && (direct || shared) && (initialAuth || !keychain || config.has_saved_password) && new URL(location.href).searchParams.get("autoconnect") === "1") {
     const first=initialAuth;initialAuth=undefined;
     client.connect("",first?.password||"",transport,{saved:first?false:keychain,remember:keychain&&first?.remember===true,token:accessToken});
     connect.disabled = true; disconnect.disabled = false;
@@ -89,6 +98,7 @@ fetch("/config.json").then(response => {
 
 get<HTMLFormElement>("login").addEventListener("submit", event => {
   event.preventDefault();
+  blockAutoReconnect=false;
   const sshPassword = ssh.value;
   const desktopPassword = password.value;
   ssh.value = password.value = "";
@@ -101,7 +111,7 @@ function releaseInputs(): void {
   for (const [button, event] of buttons) client.mouse({ mask: (button << 3) | 2, ...position(event), modifiers: [] });
   keys.clear(); buttons.clear();
 }
-const textInput=installTextInput(canvas,keyboardInput,{enabled:()=>client.connected,release:releaseInputs,send:text=>client.text(text),error:error=>status(error instanceof Error?error.message:'文本未发送。'),hint:text=>{get('input-hint').textContent=text;get('input-hint').title=text;}});
+const textInput=installTextInput(canvas,keyboardInput,{enabled:()=>client.connected&&controlPermissions.input,release:releaseInputs,send:text=>client.text(text),error:error=>status(error instanceof Error?error.message:'文本未发送。'),hint:text=>{get('input-hint').textContent=text;get('input-hint').title=text;}});
 disconnect.addEventListener("click", () => { releaseInputs(); client.disconnect(); status("已断开，此设备的后台服务继续运行。"); });
 window.addEventListener("blur", releaseInputs);
 window.addEventListener("pagehide", () => { releaseInputs(); client.disconnect(); operations.close();cancelPower(); });
@@ -161,9 +171,10 @@ get("leave-fullscreen").addEventListener("click", () => {
   else document.exitFullscreen().catch(() => status("请尝试 Esc 退出全屏。"));
 });
 
-get<HTMLSelectElement>('zoom').onchange=event=>{viewport.classList.toggle('actual-size',(event.target as HTMLSelectElement).value==='100');};
-get<HTMLSelectElement>('display').onchange=event=>{releaseInputs();client.selectDisplay(Number((event.target as HTMLSelectElement).value));};
-get<HTMLSelectElement>('quality').onchange=event=>client.quality((event.target as HTMLSelectElement).value);
+function saveDesktopPreferences(){desktopPreferences={zoom:get<HTMLSelectElement>('zoom').value,quality:get<HTMLSelectElement>('quality').value,display:Number(get<HTMLSelectElement>('display').value)||0};workspaceMessage({preferences:desktopPreferences});}
+get<HTMLSelectElement>('zoom').onchange=event=>{viewport.classList.toggle('actual-size',(event.target as HTMLSelectElement).value==='100');saveDesktopPreferences();};
+get<HTMLSelectElement>('display').onchange=event=>{releaseInputs();client.selectDisplay(Number((event.target as HTMLSelectElement).value));saveDesktopPreferences();};
+get<HTMLSelectElement>('quality').onchange=event=>{client.quality((event.target as HTMLSelectElement).value);saveDesktopPreferences();};
 get('reconnect').onclick=()=>{get('login-wrap').hidden=!get('login-wrap').hidden;};
 const dialog=(id:string)=>{releaseInputs();get<HTMLDialogElement>(id).showModal();};
 get('keyboard').onclick=()=>dialog('keyboard-dialog');get('clipboard').onclick=()=>dialog('clipboard-dialog');
@@ -189,13 +200,18 @@ function openFileCenter():void{
 }
 get('files').onclick=openFileCenter;
 window.addEventListener('message',event=>{
+  if(embedded&&event.source===window.parent&&event.data?.type==='gmssh-workspace-preferences'){
+    const p=event.data.preferences;
+    if(p&&['fit','100'].includes(p.zoom)&&['low','balanced','best'].includes(p.quality)&&Number.isInteger(p.display)&&p.display>=0&&p.display<=31){desktopPreferences={zoom:p.zoom,quality:p.quality,display:p.display};get<HTMLSelectElement>('zoom').value=p.zoom;get<HTMLSelectElement>('quality').value=p.quality;viewport.classList.toggle('actual-size',p.zoom==='100');if(client.connected){client.quality(p.quality);const display=get<HTMLSelectElement>('display');if([...display.options].some(o=>o.value===String(p.display)))client.selectDisplay(p.display);}}
+    return;
+  }
   if(embedded&&event.source===window.parent&&event.data?.type==='gmssh-desktop-state-request'&&typeof event.data.requestId==='string'&&event.data.requestId.length<=80){
     window.parent.postMessage({type:'gmssh-desktop-state',requestId:event.data.requestId,data:client.diagnostics.snapshot()},event.origin==='null'?'*':event.origin);return;
   }
   if(event.source!==window.parent||event.data?.type!=='gmssh-desktop-tool')return;
   if(event.data.tool==='files')openFileCenter();
   else if(event.data.tool==='power')get('power').click();
-  else if(event.data.tool==='reconnect'&&!client.connected&&!connect.disabled&&keychain&&savedPasswordAvailable&&!password.value&&!ssh.value&&(transport==='monitor'||transport==='tailscale')){
+  else if(event.data.tool==='reconnect'&&!blockAutoReconnect&&!client.connected&&!connect.disabled&&keychain&&savedPasswordAvailable&&!password.value&&!ssh.value&&(transport==='monitor'||transport==='tailscale')){
     client.connect('','',transport,{saved:true,remember:false,token:accessToken});
     connect.disabled=true;disconnect.disabled=false;
   }

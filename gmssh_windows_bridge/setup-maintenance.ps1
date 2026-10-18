@@ -41,6 +41,7 @@ function Update-GMSSHInstallation {
     }
     # Keep the existing engine, branding and licenses, including locked images.
     $items = @('gmssh-agent.ps1','setup-desktop.ps1','credential-dialog.ps1','setup-checks.ps1','setup-maintenance.ps1')
+    if (Test-Path -LiteralPath (Join-Path $SetupRoot 'controller-panel.ps1')) { $items += @('controller-panel.ps1','collector.ps1','login.ps1','system-info.ps1','readonly-tools.ps1') }
     if (Test-Path -LiteralPath (Join-Path $SetupRoot 'go-qrcode-LICENSE.txt')) { $items += 'go-qrcode-LICENSE.txt' }
     $withConnect = Test-Path -LiteralPath (Join-Path $SetupRoot 'setup-connect.ps1')
     $connectTask = $null; $connectRule = $null

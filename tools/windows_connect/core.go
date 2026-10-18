@@ -357,9 +357,22 @@ func (s store) code(public map[string]any) (string, error) {
 	if err != nil || actual.Username != b.Username || actual.Computer != b.Computer || actual.ID != b.ID || actual.Fingerprint != b.Fingerprint {
 		return "", errUnavailable
 	}
+	filtered, err := publicConnection(public)
+	if err != nil {
+		return "", err
+	}
+	body, err := json.Marshal(map[string]any{"schema": 1, "connection": filtered, "port": connectPort, "certificate": m.Certificate, "token": m.Token})
+	if err != nil {
+		return "", errUnavailable
+	}
+	defer clear(body)
+	return codePrefix + base64.RawURLEncoding.EncodeToString(body), nil
+}
+
+func publicConnection(public map[string]any) (map[string]any, error) {
 	addresses, ok := public["addresses"].([]any)
 	if !ok {
-		return "", errUnavailable
+		return nil, errUnavailable
 	}
 	lan := []any{}
 	seen := make(map[string]bool)
@@ -375,7 +388,7 @@ func (s store) code(public map[string]any) (string, error) {
 		}
 	}
 	if len(lan) == 0 {
-		return "", errors.New("未提供可用的局域网 IPv4 或 IPv6 地址")
+		return nil, errors.New("未提供可用的局域网 IPv4 或 IPv6 地址")
 	}
 	filtered := map[string]any{}
 	for _, name := range []string{"schema", "computer", "username", "sshPort", "sshHostPublicKey", "sshHostFingerprint", "wakeAdapters"} {
@@ -385,12 +398,7 @@ func (s store) code(public map[string]any) (string, error) {
 	}
 	filtered["addresses"] = lan
 	filtered["desktopAuth"] = "shared-ssh"
-	body, err := json.Marshal(map[string]any{"schema": 1, "connection": filtered, "port": connectPort, "certificate": m.Certificate, "token": m.Token})
-	if err != nil {
-		return "", errUnavailable
-	}
-	defer clear(body)
-	return codePrefix + base64.RawURLEncoding.EncodeToString(body), nil
+	return filtered, nil
 }
 
 func (s store) allowedPeer(address net.IP) bool {
@@ -508,9 +516,14 @@ func (s store) status() error {
 }
 
 func (s store) handler() http.Handler {
+	broker := newControllerBroker(s)
 	slots := make(chan struct{}, 1)
 	blockedToken := ""
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/v2/") {
+			broker.serve(w, r)
+			return
+		}
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Content-Type-Options", "nosniff")

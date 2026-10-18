@@ -177,11 +177,13 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
     };
     void open();
   }
+  const allowed=(record,type)=>record.binding?.permissions?.[type==='desktop'?'view':type]!==false;
   function invoke(record, type) {
-    const current=currentRecords.get(record.id);if(!current){notify('设备列表已变化，请重新选择这台设备。');return;}record=current;
-    if(type==='files'&&record.windows&&window.gmsshFilesController){window.gmsshFilesController.open(record.id);return;}
+    const current=currentRecords.get(record.id);if(!current){notify('设备列表已变化，请重新选择这台设备。');return;}record=current;if(!allowed(record,type)){notify('当前独立授权未允许此操作，请联系服务端调整权限。');return;}
+    if(['desktop','terminal'].includes(type)&&window.gmsshWorkspaceController){window.gmsshWorkspaceController.open(record.id,type);return;}
+    if(type==='files'&&window.gmsshFilesController&&(record.windows||window.gmsshFilesController.linux)){window.gmsshFilesController.open(record.id);return;}
     if (type === 'terminal') { record.terminal?.click(); return; }
-    record.desktop?.click();
+    if(type==='power'&&record.binding?.permissions?.view===false){window.gmsshWorkspaceController?.hide();window.gmsshWindowsControllers?.get(record.id)?.show?.();}else record.desktop?.click();
     if (type === 'files' && !record.windows) { openLinuxFiles(record); return; }
     if (['files','power'].includes(type) && record.windows) {
       const send = () => { const frame=window.gmsshWindowsControllers?.get(record.id)?.frame()||[...document.querySelectorAll('[data-windows-machine]')].find(node=>node.dataset.windowsMachine===record.id)?.querySelector('iframe');frame?.contentWindow.postMessage({type:'gmssh-desktop-tool',tool:type},new URL(record.binding.viewerUrl).origin); };
@@ -209,7 +211,7 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
   function controls(record) {
     const controls=make('div','gm-device-actions');
     for (const [kind,name,title] of [['desktop','monitor','打开桌面'],['terminal','terminal-window','终端'],['files','arrows-left-right','文件互传']]) {
-      const disabled=kind==='terminal' ? !record.terminal || record.terminal.disabled : kind==='files'&&record.windows&&window.gmsshFilesController ? false : !record.desktop || record.desktop.disabled;
+      const disabled=(kind==='terminal' ? !record.terminal || record.terminal.disabled : kind==='files'&&window.gmsshFilesController&&(record.windows||window.gmsshFilesController.linux) ? false : !record.desktop || record.desktop.disabled)||!allowed(record,kind);
       const button=action('',name,event=>{event.stopPropagation();selected=record.id;invoke(record,kind);},kind==='desktop',disabled);
       button.title=title;button.setAttribute('aria-label',record.name+' · '+title);controls.append(button);
     }
@@ -226,7 +228,7 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
     contextMenu.append(item('设备详情','monitor',()=>openDetails(record.id)),item('复制 IP 地址','copy',()=>void copyAddress(record.address),record.address==='—'||/[＊*]/.test(record.address)));
     contextMenu.append(item('连接诊断','activity',()=>window.gmsshToolsController?.open(record.id,'diagnostics')),item('系统工具','gear',()=>window.gmsshToolsController?.open(record.id,'processes')));
     if(record.windows){
-      contextMenu.append(item('电源操作','power',()=>invoke(record,'power'),!record.desktop||record.desktop.disabled));
+      contextMenu.append(item('电源操作','power',()=>invoke(record,'power'),!record.desktop||record.desktop.disabled||!allowed(record,'power')));
       if(window.gmsshPairingController?.edit)contextMenu.append(item('编辑连接地址','gear',()=>window.gmsshPairingController.edit(record.id)));
     }
     contextMenu.append(item('机器设置和其他操作','dots-three',nativeMenu));
@@ -252,9 +254,9 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
     const logo=make('img','gm-brand');logo.src=new URL(record.windows?'ui-icons/windows.svg':'brand/gmssh.png',base).href;logo.alt=record.windows?'Windows':'GMSSH';pane.append(logo);
     const title=make('h2','');title.append(status(record),make('span','',record.name));title.title=configuration(record);pane.append(title);
     const address=action(record.address,'copy',()=>void copyAddress(record.address),false,record.address==='—'||/[＊*]/.test(record.address));address.classList.add('gm-copy-address');address.title=record.address+' · 点击复制 IP 地址';address.setAttribute('aria-label','复制 IP 地址 '+record.address);pane.append(address);
-    pane.append(action('打开桌面','monitor',()=>invoke(record,'desktop'),true,!record.desktop||record.desktop.disabled));
-    const pair=make('div','gm-detail-actions');pair.append(action('终端','terminal-window',()=>invoke(record,'terminal'),false,!record.terminal||record.terminal.disabled),action('文件互传','arrows-left-right',()=>invoke(record,'files'),false,record.windows&&window.gmsshFilesController?false:!record.desktop||record.desktop.disabled));pane.append(pair);
-    if(record.windows)pane.append(action('电源','power',()=>invoke(record,'power'),false,!record.desktop||record.desktop.disabled));
+    pane.append(action('打开桌面','monitor',()=>invoke(record,'desktop'),true,!record.desktop||record.desktop.disabled||!allowed(record,'desktop')));
+    const pair=make('div','gm-detail-actions');pair.append(action('终端','terminal-window',()=>invoke(record,'terminal'),false,!record.terminal||record.terminal.disabled||!allowed(record,'terminal')),action('文件互传','arrows-left-right',()=>invoke(record,'files'),false,!allowed(record,'files')||!(window.gmsshFilesController&&(record.windows||window.gmsshFilesController.linux))&&(!record.desktop||record.desktop.disabled)));pane.append(pair);
+    if(record.windows)pane.append(action('电源','power',()=>invoke(record,'power'),false,!record.desktop||record.desktop.disabled||!allowed(record,'power')));
     const tools=make('div','gm-detail-actions');tools.append(action('连接诊断','activity',()=>window.gmsshToolsController?.open(record.id,'diagnostics')),action('系统工具','gear',()=>window.gmsshToolsController?.open(record.id,'processes')));pane.append(tools);
     pane.append(make('h3','','连接信息'),make('p','gm-muted',record.latency||'状态未知'),make('p','gm-muted',record.note||'—'),make('h3','','资源使用'));
     ['CPU','内存','磁盘'].forEach((name,index)=>{const line=make('div','gm-detail-metric');line.append(labelled('span',name,['cpu','memory','hard-drive'][index]),meter(record.metrics[index],index));pane.append(line);});
@@ -366,5 +368,5 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
   window.addEventListener('resize',fitWorkspace);void loadNativeMetadata();void refreshSystemInfo();
   const infoInterval=setInterval(refreshSystemInfo,30000);
   window.removeGMSSHHome=()=>{disposed=true;observer.disconnect();clearTimeout(timer);clearTimeout(noticeTimer);clearTimeout(filesTimer);clearInterval(infoInterval);cancelInfo?.();infoFrame?.remove();contextMenu?.remove();detailsDialog.remove();window.removeEventListener('resize',fitWorkspace);root?.remove();host?.classList.remove('gm-native-source');style.remove();};
-  return {refresh:render,select(id){selected=id;fingerprint='';render();},filesDevices:()=>[...currentRecords.values()].map(record=>({id:record.id,name:record.name,windows:record.windows})),openNativeFiles(id){const record=currentRecords.get(id);if(record&&!record.windows)invoke(record,'files');},remove:window.removeGMSSHHome};
+  return {refresh:render,select(id){selected=id;fingerprint='';render();},filesDevices:()=>[...currentRecords.values()].map(record=>({id:record.id,name:record.name,windows:record.windows,...(record.binding?.permissions?{permissions:record.binding.permissions}:{})})),permissions(id,value){const binding=byId.get(id);if(binding){binding.permissions={...value};fingerprint='';render();}},workspaceOverview(id){const record=currentRecords.get(id);return record?detailPane(record):null;},openNative(id,channel){const record=currentRecords.get(id);if(!record)return;if(channel==='terminal')record.terminal?.click();else if(!record.windows)record.desktop?.click();},openNativeFiles(id){const record=currentRecords.get(id);if(record&&!record.windows){record.desktop?.click();openLinuxFiles(record);}},remove:window.removeGMSSHHome};
 };

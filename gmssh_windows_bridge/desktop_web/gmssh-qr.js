@@ -16,7 +16,7 @@ window.gmsshReadConnectionQR=function({onResult}){
   function close(){if(disposed)return;disposed=true;stop();if(imageUrl)URL.revokeObjectURL(imageUrl);file.value='';canvas.width=canvas.height=0;dialog.close();dialog.remove();if(window.gmsshQRReader===controller)delete window.gmsshQRReader;}
   function accept(text){
     if(disposed)return;let valid=false;
-    if(typeof text==='string'&&text.length<=65536){text=text.trim();valid=text.startsWith('GMSSH-CONNECT1.');if(!valid)try{const value=JSON.parse(text);valid=value?.schema===1&&typeof value.sshHostPublicKey==='string'&&typeof value.username==='string';}catch{}}
+    if(typeof text==='string'&&text.length<=65536){text=text.trim();valid=text.startsWith('GMSSH-CONNECT1.')||text.startsWith('GMSSH-AUTH2.');if(!valid)try{const value=JSON.parse(text);valid=value?.schema===1&&typeof value.sshHostPublicKey==='string'&&typeof value.username==='string';}catch{}}
     if(!valid){status.textContent='识别到的不是 GMSSH 连接二维码，请重新选择。';return false;}
     close();onResult(text);return true;
   }

@@ -275,11 +275,24 @@ def handle_connection(config, websocket, slots):
             except Exception:
                 websocket.send(json.dumps({"type": "credential_error"}))
         del password, credentials, raw
+        controller = getattr(channel, 'client', None)
+        if getattr(controller, 'controller_protocol', None) == 2:
+            websocket.send(json.dumps({'type': 'controller_permissions', 'permissions': controller.policy}))
         # A channel-open acknowledgement isn't proof that RustDesk is listening.
         websocket.send(json.dumps({"type": "tailscale_ready" if direct else "ssh_ready"}))
         forward(websocket, channel, keychain.save if keychain is not None else None)
     except Exception as error:
-        if isinstance(error, DesktopAccessError):
+        controller_code = getattr(error, 'code', '')
+        if controller_code in {'AUTH_FAILED', 'ACCESS_DENIED', 'PEER_CHANGED'} and callable(getattr(config, 'controller_policy', None)):
+            message = {'AUTH_FAILED': '独立授权已失效或被撤销，请向服务端重新获取授权码。',
+                       'ACCESS_DENIED': '当前独立授权未允许桌面访问，请在服务端调整权限。',
+                       'PEER_CHANGED': '授权服务证书已变化，请核对设备后重新获取授权码。'}[controller_code]
+            if controller_code == 'ACCESS_DENIED':
+                try:
+                    websocket.send(json.dumps({'type': 'controller_permissions', 'permissions': config.controller_policy()}))
+                except Exception:
+                    pass
+        elif isinstance(error, DesktopAccessError):
             message = "本机桌面授权已失效，请重新从启动器打开。"
         elif isinstance(error, MonitorUnavailable):
             message = "请先在 GMSSH 连接这台机器的监控，再点击蓝色桌面图标。"
@@ -341,14 +354,16 @@ def create_server(config):
                     except OSError:
                         pass  # Manual login remains available if Keychain is locked.
                 operations = getattr(config, "monitor_pool", None) is not None and valid_access_token(getattr(config, "access_token", ""))
+                policy = config.controller_policy() if callable(getattr(config, 'controller_policy', None)) else None
                 body = json.dumps({"target": config.target, "username": config.username,
                                    "target_port": config.target_port,
                                    "transport": "monitor" if getattr(config, "monitor_channel", None) else
                                                 "tailscale" if getattr(config, "direct_tailscale", False) else "ssh",
                                    "keychain": keychain is not None, "has_saved_password": saved,
                                    "requires_token": bool(getattr(config, "access_token", "")),
-                                   "capabilities": {"files": operations, "power": operations,
-                                                    "wake": wake is not None and valid_access_token(getattr(config, "access_token", ""))}}).encode()
+                                   "capabilities": {"files": operations and (policy is None or policy['files']), "power": operations and (policy is None or policy['power']),
+                                                    "wake": wake is not None and valid_access_token(getattr(config, "access_token", "")) and (policy is None or policy['power'])},
+                                   **({'authorization': policy} if policy is not None else {})}).encode()
                 content_type = "application/json; charset=utf-8"
             else:
                 path = (ASSETS / (unquote(url.path).lstrip("/") or "index.html")).resolve()

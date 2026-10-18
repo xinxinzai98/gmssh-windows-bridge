@@ -1,7 +1,10 @@
-import type { TransferTask, UploadEntry } from './transfers';
+import type { TransferTask, UploadEntry,PlacesCall } from './transfers';
+import { Operations } from './operations';
 
 type Call = (action:string,data?:Record<string,unknown>)=>Promise<any>;
 const messages:Record<string,string>={
+  HOST_UNVERIFIED:'尚未确认 SSH 主机指纹，文件连接已停止',HOST_PINS_INVALID:'本机 SSH 主机身份记录不可读，原记录已保留',HOST_PINS_WRITE_FAILED:'主机身份未能保存，请检查本机空间和权限',AUTH_FAILED:'SSH 认证失败，请编辑此设备的连接凭据后重试',INVALID_PRIVATE_KEY:'SSH 私钥或私钥口令无效，请检查连接配置',
+  PLACES_INVALID:'常用目录记录无法读取，原记录已保留，其他文件功能仍可使用',PLACES_WRITE_FAILED:'常用目录未能保存，请检查本机空间或权限',PLACES_LIMIT:'每台设备最多收藏 12 个目录，请先移除不常用的收藏',INVALID_PLACE:'收藏目录信息无效，请重新选择',PLACE_NOT_FOUND:'该收藏已被移除，请重新打开常用目录列表',
   COMMIT_UNSUPPORTED:'该磁盘不支持不覆盖保存，临时文件已保留；请选择其他磁盘重新下载',
   CANCELLED_FILE_RETAINED:'已取消；达到完整大小的目标文件已保留，可继续核验',
   PARTIAL_MISSING:'所选目录未找到已传部分，请选择原目录或重新挂载后的同一目录',
@@ -20,6 +23,11 @@ const messages:Record<string,string>={
   REMOTE_IO:'远端读写失败，检查连接或权限后可继续',PROTOCOL_UNSUPPORTED:'本地文件服务版本不匹配，请重开更新后的管理端',
 };
 export const transferMessage=(code:string)=>messages[code]||'文件任务暂不可用，请检查连接后继续';
+export class NativeFileOperations extends Operations {
+  constructor(private call:Call){super(()=>'');}
+  override async request(op:string,values:Record<string,unknown>={}){if(op!=='list'&&op!=='mkdir')throw Error('文件操作不受支持');return this.call('fs-'+op,values);}
+  override close(){} // Each bounded main-process request releases its own SFTP channel.
+}
 export function nativeCall(send:(type:string,data:Record<string,unknown>)=>void){
   let next=0;const pending=new Map<number,{resolve:(value:any)=>void;reject:(error:Error)=>void;timer:number}>();
   const receive=(event:MessageEvent)=>{
@@ -34,7 +42,8 @@ export function nativeCall(send:(type:string,data:Record<string,unknown>)=>void)
 }
 export class NativeTransfers {
   readonly native=true;items:TransferTask[]=[];private timer?:number;private disposed=false;private polling=false;
-  constructor(private call:Call,private changed:(tasks:readonly TransferTask[])=>void){void this.refresh();this.timer=window.setInterval(()=>void this.refresh(),700);}
+  places?:PlacesCall;
+  constructor(private call:Call,private changed:(tasks:readonly TransferTask[])=>void,places=false){if(places)this.places=async(op,values)=>{try{return await this.call('places',{op,...values});}catch(error){if(['TRANSFER_IO','REMOTE_IO'].includes((error as {code?:string}).code||''))throw Object.assign(Error('无法核对设备连接，请检查连接后重试。'),{code:(error as {code:string}).code});throw error;}};void this.refresh();this.timer=window.setInterval(()=>void this.refresh(),700);}
   async refresh(){if(this.disposed||this.polling)return;this.polling=true;try{const value=await this.call('list');if(this.disposed)return;if(!Array.isArray(value.jobs))throw Error('任务返回格式无效');this.items=value.jobs.map((j:any)=>({id:j.id,kind:j.kind,name:j.name,path:'',relative:j.name,status:j.status,bytes:j.bytes,size:j.size,started:j.started||Date.now(),createdAt:j.createdAt,source:j.source,target:j.target,code:j.code,sha256:j.sha256,cleanupPending:!!j.cleanupPending,copyBytes:j.copyBytes||0,phase:j.phase,message:j.status==='done'?'已校验并保存':transferMessage(j.code||'PAUSED')+(j.needsGrant&&['paused','failed','cancelled'].includes(j.status)?' · 需确认本机文件权限':'' )}));this.changed(this.items);}catch(error){if(!this.disposed){const note=document.getElementById('file-feedback');if(note){note.hidden=false;note.textContent=error instanceof Error?error.message:'任务列表暂不可用';}}}finally{this.polling=false;}}
   async action(action:string,data:Record<string,unknown>={}){await this.call(action,data);await this.refresh();}
   chooseUploads(remote:string,directory:boolean){return this.action('pick-upload',{remote,directory});}

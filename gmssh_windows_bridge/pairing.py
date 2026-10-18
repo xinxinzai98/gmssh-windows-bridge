@@ -55,7 +55,7 @@ def inspect_connection(text):
     if type(port) is not int or not 1 <= port <= 65535:
         raise ValueError("连接文件中的 SSH 端口无效。")
     desktop_auth = data.get('desktopAuth', 'manual')
-    if desktop_auth not in ('manual', 'shared-ssh'):
+    if desktop_auth not in ('manual', 'shared-ssh') and not (desktop_auth == 'controller' and isinstance(data.get('authorization'), dict)):
         raise ValueError('桌面认证方式无效，请从 Windows 托盘重新导出连接文件。')
     values = data.get("addresses")
     if not isinstance(values, list) or not 1 <= len(values) <= 32 or not all(isinstance(value, str) for value in values):
@@ -98,12 +98,21 @@ def inspect_connection(text):
         network = ipaddress.ip_network(value["address"] + "/" + str(prefix), strict=False)
         adapters.append({"address": value["address"], "mac": mac.upper(), "prefixLength": prefix, "broadcast": str(network.broadcast_address)})
     identifier = hashlib.sha256(blob + b"\0" + username.lower().encode() + port.to_bytes(2, "big")).hexdigest()[:32]
-    return {"id": identifier, "schema": 1, "computer": computer, "username": username,
+    result = {"id": identifier, "schema": 1, "computer": computer, "username": username,
             "addresses": addresses, "sshPort": port, "sshHostPublicKey": "ssh-ed25519 " + key.get_base64(),
             "sshHostFingerprint": fingerprint, "desktopAuth": desktop_auth, "adapters": adapters}
+    if 'authorization' in data:
+        from .controller_access import configuration
+        candidate = {**result, 'authorization': data['authorization']}
+        code = configuration(candidate)
+        result.update(id=code['id'], physicalId=identifier, desktopAuth='controller', authorization=data['authorization'])
+    return result
 
 
 def probe_identity(connection, target):
+    if connection.get('authorization'):
+        from .controller_access import probe_authorization
+        return probe_authorization(connection, target)
     target = normalize_address(target)
     if target not in connection['addresses']:
         raise ValueError('请选择已核对连接信息中的地址。')
@@ -149,6 +158,17 @@ def test_credentials(connection, target, password):
     target = normalize_address(target)
     if not isinstance(password, str) or not password or len(password.encode()) > 1024:
         raise ValueError('请输入当前连接密码。')
+    if connection.get('authorization'):
+        from .controller_access import ControllerClient, configuration
+        from .file_stream import StreamError
+        client = ControllerClient(target, configuration(connection), token=password)
+        try:
+            client.authorize()
+            return {'verified': True}
+        except StreamError:
+            raise ValueError('独立授权已失效或被撤销，请向服务端重新获取授权码。') from None
+        finally:
+            client.close()
     key = paramiko.Ed25519Key(data=base64.b64decode(connection['sshHostPublicKey'].split()[1]))
     client = paramiko.SSHClient()
     client.get_host_keys().add(ssh_endpoint(target, connection['sshPort']), 'ssh-ed25519', key)
@@ -209,6 +229,7 @@ def main():
             raise ValueError("无效的接入操作。")
         text = request.get('connection')
         from .connection_code import PREFIX, inspect_code, redeem_code
+        from .controller_access import PREFIX as AUTHORIZATION_PREFIX, ControllerClient, inspect_authorization, metadata_connection
         if request['operation'] == 'endpoint':
             result = parse_endpoint(request.get('target'), request.get('port', 22))
         elif request['operation'] == 'manual':
@@ -216,7 +237,19 @@ def main():
         elif request['operation'] == 'test-login':
             result = test_credentials(inspect_connection(text), request.get('target'), request.get('password'))
         elif request['operation'] == 'redeem-code':
-            result = redeem_code(text, request.get('target'))
+            if isinstance(text,str) and text.strip().startswith(AUTHORIZATION_PREFIX):
+                authorization = inspect_authorization(text)
+                client = ControllerClient(request.get('target'), authorization)
+                try:
+                    client.authorize()
+                    result = {'password': authorization['controller']['token'], 'permissions': client.policy}
+                finally:
+                    client.close()
+            else:
+                result = redeem_code(text, request.get('target'))
+        elif request['operation'] == 'inspect' and isinstance(text,str) and text.strip().startswith(AUTHORIZATION_PREFIX):
+            metadata = metadata_connection(inspect_authorization(text))
+            result = {**inspect_connection(metadata), 'connectionText': metadata, 'fromCode': True, 'fromAuthorization': True}
         elif request['operation'] == 'inspect' and isinstance(text, str) and text.strip().startswith(PREFIX):
             code = inspect_code(text)
             result = {**code['public'], 'connectionText': code['connectionText'], 'fromCode': True}

@@ -64,6 +64,17 @@ func run() error {
 		return errUnavailable
 	}
 	switch command {
+	case "manage":
+		body, err := io.ReadAll(io.LimitReader(os.Stdin, 16385))
+		if err != nil || len(body) > 16384 {
+			return errUnavailable
+		}
+		defer clear(body)
+		result, err := s.manageControllers(body)
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(result))
 	case "status":
 		if err = s.status(); err != nil {
 			return err

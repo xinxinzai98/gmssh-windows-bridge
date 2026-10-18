@@ -47,8 +47,8 @@ window.installGMSSHBackup=function({viewerUrl}){
       const badge=make('span','gm-backup-badge',device.status==='existing'?'已存在，保留':device.status==='conflict'?'身份冲突':device.kind==='windows'?'桌面与监控':'SSH 连接');node.append(label,badge);
       const row={device,node,box,badge};
       if(mode==='import'&&!device.hasCredentials&&device.status==='new'){
-        const fields=make('div','gm-backup-login'),login=device.authType==='ca'?make('textarea'):secret(device.name+' SSH 密码');login.setAttribute('aria-label',device.name+(device.authType==='ca'?' SSH 私钥':' SSH 密码'));if(device.authType==='ca'){login.rows=3;login.spellcheck=false;login.oninput=update;}
-        fields.append(labelled(device.authType==='ca'?'SSH 私钥':'SSH 密码',login));row.auth=[login];
+        const passwordLabel=device.credentialKind==='authorization'?'独立授权凭据':'SSH 密码';const fields=make('div','gm-backup-login'),login=device.authType==='ca'?make('textarea'):secret(device.name+' '+passwordLabel);login.setAttribute('aria-label',device.name+(device.authType==='ca'?' SSH 私钥':' '+passwordLabel));if(device.authType==='ca'){login.rows=3;login.spellcheck=false;login.oninput=update;}
+        fields.append(labelled(device.authType==='ca'?'SSH 私钥':passwordLabel,login));row.auth=[login];
         if(device.authType==='ca'){const pass=secret(device.name+' 私钥口令（可选）');fields.append(labelled('私钥口令（可选）',pass));row.auth.push(pass);}node.append(fields);row.fields=fields;
       }
       box.onchange=()=>{if(!box.checked)row.auth?.forEach(input=>input.value='');dependencies(row);update();};list.append(node);return row;
@@ -60,7 +60,7 @@ window.installGMSSHBackup=function({viewerUrl}){
   async function exportDevices(){
     const run=prepare('export');lock(true);say('正在读取设备列表…');
     try{const reply=await invoke('gmssh-backup-list');if(run!==epoch||disposed)return;
-      encrypted=make('input');encrypted.type='checkbox';encrypted.setAttribute('aria-label','加密备份（含 SSH 密码和私钥）');const choice=make('label','gm-backup-check');choice.append(encrypted,make('span','','加密备份（含 SSH 密码和私钥）'));
+      encrypted=make('input');encrypted.type='checkbox';encrypted.setAttribute('aria-label','加密备份（含连接凭据和 SSH 私钥）');const choice=make('label','gm-backup-check');choice.append(encrypted,make('span','','加密备份（含连接凭据和 SSH 私钥）'));
       password=secret('备份口令'),confirm=secret('再次输入备份口令');const inputs=make('div','gm-backup-passwords');inputs.append(labelled('备份口令（至少 8 字符）',password),labelled('再次输入',confirm));inputs.hidden=true;
       const note=make('p','gm-muted','普通配置不含登录凭据，恢复时需补充。');encrypted.onchange=()=>{password.value=confirm.value='';inputs.hidden=!encrypted.checked;note.textContent=encrypted.checked?'请牢记备份口令。独立设置的桌面密码需在新管理端重新填写。':'普通配置不含登录凭据，恢复时需补充。';update();};settings.append(choice,inputs,note);showRows(reply.data);say('请选择设备，最多 200 台；依赖的跳板机需一并选择。');
     }catch(error){if(run===epoch)say(error.message);}finally{if(run===epoch)lock(false);}
@@ -76,7 +76,7 @@ window.installGMSSHBackup=function({viewerUrl}){
     const run=epoch;lock(true);say('正在核对备份…');const value=password?.value||'';
     try{const reply=await invoke('gmssh-backup-preview',{password:value});if(run!==epoch||disposed)return;clearSecrets();preview=reply.data;settings.replaceChildren();showRows(preview.devices);
       const note=make('p','gm-muted','已存在的设备自动保留；身份冲突不会覆盖。缺少凭据的所选设备需在下方补充。');settings.append(note);
-      if(preview.canRememberDesktop&&preview.devices.some(item=>item.kind==='windows')){remember=make('input');remember.type='checkbox';const label=make('label','gm-backup-check');label.append(remember,make('span','','记住 Windows 桌面密码（本机钥匙串）'));settings.append(label);}
+      if(preview.canRememberDesktop&&preview.devices.some(item=>item.kind==='windows'&&item.credentialKind!=='authorization')){remember=make('input');remember.type='checkbox';const label=make('label','gm-backup-check');label.append(remember,make('span','','记住 Windows 桌面密码（本机钥匙串）'));settings.append(label);}
       say('备份时间：'+new Date(preview.createdAt).toLocaleString());
     }catch(error){if(run===epoch){clearSecrets();say(error.message);}}finally{if(run===epoch)lock(false);}
   }
