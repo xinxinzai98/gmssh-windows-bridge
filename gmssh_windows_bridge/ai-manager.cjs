@@ -42,7 +42,7 @@ class AIAccess {
   async invoke(owner,value){
     if(this.closed)throw Object.assign(Error(),{code:'AI_RUNTIME_UNAVAILABLE'});
     if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).sort().join()!=='action,data'||!value.data||typeof value.data!=='object'||Array.isArray(value.data))throw Object.assign(Error(),{code:'INVALID_ARGUMENT'});
-    const {action,data}=value,fields={list:[],doctor:[],prepare:[],clear:[],preview:['code'],'paste-preview':[],enroll:['preview','name','allow'],configure:['device','allow'],credential:['device','value'],check:['device'],config:['format'],copy:['format']};
+    const {action,data}=value,fields={list:[],doctor:[],prepare:[],clear:[],preview:['code'],'paste-preview':[],enroll:['preview','name','allow'],configure:['device','allow'],credential:['device','value'],check:['device'],config:['format'],copy:['format'],history:['device'],task:['device','taskId']};
     if(!Object.hasOwn(fields,action)||Object.keys(data).sort().join()!==[...fields[action]].sort().join())throw Object.assign(Error(),{code:'INVALID_ARGUMENT'});
     if(action==='clear'){this.clear(owner);return {cleared:true};}
     if(this.busy)throw Object.assign(Error(),{code:'AI_SETUP_BUSY'});

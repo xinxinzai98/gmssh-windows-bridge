@@ -1,10 +1,10 @@
 # AI 接入：管理界面、CLI 与 MCP
 
-0.4.0a27 增加 `gmssh-ai`，0.4.0a28 控制端候选增加图形化接入与状态检查，CLI/MCP 共用 18 个工具。复用 SSH 或固定证书的 HTTPS 独立授权，不增加 Windows 网络监听端口。AI 设备名单单独启用，不自动读取 GMSSH 机器数据库或导出其中的密码。
+0.4.0a27 增加 `gmssh-ai`，0.4.0a28 增加图形化接入与状态检查，0.4.0a29 控制端候选增加任务等待、本地回执和完整长文本续读，CLI/MCP 共用 20 个工具。复用 SSH 或固定证书的 HTTPS 独立授权，不增加 Windows 网络监听端口。AI 设备名单单独启用，不自动读取 GMSSH 机器数据库或导出其中的密码。
 
 本轮只在临时环境、回环合成服务和临时文件中验证。没有操作 A4，没有切换当前 Mac 客户端。Windows UIA 执行器、托盘暂停和原生输入仍需另行实机验收；交叉编译不等于桌面实测。
 
-## 管理端接入面板（0.4a28）
+## 管理端接入面板
 
 首页工具栏点击“AI 接入”，依次完成：
 
@@ -17,6 +17,8 @@
 授权码只在密码输入框或主进程中暂存。预览只返回公开身份；保存时网页发送一次性的预览编号，关闭或保存后清除暂存。更新已有授权时必须保持同一设备和授权身份，保留原设备条目；换一个授权身份应另行添加。已有 SSH 设备可更新本机钥匙串密码，Windows 账号密码不变。
 
 本机“停用”阻止新的 AI 操作，不承诺取消已经在远端执行的任务。需要时先单独取消任务，或在 Windows 托盘撤销独立授权。修改本机权限或凭据会使此前检查结果失效；检查结果始终是带时间的观察，后续操作仍重新认证和核对实时权限。
+
+“任务记录”显示这台管理端曾提交或查询过的异步命令，不自动扫描服务端，也不自动连接。选择设备后可刷新本地记录，或明确点击某项“查询远端状态”，通过原授权读取当前状态与一页输出；不会执行原命令。缺少任务编号、已清理的结果或已停用终端权限时不可查询。输出只在当前面板暂存，刷新、切换或关闭后清除，始终按纯文本显示。
 
 ## 安装和启用
 
@@ -90,6 +92,8 @@ Codex TOML 使用 `[mcp_servers.gmssh]`、`command` 和 `args`；需要环境变
 | `system_query` | 进程、服务、限时 Windows 事件日志 | `inspect` |
 | `powershell_run` | 任意 PowerShell；独立授权返回持久任务编号 | `terminal` |
 | `task_get` / `task_cancel` / `task_forget` | 分页输出、取消、清理结束任务 | `terminal` |
+| `tasks_list` | 本地近期回执，不联网；状态为带时间的观察 | `terminal` |
+| `task_wait` | 等待已有任务，最多 60 秒，返回一页输出 | `terminal` |
 | `desktop_observe` / `desktop_find` | 窗口、UIA 树、按名称/类型/AutomationId 查找 | `view` |
 | `desktop_screenshot` | 已解锁桌面截图，最大 1600×1000 | `view` |
 | `desktop_act` | Invoke/SetValue、控件中心点击、Unicode 输入、有限按键组合 | `view` + `input` |
@@ -104,6 +108,8 @@ gmssh-ai context DEVICE_ID
 gmssh-ai run DEVICE_ID --script-file /path/to/check.ps1 --timeout 300 \
   --request-key 11111111111111111111111111111111
 gmssh-ai task DEVICE_ID TASK_ID
+gmssh-ai task DEVICE_ID TASK_ID --wait 30
+gmssh-ai tasks DEVICE_ID --limit 100
 gmssh-ai cancel DEVICE_ID TASK_ID
 gmssh-ai call desktop_find --arguments \
   '{"device":"DEVICE_ID","window":"12345","name":"保存"}'
@@ -118,6 +124,12 @@ gmssh-ai call desktop_find --arguments \
 独立授权任务保存在 Windows 受限目录，用现有 DPAPI 加密。CLI/MCP 退出后可凭任务编号继续查询；服务本身中断时，运行任务标为 `OUTCOME_UNKNOWN`，不自动执行第二次。记录不保存命令正文，保留命令摘要、退出码和有界输出；输出可能含敏感信息，所以一并加密。
 
 请求键绑定授权、命令和超时。同键同参数返回原任务，不同参数报 `IDEMPOTENCY_CONFLICT`。启动响应丢失时，错误中保留 `requestKey`；核对原任务应沿用它。最多保留 128 项结果、同时运行 4 项；`task_forget` 清理已结束结果。结果仅创建它的独立授权可读；撤销授权或修改权限取消其运行任务。
+
+控制端提交前先将请求键写入私有 `ai-tasks.json`；不能保存恢复信息时不提交新命令。已取得任务编号后保存上次观察的状态、退出码和时间，查询及取消同样更新这份元数据。文件不保存脚本、输出、密码或授权 token，不参与源码导出与设备配置备份。重开客户端后，`tasks_list` 或“任务记录”仍能找到这些编号；它们不代表设备目前在线，也不是服务端全部任务。SSH 同步执行不进入该列表。
+
+全局最多保留近期 200 项本地回执，超限移出最旧的本地记录，并返回 `pruned: true`；不清理服务端任务。回执按设备及独立授权身份隔离。提交响应丢失的记录只保留请求键，标记“结果未知”；需用户决定是否沿用原请求键、原脚本与原超时核对，不自动重放。已知远端结果不会因为随后本地落盘失败而隐藏，此时另附 `localJournal` 警告。
+
+`task_wait` 只轮询已有任务。返回 `finished: true` 表示进入结束状态，包括非零退出、取消和结果未知等，仍应核对 `state`、`code`、`exitCode`。等到指定时限仍在运行时，返回 `finished: false`、`waitTimedOut: true`，不取消任务，不把等待超时当作远端失败。每次仍最多返回 16 KiB 输出；`more: true` 时用返回的 `nextOffset` 继续 `task_get`，无需重复执行命令。连接或权限错误直接返回，不自动重连或提交新任务。
 
 独立授权命令最长 3600 秒，输出最多 256 KiB、每页 16 KiB；运行时可查状态，输出在执行结束后读取。偏移按 UTF-8 字节计算，沿用返回的 `nextOffset`。当前合并 stdout/stderr，明确返回 `combinedOutput: true`；退出码来自实际 PowerShell 进程。取消不撤销已有影响，也不保证终止其创建的所有外部程序。`task_forget` 同时清除该任务的去重记录，清理后不再复用其请求键。
 
@@ -138,6 +150,8 @@ UIA 能力取决于应用。UAC、安全桌面、锁屏及缺少 UIA 的自绘�
 ## 文件与权限
 
 文本文件最多 1 MiB、一次最多 200 行/32 KiB。搜索最多 200 个结果、2000 个目录项和 4 层递归，不跟随符号链接；独立授权沿用服务端 reparse point 检查。普通 SSH 的链接识别受其 SFTP 实现影响。超长行和差异截断有明确标记。
+
+`files_read` 返回 `startByte`、`nextByte`、`eof` 和完整文件 `sha256`。长单行超过一页时，下一次传 `startByte: 上次的 nextByte`、`expectedSha256: 上次的 sha256`，可一直读到 `nextByte: null`，不会跳过行内剩余内容或拆开中文/emoji。偏移是原文件的 UTF-8 字节，包含可能存在的 BOM；首屏不显示 BOM。续读只接受字符边界，非零偏移必须带哈希，源文件变化就停止。字节模式不能与 `startLine`/`limit` 混用；普通按行翻页可继续用 `nextLine`，同样可携带 `expectedSha256`。
 
 保存必须提供原文件 `expectedSha256`。验证临时内容与原文件后，把原件移动到唯一 `.gmssh-ai-*.bak`，再以不覆盖目标的重命名提交。并发修改、目标抢占或校验失败会停止，保留原件与恢复路径。恢复同样核验当前文件与备份哈希，先保留当前版本。该流程不是跨所有进程的文件系统事务锁。
 

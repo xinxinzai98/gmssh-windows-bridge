@@ -26,7 +26,7 @@ class ShareBundleTests(unittest.TestCase):
             self.assertEqual(set(files), {'README.md', 'gmssh_windows_bridge/module.py','gmssh_windows_bridge/desktop_web/gmssh-home.js'})
             self.assertEqual((web/'gmssh-home 2.js').read_text(),'pre-existing conflict copy')
             for name in ['catalog.json', 'connection.json', 'local.app/info.json', 'bridge_host_key', 'windows_known_hosts', '.DS_Store',
-                         'private/ai-devices.json', 'private/ai-status.json', 'private/ai-job-11111111111111111111111111111111.dat', 'private/registry.lock',
+                         'private/ai-devices.json', 'private/ai-status.json', 'private/ai-tasks.json', 'private/ai-job-11111111111111111111111111111111.dat', 'private/registry.lock',
                          'private/connect-password.dat', 'private/connect-meta.dat', 'private/connect-identity.dat',
                          'personal.gmsshbackup', 'GMSSH-devices-20260101.json', 'GMSSH-connection-QR.png', 'private/file-places.json', 'private/linux-host-pins.json', 'private/workspace-history.json', 'private/controllers.dat', 'private/controller-connection.json']:
                 self.assertTrue(private_path(name), name)

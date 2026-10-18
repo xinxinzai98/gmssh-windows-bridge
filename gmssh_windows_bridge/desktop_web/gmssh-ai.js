@@ -7,7 +7,7 @@ window.installGMSSHAI=function({viewerUrl}){
   const button=(text,fn,name)=>{const node=make('button','gm-ui-button',text);node.type='button';node.onclick=fn;if(name)node.prepend(icon(name));return node;};
   const labels={inspect:'设备信息',terminal:'执行命令',files:'文件读写',view:'查看桌面',input:'操作桌面'};
   const messages={AI_SETUP_BUSY:'有一项操作正在进行，请稍候。',AI_PREVIEW_REQUIRED:'请重新粘贴授权码并核对设备。',AI_RUNTIME_UNAVAILABLE:'本机运行环境不可用，请重新安装或修复 GMSSH。',AI_PREPARE_FAILED:'组件准备未完成，请检查网络后重试。',AI_SETUP_TIMEOUT:'操作等待超时，请检查结果后重试。',AI_CANCELLED:'已取消。',AI_DEPENDENCY_REQUIRED:'尚未准备 MCP 组件。',MCP_VERSION_MISMATCH:'运行环境与应用组件版本不一致，请重新准备组件。',MCP_CHECK_FAILED:'MCP 启动检查未通过，请重新准备组件。',DEVICE_EXISTS:'这个授权已经添加，请更新已有授权。',ACCESS_DENIED:'当前授权不允许此操作。',AUTH_FAILED:'连接凭据未通过验证，独立授权可能已撤销。',CONNECTION_FAILED:'未能连通设备，请检查网络和服务状态。',PEER_CHANGED:'设备身份与原记录不一致，已停止连接。',PERMISSIONS_REDUCED:'连接已验证，部分所选操作尚未获得服务端授权。',SERVER_UPGRADE_REQUIRED:'此能力需要 Windows 服务端 0.4a27 或更新版本。',DESKTOP_LOCKED:'授权已验证，Windows 桌面当前已锁定。',DESKTOP_WORKER_UNAVAILABLE:'授权已验证，Windows 桌面组件未运行。',NO_INTERACTIVE_SESSION:'授权已验证，Windows 当前没有可用桌面会话。',DESKTOP_BUSY:'桌面正被其他操作使用，请稍后重试。',AI_PAUSED:'授权已验证，Windows 用户已暂停 AI 桌面控制。',CREDENTIAL_REQUIRED:'请更新这台电脑的连接凭据。',CREDENTIAL_FROM_ENV:'请在提供凭据的运行环境中更新。',ENV_FORWARDING_REQUIRED:'此设备使用环境变量，请改为复制 Codex TOML 配置。',CONFIG_UNSAFE:'本机 AI 配置无法安全读取，请检查目录权限。'};
-  Object.assign(messages,{INVALID_ARGUMENT:'输入内容无效，请重新核对授权信息。',INVALID_RESPONSE:'接入信息返回不完整，请重试。',SETUP_FAILED:'本机配置操作未完成，请重试。',AI_SETUP_FAILED:'本机配置操作未完成，请重试。'});
+  Object.assign(messages,{INVALID_ARGUMENT:'输入内容无效，请重新核对授权信息。',INVALID_RESPONSE:'接入信息返回不完整，请先核对已有任务。',SETUP_FAILED:'本机配置操作未完成，请重试。',AI_SETUP_FAILED:'本机配置操作未完成，请重试。',NOT_FOUND:'这个任务或文件已不存在，请核对编号。',LOCAL_JOURNAL_FAILED:'本机任务记录未能保存，请检查磁盘空间和目录权限。',REMOTE_IO:'远端响应中断，请先查询原任务，不要重新执行命令。'});
   const message=(code,fallback)=>messages[code]||fallback||'操作未完成，请重试。';
   const invoke=async(action,data={})=>{const reply=await window.electronAPI?.invoke('render-to-main',{type:'gmssh-ai',data:{action,data}});if(!reply||reply.status!=='ok')throw Object.assign(Error(message(reply?.code,reply?.message)),{code:reply?.code});return reply.data;};
   const tools=make('div','gm-ai-tools'),entry=button('',open,'cpu');entry.append(make('span','gm-ai-label','AI 接入'));entry.title='AI 接入 · 配置与授权';entry.setAttribute('aria-label','AI 接入');tools.append(entry);
@@ -15,8 +15,8 @@ window.installGMSSHAI=function({viewerUrl}){
   const title=make('h2','','AI 接入'),closeButton=button('关闭',close,'x'),head=make('div','gm-ai-head');head.append(title,closeButton);
   const tabs=make('div','gm-ai-tabs');tabs.setAttribute('role','tablist');
   const content=make('div','gm-ai-content'),status=make('p','gm-ai-status'),footer=make('div','gm-ai-footer');status.setAttribute('role','status');status.setAttribute('aria-live','polite');footer.append(status,button('完成',close));dialog.append(head,tabs,content,footer);document.body.append(dialog);
-  let epoch=0,active='devices',writing=false,busy=false,disposed=false,devices=[],preview=null,report=null;
-  const tabButtons={};for(const [id,label]of [['devices','设备与权限'],['add','添加授权'],['config','接入 AI 客户端']]){const node=button(label,()=>show(id));node.setAttribute('role','tab');node.dataset.tab=id;tabButtons[id]=node;tabs.append(node);}
+  let epoch=0,active='devices',writing=false,busy=false,disposed=false,devices=[],preview=null,report=null,taskDevice=null;
+  const tabButtons={};for(const [id,label]of [['devices','设备与权限'],['add','添加授权'],['tasks','任务记录'],['config','接入 AI 客户端']]){const node=button(label,()=>show(id));node.setAttribute('role','tab');node.dataset.tab=id;tabButtons[id]=node;tabs.append(node);}
   content.id='gmssh-ai-content';content.setAttribute('role','tabpanel');
   for(const node of Object.values(tabButtons))node.setAttribute('aria-controls',content.id);
   tabs.addEventListener('keydown',event=>{if(busy||!event.target.dataset.tab)return;const keys=Object.keys(tabButtons),index=keys.indexOf(event.target.dataset.tab);let next;if(event.key==='ArrowRight')next=(index+1)%keys.length;if(event.key==='ArrowLeft')next=(index+keys.length-1)%keys.length;if(event.key==='Home')next=0;if(event.key==='End')next=keys.length-1;if(next!==undefined){event.preventDefault();const node=tabButtons[keys[next]];node.click();node.focus();}});
@@ -46,6 +46,7 @@ window.installGMSSHAI=function({viewerUrl}){
     for(const [key,node]of Object.entries(tabButtons)){node.setAttribute('aria-selected',String(key===tab));node.classList.toggle('selected',key===tab);node.tabIndex=key===tab?0:-1;}
     if(tab==='devices')await work(async run=>{say('正在读取本机 AI 配置…');await load();if(run!==epoch)return;renderDevices();say('只有明确启用的设备可由 AI 访问；连接状态以检查时间为准。');});
     if(tab==='add')renderAdd();
+    if(tab==='tasks')await renderTasks();
     if(tab==='config')await renderConfig();
   }
   function renderDevices(){
@@ -85,6 +86,32 @@ window.installGMSSHAI=function({viewerUrl}){
     const name=make('input');name.value=value.name;name.maxLength=128;name.setAttribute('aria-label','AI 设备名称');name.disabled=value.existing;content.append(field('设备名称',name));
     const choice=permissions(value.allow);content.append(choice.node,make('p','gm-muted','服务端仍需允许对应通道。启用后可在设备列表检查真实授权状态。'));
     const actions=make('div','gm-ai-actions');actions.append(button('重新粘贴',()=>{preview=null;void invoke('clear').catch(()=>{});renderAdd();}),button(value.existing?'更新已有授权':'启用 AI 访问',()=>work(async run=>{await invoke('enroll',{preview:value.preview,name:name.value,allow:choice.value()});preview=null;if(run!==epoch)return;await load();if(run!==epoch)return;active='devices';for(const [key,node]of Object.entries(tabButtons)){node.classList.toggle('selected',key===active);node.setAttribute('aria-selected',String(key===active));node.tabIndex=key===active?0:-1;}renderDevices();tabButtons.devices.focus();say('配置已保存。请检查接入，再复制 AI 客户端配置。');},{write:true})));content.append(actions);const submit=actions.lastChild;submit.classList.add('primary');submit.disabled=!choice.value().length;choice.node.addEventListener('change',()=>submit.disabled=!choice.value().length);
+  }
+  async function renderTasks(){
+    await work(async run=>{
+      await load();if(run!==epoch)return;
+      content.replaceChildren();content.append(make('p','gm-muted','这里只保存本机提交或查询过的任务编号、请求键和上次观察结果，不保存命令正文或输出。刷新本地记录不会连接远端。'));
+      if(!devices.length){content.append(make('p','gm-ai-state','添加授权后，可在这里查找 AI 命令的任务记录。'));say('还没有配置 AI 设备。');return;}
+      const select=make('select');select.setAttribute('aria-label','任务设备');for(const device of devices){const option=make('option','',device.name);option.value=device.id;select.append(option);}
+      select.value=devices.some(device=>device.id===taskDevice)?taskDevice:devices.find(device=>device.allow.includes('terminal'))?.id||devices[0].id;taskDevice=select.value;
+      const actions=make('div','gm-ai-summary'),rows=make('div','gm-ai-tasks');actions.append(field('设备',select),button('刷新本地记录',()=>work(update),'arrow-clockwise'));content.append(actions,rows);
+      const states={unconfirmed:'提交回执待确认',unknown:'提交结果未知',running:'上次观察：运行中',cancelling:'上次观察：正在取消',completed:'已完成',failed:'执行失败',cancelled:'已取消',interrupted:'执行中断，结果未知',forgotten:'服务端结果已清理'};
+      async function update(current){
+        taskDevice=select.value;select.disabled=true;say('正在读取本机任务记录…');let history;try{history=await invoke('history',{device:taskDevice});}finally{select.disabled=false;}if(current!==epoch)return;rows.replaceChildren();
+        if(!history.tasks.length)rows.append(make('p','gm-ai-state','本机尚未记录这台设备的异步命令。SSH 同步命令不在此列表。'));
+        for(const task of history.tasks){
+          const row=make('section','gm-ai-device gm-ai-task');row.dataset.state=task.state;rows.append(row);
+          row.append(make('strong','',states[task.state]||task.state),make('p','gm-muted','任务：'+(task.taskId||'尚未取得任务编号')),make('p','gm-muted','上次观察：'+new Date(task.observedAt).toLocaleString()));
+          if(task.exitCode!==null)row.append(make('p','gm-ai-state','退出码：'+task.exitCode));
+          const details=make('details','gm-ai-task-details');details.append(make('summary','','请求与恢复信息'),make('p','gm-muted','请求键：'+(task.requestKey||'本机未记录')+'\n状态码：'+task.code));row.append(details);
+          if(!task.taskId)row.append(make('p','gm-muted','不要作为新命令重复执行；如需核对，使用相同请求键、原命令和超时。'));
+          const query=button('查询远端状态',()=>work(async current=>{say('正在查询任务，不会重新执行命令…');const reply=await invoke('task',{device:taskDevice,taskId:task.taskId});if(current!==epoch)return;if(!reply.ok){say(message(reply.error.code,reply.error.message));return;}await update(current);if(current!==epoch)return;const result=reply.result;say('远端任务：'+(states[result.state]||result.state)+(result.exitCode===null?'':' · 退出码 '+result.exitCode)+(result.localJournal?' · 本地记录未能保存':''));if(result.output){const output=make('pre','gm-ai-output',result.output);output.setAttribute('aria-label','本次任务输出');rows.prepend(output);}if(result.more||result.truncated)rows.prepend(make('p','gm-muted',result.truncated?'服务端输出已达到上限；当前内容不完整。':'本次显示一页输出，更多内容可通过 CLI / MCP 沿 nextOffset 读取。'));}),'arrow-clockwise');
+          query.disabled=!history.canQuery||!task.taskId||task.state==='forgotten';row.append(query);
+        }
+        say(history.pruned?'本机最多保留最近 '+history.retentionLimit+' 条记录，更早的记录已移出；未清理服务端结果。':'显示上次观察结果；点击“查询远端状态”才核对当前状态。');
+      }
+      select.onchange=()=>work(update);await update(run);
+    });
   }
   async function renderConfig(){
     const summary=make('section','gm-ai-runtime'),runtime=make('p','','本机组件尚未检查'),actions=make('div','gm-ai-actions');summary.append(make('h3','','本机 AI 组件'),runtime,actions);content.append(summary);

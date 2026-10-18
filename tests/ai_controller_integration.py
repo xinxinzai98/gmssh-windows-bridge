@@ -81,13 +81,17 @@ def run(go):
                     assert call('device_context')['environment']['computer'] == 'LAB-PC'
                     checks.append('pinned TLS environment query')
                     task = call('powershell_run', script='synthetic-ai-exit-7', requestKey='1'*32)
-                    for _ in range(100):
-                        result = call('task_get', taskId=task['taskId'])
-                        if result['state'] != 'running': break
-                        time.sleep(.01)
+                    result = call('task_wait', taskId=task['taskId'], timeout=5)
+                    assert result['finished'] and not result['waitTimedOut']
                     assert result['exitCode'] == 7 and '中文' in result['output']
                     assert call('powershell_run', script='synthetic-ai-exit-7', requestKey='1'*32)['taskId'] == task['taskId']
                     checks.append('async exit, UTF-8 output and reconnect deduplication')
+                    persisted = Operations(Registry(registry.root), connector)
+                    history = persisted.call('tasks_list', {'device': full['id']})['result']
+                    assert history['tasks'][0]['taskId'] == task['taskId'] and history['tasks'][0]['exitCode'] == 7
+                    assert history['remoteStateChecked'] is False
+                    assert not call('tasks_list', device=view['id'])['tasks']
+                    checks.append('restart-safe local receipts isolated by authorization')
                     waiting = call('powershell_run', script='synthetic-ai-wait', requestKey='2'*32)
                     call('task_cancel', taskId=waiting['taskId'])
                     for _ in range(100):
@@ -103,6 +107,17 @@ def run(go):
                     call('files_restore', path='C:/source.txt', backup=applied['backup'], backupSha256=original['sha256'], expectedSha256=applied['sha256'])
                     assert call('files_read', path='C:/source.txt')['sha256'] == original['sha256']
                     checks.append('controller SFTP read, diff, apply and backup restore')
+                    long_content = '中文🙂'*9000+'\n'
+                    long_edit = call('files_apply', path='C:/source.txt', content=long_content, expectedSha256=original['sha256'])
+                    page = call('files_read', path='C:/source.txt', limit=1)
+                    assert page['truncated'] and page['nextByte'] is not None
+                    text = page['text']
+                    while page['nextByte'] is not None:
+                        page = call('files_read', path='C:/source.txt', startByte=page['nextByte'], expectedSha256=long_edit['sha256'])
+                        text += page['text']
+                    assert text == long_content
+                    call('files_restore', path='C:/source.txt', backup=long_edit['backup'], backupSha256=original['sha256'], expectedSha256=long_edit['sha256'])
+                    checks.append('whole UTF-8 long-line continuation over controller SFTP')
                     for tool, args in [('powershell_run', {'script': 'untrusted'}), ('files_read', {'path': 'C:/source.txt'}), ('desktop_act', {'snapshot': 'a'*32, 'target': 'b'*32, 'action': 'invoke'})]:
                         denied = operations.call(tool, {'device': view['id'], **args})
                         assert not denied['ok'] and denied['error']['code'] == 'ACCESS_DENIED', (tool, denied)

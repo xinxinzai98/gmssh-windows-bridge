@@ -72,23 +72,43 @@ def text_bytes(value):
     return raw
 
 
-def read(sftp, path, start_line=1, limit=100):
+def read(sftp, path, start_line=1, limit=100, start_byte=None, expected_sha256=None):
     if type(start_line) is not int or start_line < 1 or type(limit) is not int or not 1 <= limit <= 200:
         raise StreamError('INVALID_ARGUMENT')
     path = remote_path(path)
     raw = read_bytes(sftp, path)
+    sha = digest(raw)
+    if expected_sha256 is not None and sha != expected_sha256:
+        raise StreamError('SOURCE_CHANGED')
     try:
         lines = raw.decode('utf-8-sig').splitlines(keepends=True)
     except UnicodeError:
         raise StreamError('TEXT_ENCODING_UNSUPPORTED') from None
-    content = ''.join(lines[start_line-1:start_line-1+limit])
-    # A single minified line must not exhaust the model's context.
-    truncated = len(content.encode('utf-8')) > 32768
-    if truncated:
-        content = content.encode('utf-8')[:32768].decode('utf-8', 'ignore')
-    return {'path': path, 'sha256': digest(raw), 'size': len(raw), 'startLine': start_line,
+    bom = 3 if raw.startswith(b'\xef\xbb\xbf') else 0
+    if start_byte is not None:
+        if type(start_byte) is not int or not 0 <= start_byte <= len(raw) or start_byte > 0 and expected_sha256 is None:
+            raise StreamError('INVALID_ARGUMENT')
+        start = bom if start_byte == 0 else start_byte
+        # Offsets are raw UTF-8 file bytes, including a possible BOM.
+        try:
+            raw[:start].decode('utf-8')
+        except UnicodeError:
+            raise StreamError('INVALID_ARGUMENT') from None
+        end = min(len(raw), start+32768)
+        next_line = None
+        truncated = end < len(raw)
+    else:
+        start = bom+len(''.join(lines[:start_line-1]).encode('utf-8'))
+        selected = ''.join(lines[start_line-1:start_line-1+limit]).encode('utf-8')
+        truncated = len(selected) > 32768
+        end = start+min(len(selected), 32768)
+        next_line = start_line+limit if not truncated and start_line-1+limit < len(lines) else None
+    # Return a continuation at the next whole character, including within a line.
+    content = raw[start:end].decode('utf-8', 'ignore')
+    end = start+len(content.encode('utf-8'))
+    return {'path': path, 'sha256': sha, 'size': len(raw), 'startLine': start_line if start_byte is None else None,
             'totalLines': len(lines), 'text': content, 'truncated': truncated,
-            'nextLine': start_line+limit if start_line-1+limit < len(lines) else None}
+            'nextLine': next_line, 'startByte': start, 'nextByte': end if end < len(raw) else None, 'eof': end == len(raw)}
 
 
 def search(sftp, path, query='', recursive=False):

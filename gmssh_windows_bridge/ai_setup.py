@@ -108,7 +108,7 @@ class Setup:
         action, data = value['action'], value['data']
         fields = {'list': set(), 'preview': {'code'}, 'enroll': {'code', 'name', 'allow', 'replace'},
                   'configure': {'device', 'allow'}, 'credential': {'device', 'value'},
-                  'doctor': {'checkMCP'}, 'check': {'device'}, 'config': {'format'}}
+                  'doctor': {'checkMCP'}, 'check': {'device'}, 'config': {'format'}, 'history': {'device'}, 'task': {'device', 'taskId'}}
         if not isinstance(action, str) or action not in fields or set(data) != fields[action]:
             raise StreamError('INVALID_ARGUMENT')
         if 'allow' in data and (not isinstance(data['allow'], list) or any(not isinstance(v, str) or v not in PERMISSIONS for v in data['allow']) or len(data['allow']) != len(set(data['allow']))):
@@ -136,6 +136,13 @@ class Setup:
             return doctor(self.registry, data['checkMCP'])
         if action == 'check':
             return self.operations.call('device_access_check', {'device': data['device']})
+        if action == 'history':
+            device = next((v for v in self.registry.devices() if v['id'] == identifier(data['device'])), None)
+            if device is None:
+                raise StreamError('DEVICE_NOT_ENABLED')
+            return {**self.registry.task_history(device['id'], 200), 'canQuery': 'terminal' in device['allow']}
+        if action == 'task':
+            return self.operations.call('task_get', {'device': data['device'], 'taskId': data['taskId']})
         if action == 'config':
             return {'format': data['format'], 'text': mcp_configuration(self.registry, data['format'])}
         raise StreamError('INVALID_ARGUMENT')

@@ -24,6 +24,8 @@ from .file_stream import StreamError
 from .pairing import _object, choose_target, inspect_connection
 
 PERMISSIONS = {'inspect', 'terminal', 'files', 'view', 'input'}
+TASK_STATES = {'unconfirmed', 'unknown', 'running', 'cancelling', 'completed', 'failed', 'cancelled', 'interrupted', 'forgotten'}
+TASK_HISTORY_LIMIT = 200
 SCHEMA = {'type': 'object', 'required': ['schema', 'ok', 'tool', 'sampledAt'],
           'properties': {'schema': {'type': 'integer'}, 'ok': {'type': 'boolean'}, 'tool': {'type': 'string'},
                          'sampledAt': {'type': 'string'}, 'device': {'type': ['string', 'null']},
@@ -227,6 +229,66 @@ class Registry:
             records[device['id']] = result
             self._save_json('ai-status.json', {'schema': 1, 'devices': records})
 
+    def task_records(self):
+        try:
+            value = private_json(self.root/'ai-tasks.json', 262144)
+        except FileNotFoundError:
+            return {'schema': 1, 'tasks': [], 'pruned': False}
+        if not isinstance(value, dict) or set(value) != {'schema', 'tasks', 'pruned'} or type(value['schema']) is not int or value['schema'] != 1 or type(value['pruned']) is not bool or not isinstance(value['tasks'], list) or len(value['tasks']) > TASK_HISTORY_LIMIT:
+            raise StreamError('CONFIG_UNSAFE')
+        for row in value['tasks']:
+            if not isinstance(row, dict) or set(row) != {'device', 'taskId', 'requestKey', 'state', 'code', 'exitCode', 'observedAt'}:
+                raise StreamError('CONFIG_UNSAFE')
+            identifier(row['device'])
+            for key in ('taskId', 'requestKey'):
+                if row[key] is not None:
+                    identifier(row[key])
+            if not (row['taskId'] or row['requestKey']) or not isinstance(row['state'], str) or row['state'] not in TASK_STATES or not isinstance(row['code'], str) or re.fullmatch('[A-Z_]{1,48}', row['code']) is None or not isinstance(row['observedAt'], str) or len(row['observedAt']) > 40:
+                raise StreamError('CONFIG_UNSAFE')
+            if row['exitCode'] is not None and (type(row['exitCode']) is not int or not -2**31 <= row['exitCode'] <= 2**32-1):
+                raise StreamError('CONFIG_UNSAFE')
+        return value
+
+    def task_history(self, device_id, limit=100):
+        identifier(device_id)
+        if type(limit) is not int or not 1 <= limit <= TASK_HISTORY_LIMIT:
+            raise StreamError('INVALID_ARGUMENT')
+        value = self.task_records()
+        rows = [row for row in reversed(value['tasks']) if row['device'] == device_id]
+        return {'tasks': rows[:limit], 'scope': 'local-observations', 'remoteStateChecked': False,
+                'more': len(rows) > limit, 'pruned': value['pruned'], 'retentionLimit': TASK_HISTORY_LIMIT}
+
+    def remember_task(self, device, result=None, request_key=None):
+        # Store identifiers and last observed state, never commands or output.
+        task_id = result.get('taskId') if result else None
+        if task_id is not None:
+            identifier(task_id)
+        if request_key is not None:
+            identifier(request_key)
+        if not task_id and not request_key:
+            raise StreamError('INVALID_RESPONSE')
+        state, code, exit_code = (result['state'], result['code'], result.get('exitCode')) if result else ('unconfirmed', 'AWAITING_RESPONSE', None)
+        if state not in TASK_STATES or not isinstance(code, str) or re.fullmatch('[A-Z_]{1,48}', code) is None or exit_code is not None and (type(exit_code) is not int or not -2**31 <= exit_code <= 2**32-1):
+            raise StreamError('INVALID_RESPONSE')
+        with self.lock():
+            if next((v for v in self.devices() if v['id'] == device['id']), None) != device:
+                return False
+            value = self.task_records()
+            previous = next((row for row in value['tasks'] if row['device'] == device['id'] and
+                            (task_id is not None and row['taskId'] == task_id or request_key is not None and row['requestKey'] == request_key)), None)
+            if previous and (result is None or state == 'unknown' and previous['taskId']):
+                return True
+            if previous:
+                value['tasks'].remove(previous)
+            row = {'device': device['id'], 'taskId': task_id, 'requestKey': request_key or (previous or {}).get('requestKey'),
+                   'state': state, 'code': code, 'exitCode': exit_code, 'observedAt': now()}
+            value['tasks'].append(row)
+            if len(value['tasks']) > TASK_HISTORY_LIMIT:
+                value['pruned'] = True
+                value['tasks'] = value['tasks'][-TASK_HISTORY_LIMIT:]
+            self._save_json('ai-tasks.json', value)
+            return True
+
     def credential_present(self, device):
         reference = device['credential']
         if reference['kind'] == 'env':
@@ -395,6 +457,10 @@ TOOLS = [
       for name, description in [('task_get', 'Read a controller task after reconnect; output offsets count UTF-8 bytes.'),
                                 ('task_cancel', 'Request cancellation of a running command. Does not undo its effects.'),
                                 ('task_forget', 'Delete the retained result of a finished task owned by this authorization.')]],
+    specification('tasks_list', 'Read recent local task receipts after client restart. Does not contact the device; states are dated observations, not current status. Never contains command bodies or output.',
+                  {'limit': {'type': 'integer', 'minimum': 1, 'maximum': TASK_HISTORY_LIMIT}}, permission='terminal'),
+    specification('task_wait', 'Wait <=60 seconds for an existing controller task, without replaying or cancelling it. Returns one bounded output page; timeout is not task failure. Continue with nextOffset when more is true.',
+                  {'taskId': ID, 'offset': {'type': 'integer', 'minimum': 0, 'maximum': 262144}, 'timeout': {'type': 'integer', 'minimum': 1, 'maximum': 60}}, ('taskId',), 'terminal'),
     specification('desktop_observe', 'List windows; with window handle, return a bounded UIA control tree and 30-second target handles.',
                   {'window': SELECTOR['window']}, permission='view'),
     specification('desktop_find', 'Find UIA controls by exact name, automationId or controlType within one observed window. Multiple matches remain explicit.',
@@ -408,8 +474,9 @@ TOOLS = [
                    **SELECTOR, 'service': {'type': 'string', 'maxLength': 64}, 'state': {'enum': ['Running', 'Stopped', 'Paused']}, 'path': PATH, 'sha256': HASH}, ('condition',), 'dynamic'),
     specification('files_search', 'List/search file names under an explicit Windows directory. <=200 rows, 2000 entries, depth 4; no symlink traversal.',
                   {'path': PATH, 'query': {'type': 'string', 'maxLength': 128}, 'recursive': {'type': 'boolean'}}, ('path',), 'files'),
-    specification('files_read', 'Read a UTF-8 text file <=1 MiB in bounded line ranges, with full-file SHA-256.',
-                  {'path': PATH, 'startLine': {'type': 'integer', 'minimum': 1}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 200}}, ('path',), 'files'),
+    specification('files_read', 'Read a UTF-8 text file <=1 MiB, <=200 lines/32 KiB per page. Continue long lines using nextByte as startByte and the returned sha256 as expectedSha256; do not mix byte and line modes.',
+                  {'path': PATH, 'startLine': {'type': 'integer', 'minimum': 1}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 200},
+                   'startByte': {'type': 'integer', 'minimum': 0, 'maximum': ai_files.MAX_TEXT}, 'expectedSha256': HASH}, ('path',), 'files'),
     *[specification(name, description, {'path': PATH, 'content': {'type': 'string', 'maxLength': 1048576}, 'expectedSha256': HASH}, ('path', 'content', 'expectedSha256'), 'files', name == 'files_apply')
       for name, description in [('files_preview', 'Preview an exact-content text edit against the expected file hash.'),
                                 ('files_apply', 'Apply a verified text edit; retain original in a unique sibling backup; never overwrite a competing destination.')]],
@@ -464,6 +531,8 @@ class Operations:
             if tool is None:
                 raise StreamError('UNKNOWN_TOOL')
             validate_arguments(tool['inputSchema'], arguments)
+            if name == 'files_read' and 'startByte' in arguments and (set(arguments) & {'startLine', 'limit'} or arguments['startByte'] > 0 and 'expectedSha256' not in arguments):
+                raise StreamError('INVALID_ARGUMENT')
             if name == 'devices_list':
                 result = {'devices': [self.registry.public(v) for v in self.registry.devices()], 'version': __version__}
             else:
@@ -477,8 +546,11 @@ class Operations:
                     raise StreamError('ACCESS_DENIED')
                 if name == 'desktop_act' and 'view' not in device['allow']:
                     raise StreamError('ACCESS_DENIED')
-                with self.connector(self.registry, device) as client:
-                    result = self.execute(client, device, name, arguments)
+                if name == 'tasks_list':
+                    result = self.registry.task_history(device['id'], arguments.get('limit', 100))
+                else:
+                    with self.connector(self.registry, device) as client:
+                        result = self.execute(client, device, name, arguments)
                 if name == 'device_access_check':
                     self.registry.record_check(device, result)
             reply.update(ok=True, result=result)
@@ -555,15 +627,44 @@ class Operations:
                 return ssh_run(client, args['script'], args.get('timeout', 60))
             self.require_controller(client)
             request_key = args.get('requestKey', uuid.uuid4().hex)
+            # Persist recovery identity before any command can be submitted.
             try:
-                return {**client.call('ai-task-start', args={'command': args['script'], 'timeout': args.get('timeout', 60), 'key': request_key}), 'requestKey': request_key}
+                if not self.registry.remember_task(device, request_key=request_key):
+                    raise StreamError('ACCESS_DENIED')
+            except OSError:
+                raise StreamError('LOCAL_JOURNAL_FAILED') from None
+            try:
+                result = client.call('ai-task-start', args={'command': args['script'], 'timeout': args.get('timeout', 60), 'key': request_key})
+                return {**self.task_receipt(device, result, request_key), 'requestKey': request_key}
             except StreamError as error:
                 # A lost start response must not cause a second execution.
                 error.recovery = {'requestKey': request_key, 'retryWithSameKey': True}
+                try:
+                    self.registry.remember_task(device, {'state': 'unknown', 'code': 'START_RESPONSE_UNKNOWN'}, request_key)
+                except (OSError, ValueError, StreamError):
+                    pass
                 raise
         if name.startswith('task_'):
             self.require_controller(client)
-            return client.call('ai-'+name.replace('_', '-'), args={'taskId': args['taskId'], 'offset': args.get('offset', 0)})
+            if name == 'task_wait':
+                deadline = time.monotonic()+args.get('timeout', 15)
+                while True:
+                    result = client.call('ai-task-get', args={'taskId': args['taskId'], 'offset': args.get('offset', 0)})
+                    if result.get('taskId') != args['taskId'] or result.get('state') not in TASK_STATES-{'unknown', 'unconfirmed', 'forgotten'}:
+                        raise StreamError('INVALID_RESPONSE')
+                    finished = result['state'] not in {'running', 'cancelling'}
+                    if finished or time.monotonic() >= deadline:
+                        return {**self.task_receipt(device, result), 'finished': finished, 'waitTimedOut': not finished}
+                    time.sleep(min(.5, max(0, deadline-time.monotonic())))
+            result = client.call('ai-'+name.replace('_', '-'), args={'taskId': args['taskId'], 'offset': args.get('offset', 0)})
+            if name == 'task_forget':
+                if result.get('forgotten') is not True:
+                    raise StreamError('INVALID_RESPONSE')
+                receipt = self.task_receipt(device, {'taskId': args['taskId'], 'state': 'forgotten', 'code': 'FORGOTTEN'})
+                return {**result, **({'localJournal': receipt['localJournal']} if 'localJournal' in receipt else {})}
+            if result.get('taskId') != args['taskId']:
+                raise StreamError('INVALID_RESPONSE')
+            return self.task_receipt(device, result)
         if name.startswith('desktop_'):
             self.require_controller(client)
             request = {key: value for key, value in args.items() if key != 'device'}
@@ -575,7 +676,7 @@ class Operations:
             if name == 'files_search':
                 return ai_files.search(sftp, args['path'], args.get('query', ''), args.get('recursive', False))
             if name == 'files_read':
-                return ai_files.read(sftp, args['path'], args.get('startLine', 1), args.get('limit', 100))
+                return ai_files.read(sftp, args['path'], args.get('startLine', 1), args.get('limit', 100), args.get('startByte'), args.get('expectedSha256'))
             if name in {'files_preview', 'files_apply'}:
                 return (ai_files.preview if name == 'files_preview' else ai_files.apply)(sftp, args['path'], args['content'], args['expectedSha256'])
             if name == 'files_restore':
@@ -587,6 +688,19 @@ class Operations:
                     raise StreamError('SOURCE_CHANGED')
                 return ai_files.apply(sftp, path, raw.decode('utf-8'), args['expectedSha256'])
         raise StreamError('UNKNOWN_TOOL')
+
+    def task_receipt(self, device, result, request_key=None):
+        if not isinstance(result, dict) or not isinstance(result.get('taskId'), str) or re.fullmatch('[0-9a-f]{32}', result['taskId']) is None or not isinstance(result.get('state'), str) or result['state'] not in TASK_STATES-{'unknown', 'unconfirmed'} or not isinstance(result.get('code'), str) or re.fullmatch('[A-Z_]{1,48}', result['code']) is None:
+            raise StreamError('INVALID_RESPONSE')
+        if result.get('exitCode') is not None and (type(result['exitCode']) is not int or not -2**31 <= result['exitCode'] <= 2**32-1):
+            raise StreamError('INVALID_RESPONSE')
+        try:
+            if not self.registry.remember_task(device, result, request_key):
+                return {**result, 'localJournal': {'state': 'skipped', 'code': 'CONFIG_CHANGED'}}
+        except (OSError, ValueError, StreamError):
+            # A local journal failure cannot hide a known remote execution result.
+            result = {**result, 'localJournal': {'state': 'failed', 'code': 'LOCAL_JOURNAL_FAILED'}}
+        return result
 
     def wait_for(self, client, device, args):
         condition = args['condition']
@@ -651,7 +765,13 @@ def error_message(code):
             'EDIT_RECOVERY_REQUIRED': '保存未完成，原文件备份已保留，请先核对恢复路径。',
             'AI_PAUSED': '用户已从 Windows 托盘暂停 AI 桌面控制。',
             'DESKTOP_LOCKED': 'Windows 当前未提供可操作的已解锁桌面。',
-            'SOURCE_CHANGED': '文件与预览时不一致，请重新读取并生成修改预览。'}.get(code, code)
+            'SOURCE_CHANGED': '文件与预览时不一致，请重新读取并生成修改预览。',
+            'LOCAL_JOURNAL_FAILED': '本机任务记录无法保存；若尚未提交命令则不会执行，请检查可用空间和目录权限。',
+            'INVALID_RESPONSE': '远端返回的信息不完整，请先核对已有任务，不要重新执行命令。',
+            'TEXT_ENCODING_UNSUPPORTED': '当前文件不是有效的 UTF-8 文本，请使用文件中心处理。',
+            'FILE_LIMIT': '该文件超出 AI 文本读取范围，请使用文件中心处理。',
+            'NOT_FOUND': '请求的文件或任务已不存在，请核对保存的路径或任务编号。',
+            'OUTCOME_UNKNOWN': '执行结果未知，请先核对远端状态，不要作为新任务重试。'}.get(code, code)
 
 
 def main(argv=None):
@@ -678,6 +798,10 @@ def main(argv=None):
     run.add_argument('--timeout', type=int, default=60); run.add_argument('--request-key')
     for name in ('task', 'cancel', 'forget'):
         sub = commands.add_parser(name); sub.add_argument('device'); sub.add_argument('task_id'); sub.add_argument('--offset', type=int, default=0)
+        if name == 'task':
+            sub.add_argument('--wait', type=int, help='Wait 1–60 seconds; timeout does not cancel the task')
+    tasks = commands.add_parser('tasks', help='List recent local task receipts without connecting')
+    tasks.add_argument('device'); tasks.add_argument('--limit', type=int, default=100)
     commands.add_parser('tools', help='Print shared tool schemas')
     commands.add_parser('mcp', help='Run official MCP SDK over stdio; no TCP listener')
     config = commands.add_parser('mcp-config', help='Print MCP configuration; never edits client settings')
@@ -743,6 +867,10 @@ def main(argv=None):
             elif args.command in {'task', 'cancel', 'forget'}:
                 tool = {'task': 'task_get', 'cancel': 'task_cancel', 'forget': 'task_forget'}[args.command]
                 values = {'device': args.device, 'taskId': args.task_id, 'offset': args.offset}
+                if args.command == 'task' and args.wait is not None:
+                    tool, values['timeout'] = 'task_wait', args.wait
+            elif args.command == 'tasks':
+                tool, values = 'tasks_list', {'device': args.device, 'limit': args.limit}
             result = Operations(registry).call(tool, values)
         print(json.dumps(result, ensure_ascii=False, allow_nan=False))
         return 1 if result.get('ok') is False else 0

@@ -124,6 +124,27 @@ class AISetupTests(unittest.TestCase):
         with self.assertRaisesRegex(StreamError,'CONFIG_UNSAFE'):
             self.registry.checks()
 
+    def test_task_history_is_local_and_only_explicit_query_uses_terminal_access(self):
+        device=self.registry.devices()[0]
+        self.registry.remember_task(device,{'taskId':'a'*32,'state':'running','code':'OK','exitCode':None},'b'*32)
+        value=self.setup.request({'action':'history','data':{'device':self.id}})
+        self.assertTrue(value['canQuery']);self.assertEqual(value['tasks'][0]['taskId'],'a'*32)
+        self.assertFalse(value['remoteStateChecked']);self.assertEqual(self.connections,0)
+        def get(action,**values):
+            self.assertEqual(action,'ai-task-get');self.assertEqual(values,{'args':{'taskId':'a'*32,'offset':0}})
+            return {'taskId':'a'*32,'state':'completed','code':'OK','exitCode':0,'output':'synthetic output'}
+        self.client.call=get
+        value=self.setup.request({'action':'task','data':{'device':self.id,'taskId':'a'*32}})
+        self.assertTrue(value['ok']);self.assertEqual(self.connections,1)
+        self.assertNotIn('synthetic output',(self.root/'ai-tasks.json').read_text())
+        self.registry.configure(self.id,[])
+        value=self.setup.request({'action':'history','data':{'device':self.id}})
+        self.assertFalse(value['canQuery']);self.assertEqual(value['tasks'][0]['state'],'completed')
+        denied=self.setup.request({'action':'task','data':{'device':self.id,'taskId':'a'*32}})
+        self.assertEqual(denied['error']['code'],'ACCESS_DENIED');self.assertEqual(self.connections,1)
+        with self.assertRaisesRegex(StreamError,'INVALID_ARGUMENT'):
+            self.setup.request({'action':'task','data':{'device':self.id,'taskId':'a'*32,'script':'forbidden'}})
+
 
 if __name__=='__main__':
     unittest.main()

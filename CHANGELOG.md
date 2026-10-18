@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Develop controller 0.4.0a29 locally: add bounded task waits and private, restart-safe task receipts without storing command bodies or output. Preserve request keys before submission, separate wait timeout from task failure, retain known remote results if a local receipt write fails, and never replay commands automatically.
+- Add a human task-history tab with dated local observations and explicit, permission-checked remote status/output queries. Add hash-checked UTF-8 byte continuation so long single lines can be read completely without skipping or splitting characters. Reuse Windows a27 protocol; no real-device changes or new listener.
+
 - Develop controller 0.4.0a28 locally: add an AI access panel for masked authorization preview, explicit permissions, same-identity credential refresh, local disable, current access checks, optional SDK preparation, stdio self-test and configuration copy. Keep setup actions outside MCP and never read the vendor credential database.
 - Add a dated `device_access_check` tool, distinguish effective grants from desktop pause/lock/worker readiness, invalidate old checks after configuration changes, and keep disabled devices off the network. Add local-only `doctor`, user-operated SSH credential refresh and Codex TOML/CLI formats without exporting credential values. Existing Windows a27 protocol remains compatible; no real device operations or application switch.
 

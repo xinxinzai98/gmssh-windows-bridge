@@ -33,3 +33,11 @@ test('configuration copy is generated in main and never accepts arbitrary clipbo
  assert.deepEqual(c.copies,['safe configuration']);assert.deepEqual(c.calls[0].value,{action:'config',data:{format:'codex'}});
  await assert.rejects(c.manager.invoke(c.owner,{action:'copy',data:{format:'json',text:'untrusted'}}),{code:'INVALID_ARGUMENT'});c.manager.close();
 });
+test('task history accepts only fixed read actions and rejects execution fields',async()=>{
+ const c=fixture();await c.manager.invoke(c.owner,{action:'history',data:{device:'a'.repeat(32)}});
+ await c.manager.invoke(c.owner,{action:'task',data:{device:'a'.repeat(32),taskId:'b'.repeat(32)}});
+ assert.deepEqual(c.calls.map(v=>v.value.action),['history','task']);const before=c.calls.length;
+ await assert.rejects(c.manager.invoke(c.owner,{action:'task',data:{device:'a'.repeat(32),taskId:'b'.repeat(32),script:'unexpected'}}),{code:'INVALID_ARGUMENT'});
+ await assert.rejects(c.manager.invoke(c.owner,{action:'cancel',data:{device:'a'.repeat(32),taskId:'b'.repeat(32)}}),{code:'INVALID_ARGUMENT'});
+ assert.equal(c.calls.length,before);c.manager.close();
+});

@@ -52,6 +52,7 @@ controllers.dat
 controller-connection.json
 ai-devices.json
 ai-status.json
+ai-tasks.json
 registry.lock
 ai-job-*.dat
 .ai-devices-*

@@ -17,7 +17,7 @@ def create_server(registry):
         return [Tool(name=item['name'], description=item['description'], inputSchema=item['inputSchema'],
                      outputSchema=item['outputSchema'], annotations=ToolAnnotations(
                          readOnlyHint=not item['mutates'], destructiveHint=item['mutates'],
-                         idempotentHint=not item['mutates'], openWorldHint=item['name'] != 'devices_list')) for item in TOOLS]
+                         idempotentHint=not item['mutates'], openWorldHint=item['name'] not in {'devices_list', 'tasks_list'})) for item in TOOLS]
 
     @server.call_tool()
     async def call_tool(name, arguments):

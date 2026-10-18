@@ -13,7 +13,7 @@ ROOT_FILES = {'README.md', 'CHANGELOG.md', 'CONTRIBUTING.md', 'LICENSE', 'SECURI
 SOURCE_DIRS = ('gmssh_windows_bridge', 'desktop-web', 'tools', 'tests', 'docs', 'examples', 'install', '.github')
 SKIP_DIRS = {'.git', 'node_modules', '__pycache__', '.venv', 'venv', 'build', 'dist', 'work', 'outputs', '.pytest_cache'}
 PRIVATE_NAMES = {'.ds_store', 'catalog.json', 'connection.json', 'agent.json', 'readiness.json', 'launcher-config.json', 'installation-status.txt', 'startup-status.json',
-                 'connect-meta.dat', 'connect-password.dat', 'connect-identity.dat', 'transfer-journal.json', 'file-places.json', 'linux-host-pins.json', 'workspace-history.json', 'controllers.dat', 'controller-connection.json', 'ai-devices.json', 'ai-status.json', 'registry.lock', 'ai-paused'}
+                 'connect-meta.dat', 'connect-password.dat', 'connect-identity.dat', 'transfer-journal.json', 'file-places.json', 'linux-host-pins.json', 'workspace-history.json', 'controllers.dat', 'controller-connection.json', 'ai-devices.json', 'ai-status.json', 'ai-tasks.json', 'registry.lock', 'ai-paused'}
 PRIVATE_SUFFIXES = {'.key', '.pem', '.db', '.sqlite', '.sqlite3', '.log', '.pyc', '.exe', '.msi', '.dmg', '.whl', '.zip', '.gmsshbackup', '.part'}
 
 

@@ -90,7 +90,7 @@ class AITests(unittest.TestCase):
                 test.calls.append((operation, values))
                 if operation == 'ai-desktop':
                     return {'snapshot': 'a'*32, 'nodes': [], 'truncated': False}
-                return {'taskId': 'c'*32, 'state': 'running', 'exitCode': None}
+                return {'taskId': 'c'*32, 'state': 'running', 'code': 'OK', 'exitCode': None}
 
             def open_sftp(self):
                 return test.sftp
@@ -144,6 +144,103 @@ class AITests(unittest.TestCase):
         self.assertFalse(result['ok'])
         self.assertEqual(result['error']['recovery'], {'requestKey': 'd'*32, 'retryWithSameKey': True})
         self.assertNotIn('Get-Date', json.dumps(result))
+        receipt = ai.Registry(self.registry.root).task_history(self.device_id)['tasks'][0]
+        self.assertEqual((receipt['requestKey'], receipt['taskId'], receipt['state']), ('d'*32, None, 'unknown'))
+        self.assertNotIn('Get-Date', (self.registry.root/'ai-tasks.json').read_text())
+
+    def test_task_wait_timeout_history_restart_and_disable_never_replay(self):
+        task = self.call('powershell_run', script='private command', requestKey='d'*32)['result']
+        self.assertEqual(task['taskId'], 'c'*32)
+        clock = [0.0]
+        def advance(seconds):
+            clock[0] += seconds
+        with patch('gmssh_windows_bridge.ai.time.monotonic', side_effect=lambda: clock[0]), patch('gmssh_windows_bridge.ai.time.sleep', side_effect=advance):
+            result = self.call('task_wait', taskId=task['taskId'], timeout=1)
+        self.assertTrue(result['ok']); self.assertFalse(result['result']['finished'])
+        self.assertTrue(result['result']['waitTimedOut'])
+        self.assertEqual([v[0] for v in self.calls].count('ai-task-start'), 1)
+        before = self.connects
+        result = self.call('tasks_list')
+        self.assertTrue(result['ok']); self.assertFalse(result['result']['remoteStateChecked'])
+        self.assertEqual(self.connects, before)
+        self.assertEqual(ai.Registry(self.registry.root).task_history(self.device_id)['tasks'][0]['taskId'], task['taskId'])
+        raw = (self.registry.root/'ai-tasks.json').read_text()
+        self.assertNotIn('private command', raw); self.assertNotIn('output', raw)
+        self.registry.configure(self.device_id, [])
+        self.assertEqual(self.call('tasks_list')['error']['code'], 'ACCESS_DENIED')
+        self.assertEqual(self.call('task_wait', taskId=task['taskId'])['error']['code'], 'ACCESS_DENIED')
+        self.assertEqual(self.connects, before)
+
+    def test_finished_task_preserves_output_page_and_nonzero_exit_without_wait_failure(self):
+        def finished(operation, **values):
+            self.calls.append((operation, values))
+            return {'taskId': 'c'*32, 'state': 'failed', 'code': 'EXIT_NONZERO', 'exitCode': 7,
+                    'output': '中文 <script>untrusted</script>', 'offset': 16384, 'nextOffset': 16417, 'more': True, 'truncated': False}
+        self.client.call = finished
+        result = self.call('task_wait', taskId='c'*32, offset=16384)
+        self.assertTrue(result['ok']); self.assertTrue(result['result']['finished'])
+        self.assertFalse(result['result']['waitTimedOut']); self.assertEqual(result['result']['exitCode'], 7)
+        self.assertEqual(self.calls, [('ai-task-get', {'args': {'taskId': 'c'*32, 'offset': 16384}})])
+        self.assertTrue(result['result']['more']); self.assertEqual(result['result']['nextOffset'], 16417)
+        self.assertNotIn('untrusted', (self.registry.root/'ai-tasks.json').read_text())
+
+    def test_submit_requires_local_recovery_record_and_forget_marks_only_its_receipt(self):
+        with patch.object(self.registry, 'remember_task', side_effect=OSError('synthetic disk full')):
+            reply = self.call('powershell_run', script='must not run', requestKey='d'*32)
+        self.assertEqual(reply['error']['code'], 'LOCAL_JOURNAL_FAILED'); self.assertEqual(self.calls, [])
+        with patch.object(self.registry, 'remember_task', return_value=False):
+            reply = self.call('powershell_run', script='configuration changed', requestKey='d'*32)
+        self.assertEqual(reply['error']['code'], 'ACCESS_DENIED'); self.assertEqual(self.calls, [])
+        self.call('powershell_run', script='private', requestKey='d'*32)
+        self.client.call = lambda *_, **__: {'forgotten': True}
+        reply = self.call('task_forget', taskId='c'*32)
+        self.assertTrue(reply['ok']); self.assertTrue(reply['result']['forgotten'])
+        record = self.registry.task_history(self.device_id)['tasks'][0]
+        self.assertEqual((record['state'], record['taskId'], record['requestKey']), ('forgotten', 'c'*32, 'd'*32))
+
+    def test_history_is_bounded_and_local_write_failure_does_not_hide_started_task(self):
+        device = self.registry.devices()[0]
+        for index in range(ai.TASK_HISTORY_LIMIT+1):
+            self.registry.remember_task(device, request_key=f'{index:032x}')
+        result = self.registry.task_history(self.device_id, 200)
+        self.assertEqual(len(result['tasks']), 200); self.assertTrue(result['pruned'])
+        self.assertEqual(result['tasks'][0]['requestKey'], f'{ai.TASK_HISTORY_LIMIT:032x}')
+        original = self.registry.remember_task
+        def fail_after_start(device, result=None, request_key=None):
+            if result is not None:
+                raise OSError('synthetic disk full')
+            return original(device, result, request_key)
+        with patch.object(self.registry, 'remember_task', side_effect=fail_after_start):
+            reply = self.call('powershell_run', script='private', requestKey='d'*32)
+        self.assertTrue(reply['ok']); self.assertEqual(reply['result']['taskId'], 'c'*32)
+        self.assertEqual(reply['result']['localJournal']['code'], 'LOCAL_JOURNAL_FAILED')
+        with self.registry.lock():
+            value = self.registry.task_records(); value['tasks'][0]['output'] = 'must not load'
+            self.registry._save_json('ai-tasks.json', value)
+        with self.assertRaisesRegex(StreamError, 'CONFIG_UNSAFE'):
+            self.registry.task_records()
+
+    def test_long_utf8_lines_resume_without_loss_and_detect_changed_source(self):
+        original = b'\xef\xbb\xbf'+('中文🙂'*12000+'\r\nlast\n').encode('utf-8')
+        (self.remote/'long.txt').write_bytes(original)
+        first = self.call('files_read', path='C:/long.txt', limit=1)['result']
+        self.assertTrue(first['truncated']); self.assertIsNone(first['nextLine'])
+        self.assertLessEqual(len(first['text'].encode()), 32768)
+        text, page = first['text'], first
+        while page['nextByte'] is not None:
+            page = self.call('files_read', path='C:/long.txt', startByte=page['nextByte'], expectedSha256=first['sha256'])['result']
+            self.assertLessEqual(len(page['text'].encode()), 32768)
+            text += page['text']
+        self.assertEqual(text, original.decode('utf-8-sig')); self.assertTrue(page['eof'])
+        before = self.connects
+        for values in ({'startByte': 1}, {'startByte': 0, 'limit': 3}):
+            result = self.call('files_read', path='C:/long.txt', **values)
+            self.assertEqual(result['error']['code'], 'INVALID_ARGUMENT')
+        self.assertEqual(before, self.connects)
+        self.assertEqual(self.call('files_read', path='C:/long.txt', startByte=4, expectedSha256=first['sha256'])['error']['code'], 'INVALID_ARGUMENT')
+        (self.remote/'long.txt').write_text('changed', encoding='utf-8')
+        result = self.call('files_read', path='C:/long.txt', startByte=first['nextByte'], expectedSha256=first['sha256'])
+        self.assertEqual(result['error']['code'], 'SOURCE_CHANGED')
 
     def test_older_server_is_reported_without_auto_upgrade_or_command_fallback(self):
         self.client.ai_capabilities = {}
