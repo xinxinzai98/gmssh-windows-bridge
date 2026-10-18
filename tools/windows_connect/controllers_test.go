@@ -272,6 +272,35 @@ func TestIndependentControllerCodesDoNotRevealMasterCredentials(t *testing.T) {
 	}
 }
 
+func TestGrantCodeUsesLiveIPv6AddressesWithoutReplacingDeviceIdentity(t *testing.T) {
+	b, owner := brokerFixture(t)
+	addresses := []string{"192.168.250.2", "2001:db8::10", "2001:db8::20", "fd00::30"}
+	status, reply := controllerCall(t, b, "/v2/manage", controllerRequest{Action: "grant", Name: "Dual stack", Policy: permissions{View: true}, Addresses: addresses}, "", owner)
+	if status != 200 {
+		t.Fatal(reply)
+	}
+	encoded := reply["result"].(map[string]any)["code"].(string)
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(encoded, "GMSSH-AUTH2."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var code struct {
+		Connection struct {
+			Addresses []string `json:"addresses"`
+			Computer  string   `json:"computer"`
+			PublicKey string   `json:"sshHostPublicKey"`
+		} `json:"connection"`
+	}
+	if json.Unmarshal(raw, &code) != nil || strings.Join(code.Connection.Addresses, ",") != strings.Join(addresses, ",") || code.Connection.Computer != "LAB-PC" || !strings.HasPrefix(code.Connection.PublicKey, "ssh-ed25519 ") {
+		t.Fatal("live addresses or original device identity were lost")
+	}
+	status, _ = controllerCall(t, b, "/v2/manage", controllerRequest{Action: "grant", Name: "Unusable", Policy: permissions{View: true}, Addresses: []string{"fe80::1", "::1"}}, "", owner)
+	registry, err := b.registry()
+	if status == 200 || err != nil || len(registry.Items) != 1 {
+		t.Fatal("invalid export created an orphan grant")
+	}
+}
+
 func TestPermissionBoundaryRejectsDirectRequestsAndCrossControllerSessions(t *testing.T) {
 	b, owner := brokerFixture(t)
 	viewer, viewerToken := grantFixture(t, b, owner, "Viewer", permissions{View: true})

@@ -1,6 +1,6 @@
 ﻿#requires -Version 5.1
 [CmdletBinding()]
-param([ValidateSet('Tray','Start','Stop','Password','SSHPassword','Check','EnableCode','ResetCode')][string]$Action = 'Tray')
+param([ValidateSet('Tray','Start','Stop','Password','SSHPassword','Check','EnableCode','ResetCode','EnablePing','DisablePing')][string]$Action = 'Tray')
 $ErrorActionPreference = 'Stop'
 $env:PSModulePath = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\Modules'
 $root = Split-Path $PSCommandPath
@@ -10,6 +10,7 @@ if (-not (Test-Path $statePath)) { throw 'GMSSH Windows has not been configured.
 $state = Get-Content $statePath -Raw | ConvertFrom-Json
 $dataRoot = Split-Path $statePath
 . (Join-Path $root 'setup-checks.ps1')
+if (Test-Path (Join-Path $root 'setup-network.ps1')) { . (Join-Path $root 'setup-network.ps1') }
 if (Test-Path (Join-Path $root 'setup-connect.ps1')) { . (Join-Path $root 'setup-connect.ps1') }
 $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
     [Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -17,6 +18,8 @@ if ($Action -ne 'Tray') {
     if (-not $admin) { throw 'Administrator approval is required for this operation.' }
     try {
         switch ($Action) {
+            EnablePing { Set-GMSSHPingAccess $true }
+            DisablePing { Set-GMSSHPingAccess $false }
             Start { Start-Service RustDesk; Start-Service sshd; if ($state.unifiedPassword -and (Test-Path (Join-Path $root 'gmssh-connect.exe'))) { Register-GMSSHConnectTask -ProgramRoot $root -DataRoot $dataRoot } }
             Stop { if (Test-Path (Join-Path $root 'gmssh-connect.exe')) { Stop-GMSSHConnectTask $root $dataRoot }; Stop-Service sshd; Stop-Service RustDesk }
             EnableCode {
@@ -86,7 +89,7 @@ $menu.BackColor = $surface; $menu.ForeColor = [Drawing.Color]::WhiteSmoke
 $menu.Font = New-Object Drawing.Font('Segoe UI', 10)
 $panel = New-Object Windows.Forms.Form
 $panel.Text = 'GMSSH Windows'
-$panel.ClientSize = New-Object Drawing.Size(640, 560)
+$panel.ClientSize = New-Object Drawing.Size(640, 606)
 $panel.StartPosition = 'CenterScreen'
 $panel.Font = New-Object Drawing.Font('Segoe UI', 10)
 $panel.BackColor = $background; $panel.ForeColor = [Drawing.Color]::WhiteSmoke
@@ -130,7 +133,7 @@ $overall.TextAlign = 'MiddleRight'
 $machine = New-AgentCard 24 86 592 142
 $machineName = New-AgentLabel $machine $env:COMPUTERNAME 18 12 556 30
 $machineName.Font = New-Object Drawing.Font('Segoe UI', 17, [Drawing.FontStyle]::Bold)
-$ipCaption = New-AgentLabel $machine '局域网地址' 18 55 98 22; $ipCaption.ForeColor = $muted
+$ipCaption = New-AgentLabel $machine 'IPv4 / IPv6' 18 55 98 22; $ipCaption.ForeColor = $muted
 $addressesLabel = New-AgentLabel $machine '正在读取…' 120 55 454 22
 $accountCaption = New-AgentLabel $machine '连接账号' 18 85 98 22; $accountCaption.ForeColor = $muted
 $role = if ($state.accountRole -eq 'Administrator') { '管理员' } else { '已有账号' }
@@ -169,7 +172,11 @@ $stopButton = New-AgentButton $panel '停止后台服务' 168 511 132 30
 $checkButton = New-AgentButton $panel '接入自检' 312 511 132 30
 $closeHint = New-AgentLabel $panel '关闭后服务继续运行' 456 515 160 24
 $closeHint.ForeColor = $muted; $closeHint.TextAlign = 'MiddleRight'
+$pingStatus = New-AgentLabel $panel 'ping（IPv4 / IPv6）：正在读取…' 24 558 412 28
+$pingStatus.ForeColor = $muted
+$pingButton = New-AgentButton $panel '允许 ping' 456 552 160 34
 $tooltip = New-Object Windows.Forms.ToolTip
+$tooltip.SetToolTip($pingButton,'允许任何来源向本机发送 IPv4 / IPv6 ping 回显请求。仅管理 GMSSH 自身的回显规则；实际可达性仍以控制端测试为准。')
 $script:lastServiceStatus = ''
 $script:lastStatusError = ''
 function Add-AgentActivity([string]$Message) {
@@ -186,9 +193,9 @@ function Refresh-Status {
     try {
         $ssh = Get-Service sshd -ErrorAction SilentlyContinue
         $desktop = Get-Service RustDesk -ErrorAction SilentlyContinue
-        $addresses = @(Get-GMSSHAddresses) -join ', '
-        $addressesLabel.Text = if ($addresses) { $addresses } else { '未发现可用的 IPv4 地址' }
-        $tooltip.SetToolTip($addressesLabel, $addressesLabel.Text)
+        $addresses = @(Get-GMSSHAddresses)
+        $addressesLabel.Text = if ($addresses.Count) { $addresses -join ', ' } else { '未发现可用的 IPv4 / IPv6 地址' }
+        $tooltip.SetToolTip($addressesLabel,($addresses -join "`r`n"))
         Set-ServiceLabel $sshStatus $ssh; Set-ServiceLabel $desktopStatus $desktop
         $codeHealth = if (-not $state.unifiedPassword) { [pscustomobject]@{ready=$true;state='手动接入';detail='此安装保留手动连接'} }
             elseif (Get-Command Get-GMSSHConnectHealth -ErrorAction SilentlyContinue) { Get-GMSSHConnectHealth $root $dataRoot }
@@ -212,6 +219,15 @@ function Refresh-Status {
         $stopButton.Enabled = $stop.Enabled = $false
         if (-not $script:lastStatusError) { Add-AgentActivity '状态读取未完成，请检查本机网络和服务。'; $script:lastStatusError = 'failed' }
     }
+    try {
+        $ping = Get-GMSSHPingStatus
+        $pingStatus.Text = 'GMSSH ping（IPv4 / IPv6）：'+$ping.state
+        $pingButton.Text = $pingMenu.Text = if ($ping.enabled) { '关闭 ping' } else { '允许 ping' }
+        $pingButton.Enabled = $pingMenu.Enabled = $true
+    } catch {
+        $pingStatus.Text = 'ping 规则无法核对，请运行升级 / 修复或检查防火墙'
+        $pingButton.Enabled = $pingMenu.Enabled = $false
+    }
 }
 function Invoke-AgentAction([string]$Name) {
     try {
@@ -222,7 +238,7 @@ function Invoke-AgentAction([string]$Name) {
             Refresh-Status
             return $false
         }
-        Add-AgentActivity $(switch ($Name) { Start { '启动服务操作已完成。' }; Stop { '停止服务操作已完成。' }; Check { '接入自检已完成；检查结果见自检窗口。' }; EnableCode { '长效连接码已启用。' }; ResetCode { '连接码设置窗口已关闭。' }; default { '密码窗口已关闭；修改结果见窗口提示。' } })
+        Add-AgentActivity $(switch ($Name) { EnablePing { '已允许 IPv4 / IPv6 ping 回显请求。' }; DisablePing { 'GMSSH 的 ping 回显规则已关闭。' }; Start { '启动服务操作已完成。' }; Stop { '停止服务操作已完成。' }; Check { '接入自检已完成；检查结果见自检窗口。' }; EnableCode { '长效连接码已启用。' }; ResetCode { '连接码设置窗口已关闭。' }; default { '密码窗口已关闭；修改结果见窗口提示。' } })
         Refresh-Status
         return $true
     } catch {
@@ -262,6 +278,12 @@ if ($state.managedAccountSid -and -not $state.unifiedPassword) {
 $start = $menu.Items.Add('启动后台服务'); $start.Add_Click({ Invoke-AgentAction Start })
 $stop = $menu.Items.Add('停止后台服务'); $stop.Add_Click({ Invoke-AgentAction Stop })
 $check = $menu.Items.Add('接入自检（管理员）'); $check.Add_Click({ Invoke-AgentAction Check })
+$pingMenu = $menu.Items.Add('允许 ping')
+function Invoke-PingToggle {
+    try { $ping = Get-GMSSHPingStatus; Invoke-AgentAction $(if ($ping.enabled) { 'DisablePing' } else { 'EnablePing' }) }
+    catch { Add-AgentActivity 'ping 规则无法核对，未修改防火墙。' }
+}
+$pingMenu.Add_Click({ Invoke-PingToggle }); $pingButton.Add_Click({ Invoke-PingToggle })
 [void]$menu.Items.Add((New-Object Windows.Forms.ToolStripSeparator))
 $exit = $menu.Items.Add('退出托盘（服务继续运行）'); $exit.Add_Click({ $context.ExitThread() })
 $tray.Add_DoubleClick({ Show-Panel })

@@ -218,13 +218,14 @@ func (b *controllerBroker) authenticate(r *http.Request) (controller, error) {
 }
 
 type controllerRequest struct {
-	Action  string          `json:"action"`
-	ID      string          `json:"id,omitempty"`
-	Name    string          `json:"name,omitempty"`
-	Policy  permissions     `json:"permissions,omitempty"`
-	Kind    string          `json:"kind,omitempty"`
-	Session string          `json:"session,omitempty"`
-	Args    json.RawMessage `json:"args,omitempty"`
+	Action    string          `json:"action"`
+	ID        string          `json:"id,omitempty"`
+	Name      string          `json:"name,omitempty"`
+	Policy    permissions     `json:"permissions,omitempty"`
+	Kind      string          `json:"kind,omitempty"`
+	Session   string          `json:"session,omitempty"`
+	Args      json.RawMessage `json:"args,omitempty"`
+	Addresses []string        `json:"addresses,omitempty"`
 }
 
 func (b *controllerBroker) manage(r controllerRequest) (any, error) {
@@ -265,6 +266,24 @@ func (b *controllerBroker) manage(r controllerRequest) (any, error) {
 		if len(registry.Items) >= 32 || len(strings.TrimSpace(r.Name)) < 1 || len(r.Name) > 240 || !utf8.ValidString(r.Name) || strings.ContainsAny(r.Name, "\r\n\x00") || !validPolicy(r.Policy) {
 			return nil, errUnavailable
 		}
+		_, public, err := b.store.managed()
+		if err != nil {
+			return nil, err
+		}
+		if r.Addresses != nil {
+			if len(r.Addresses) < 1 || len(r.Addresses) > 32 {
+				return nil, errUnavailable
+			}
+			addresses := make([]any, 0, len(r.Addresses))
+			for _, address := range r.Addresses {
+				addresses = append(addresses, address)
+			}
+			public["addresses"] = addresses
+		}
+		filtered, err := publicConnection(public)
+		if err != nil {
+			return nil, err
+		}
 		raw := make([]byte, 32)
 		if _, err = rand.Read(raw); err != nil {
 			return nil, err
@@ -277,14 +296,6 @@ func (b *controllerBroker) manage(r controllerRequest) (any, error) {
 			return nil, err
 		}
 		m, err := b.store.meta()
-		if err != nil {
-			return nil, err
-		}
-		_, public, err := b.store.managed()
-		if err != nil {
-			return nil, err
-		}
-		filtered, err := publicConnection(public)
 		if err != nil {
 			return nil, err
 		}

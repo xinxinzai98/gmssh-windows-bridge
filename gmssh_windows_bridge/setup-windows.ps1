@@ -140,7 +140,7 @@ try {
         }
         New-Item -ItemType Directory -Path $root -Force | Out-Null
         '正在配置 GMSSH 托盘…' | Set-Content $progressFile -Encoding UTF8
-        foreach ($name in @('gmssh-agent.ps1','controller-panel.ps1','collector.ps1','login.ps1','system-info.ps1','readonly-tools.ps1','setup-desktop.ps1','credential-dialog.ps1','setup-checks.ps1','setup-maintenance.ps1','setup-connect.ps1','gmssh-connect.exe','connect-payload.json')) {
+        foreach ($name in @('gmssh-agent.ps1','controller-panel.ps1','collector.ps1','login.ps1','system-info.ps1','readonly-tools.ps1','setup-desktop.ps1','credential-dialog.ps1','setup-checks.ps1','setup-network.ps1','setup-maintenance.ps1','setup-connect.ps1','gmssh-connect.exe','connect-payload.json')) {
             Copy-Item (Join-Path $PSScriptRoot $name) (Join-Path $root $name)
         }
         if (Test-Path (Join-Path $PSScriptRoot 'brand')) {

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Develop 0.4.0a24 locally: add an administrator-controlled IPv4/IPv6 ping toggle. Manage only two owned ICMP echo-request rules, validate rule identity before changing either, and roll back partial failures. Installation leaves ping unchanged.
+- Include every usable IPv4 and IPv6 address in current connection exports, shared connection codes and QR codes. Export public, ULA, temporary and deprecated IPv6 addresses; omit loopback, link-local, multicast, duplicate and tentative addresses. Independent grants use the live address list while retaining the pinned device identity.
+- Compact the device workspace toolbar: dark device selector, grouped view controls, separate file/tools/history actions, icon exit controls and a narrow-window layout. Keep existing desktop and terminal sessions mounted while switching views.
+- Accept the 0.4.0a24 update on the existing Windows test device through the verified package's update function. Verify owned echo-request rules, IPv4 and three IPv6 ping targets, complete IPv6 exports/QR generation, and IPv6 SSH, file round trip and desktop video; record the graphical installer and external-network limits separately.
+
 - Wait for exclusive access to the connection helper after stopping its task. Real Windows task state can become Ready before the executable image is released; cover that gap with a native file-lock regression before retrying the upgrade.
 - Resume a canceled quit on the next event-loop turn after saving file tasks. Verify that normal macOS quit ends the main process and bridge listeners, then a new process restores monitoring and the original desktop with saved credentials.
 - Add the 0.4.0a23 source candidate across the accepted four-phase plan. Existing-installation upgrade, restart recovery and distinct-password reconnection have device evidence; broader feature acceptance and a new installer release remain pending.

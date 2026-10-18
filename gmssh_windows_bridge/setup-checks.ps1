@@ -18,7 +18,24 @@ function Test-GMSSHHostKeyDirectory([string]$Path) {
 }
 
 function Get-GMSSHAddresses {
-    Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.AddressState -eq 'Preferred' -and $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } | Select-Object -ExpandProperty IPAddress -Unique
+    $ipv4 = @(); $ipv6 = @()
+    foreach ($row in (Get-NetIPAddress -ErrorAction Stop)) {
+        if ([string]$row.AddressState -notin @('Preferred','Deprecated')) { continue }
+        $address = $null
+        if (-not [Net.IPAddress]::TryParse([string]$row.IPAddress,[ref]$address) -or
+            [Net.IPAddress]::IsLoopback($address)) { continue }
+        if ($address.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetworkV6) {
+            # A remote interface index cannot be reused as the controller's scope ID.
+            if ($address.IsIPv6LinkLocal -or $address.IsIPv6Multicast -or $address.IsIPv4MappedToIPv6 -or
+                $address.Equals([Net.IPAddress]::IPv6Any) -or $address.ScopeId -ne 0) { continue }
+            $ipv6 += $address.ToString().ToLowerInvariant()
+        } else {
+            $bytes = $address.GetAddressBytes()
+            if ($bytes[0] -eq 0 -or $bytes[0] -ge 224 -or ($bytes[0] -eq 169 -and $bytes[1] -eq 254)) { continue }
+            $ipv4 += $address.ToString()
+        }
+    }
+    @($ipv4 + $ipv6) | Select-Object -Unique
 }
 
 function Get-GMSSHConnectionInfo {
@@ -208,7 +225,7 @@ function Get-GMSSHReadiness {
         Add-Check '托盘登录用户' ([bool]($principalMatches -and $logon.Count -gt 0 -and $task.Principal.LogonType -eq 'Interactive')) '原用户登录时启动，不依赖安装窗口'
     }
     $addresses = @(Get-GMSSHAddresses)
-    Add-Check '网络地址' ($addresses.Count -gt 0) '当前可用 IPv4 地址'
+    Add-Check '网络地址' ($addresses.Count -gt 0) '当前可用 IPv4 / IPv6 地址'
     [ordered]@{schema=1;computer=[Environment]::MachineName;checkedAt=[DateTime]::Now.ToString('o');
         readyToPair=(@($checks | Where-Object { -not $_.ok }).Count -eq 0);addresses=$addresses;checks=@($checks.ToArray())}
 }

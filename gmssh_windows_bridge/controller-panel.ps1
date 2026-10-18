@@ -87,7 +87,8 @@ function Show-GMSSHControllers {
         $policy=@{};foreach ($key in $labels.Keys) { $policy[$key]=$checks[$key].Checked }
         if ([Windows.Forms.MessageBox]::Show('此授权码长期有效，持有人可使用所选通道。你可以在本窗口单独撤销该管理端。是否创建并复制？','GMSSH Windows · 创建独立授权','OKCancel') -ne 'OK') { return }
         try {
-            $value=Invoke-ControllerRequest @{action='grant';name=$name.Text.Trim();permissions=$policy}
+            $current = Get-GMSSHConnectionInfo -DataRoot $dataRoot
+            $value=Invoke-ControllerRequest @{action='grant';name=$name.Text.Trim();permissions=$policy;addresses=@($current.addresses)}
             $shareState.code=[string]$value.code; $qr.Enabled=$true
             [Windows.Forms.Clipboard]::SetText($shareState.code); $value=$null;Refresh-Controllers
             $message.Text='长期授权码已复制。请仅交给对应管理端；撤销会关闭该授权的活动会话，不影响其他授权。'

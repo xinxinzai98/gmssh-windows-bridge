@@ -1,6 +1,14 @@
 # 使用提供的 IPv6 地址
 
-适用于 0.4.0a12 Alpha 候选；IPv6 支持从 0.4.0a11 开始。地址由使用者或外部系统提供，增强端按该地址直接连接。地址配置、静态 / 动态变化、DDNS、自动发现、NAT 穿透和中继均不属于此功能。
+适用于 0.4.0a24 源码候选；IPv6 支持从 0.4.0a11 开始。地址由使用者或外部系统提供，增强端按该地址直接连接。地址配置、静态 / 动态变化、DDNS、自动发现、NAT 穿透和中继均不属于此功能。
+
+Windows 服务端现在从所有网卡实时读取 IPv4 / IPv6。复制普通连接信息、长效连接码、二维码和新建独立授权均携带当前可用的地址；包括公网、ULA 和临时 IPv6，仍在有效期内的 Deprecated 地址也保留。回环、`fe80::` 链路本地、多播、未完成地址检测或冲突地址不作为连接目标。链路本地地址中的网卡编号属于服务端，不能直接用于管理端。
+
+## 允许 ping
+
+在 Windows 管理面板底部或托盘菜单点击“允许 ping”，完成正常管理员提示后，启用本程序的 IPv4 Echo Request（类型 8）与 IPv6 Echo Request（类型 128）入站规则。允许来自任意来源的这两种回显请求，用于连接诊断；不开放 TCP / UDP 或其他 ICMP 类型。规则使用 [Windows NetSecurity](https://learn.microsoft.com/en-us/powershell/module/netsecurity/new-netfirewallrule) 配置。
+
+再次点击“关闭 ping”只停用 `GMSSH-Windows-Ping-IPv4`、`GMSSH-Windows-Ping-IPv6` 两条规则；已有系统或其他软件的规则保留。安装和升级不会自动开启 ping。状态显示的是本程序规则，系统阻止规则、组策略、路由器或对端网络仍可能使 ping 无响应。ping 开关也不改变 SSH 或连接码的访问范围。
 
 ## 接入和修改地址
 
