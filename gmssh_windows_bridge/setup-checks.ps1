@@ -1,5 +1,6 @@
 ﻿#requires -Version 5.1
 # Read-only setup checks. No account, service, password or firewall changes.
+. (Join-Path $PSScriptRoot 'setup-existing.ps1')
 function Test-GMSSHHostKeyDirectory([string]$Path) {
     if (-not (Test-Path $Path)) { return $true }
     $directory = Get-Item -LiteralPath $Path
@@ -76,7 +77,7 @@ function ConvertTo-GMSSHUserSid([string]$User) {
 }
 
 function Get-GMSSHInstallPlan {
-    param([string]$SetupRoot, [bool]$Dedicated, [bool]$MonitorOnly, [bool]$TrayOnly,
+    param([string]$SetupRoot, [bool]$Dedicated, [bool]$MonitorOnly, [bool]$TrayOnly, [bool]$PreserveExisting=$false, [string]$WindowsUser=$env:USERNAME,
           [string]$DataRoot = (Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'GMSSHWindowsBridge'),
           [string]$ProgramRoot = (Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'GMSSHWindowsBridge'),
           [string]$SSHRoot = (Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'ssh'))
@@ -90,8 +91,15 @@ function Get-GMSSHInstallPlan {
         if ($agent.computer -ine [Environment]::MachineName -or $connection.computer -ine $agent.computer -or
             $connection.username -cne $agent.username -or -not $account -or
             ($agent.managedAccountSid -and $agent.managedAccountSid -cne $account.SID.Value) -or
-            -not (Test-Path (Join-Path $ProgramRoot 'gmssh-agent.ps1'))) {
+            ($agent.installationMode -ceq 'preserve-existing' -and $agent.accountSid -cne $account.SID.Value) -or
+            (-not (Test-Path (Join-Path $ProgramRoot 'gmssh-agent.ps1')) -and -not (Test-Path (Join-Path $DataRoot 'uninstall.json')))) {
             throw '现有安装记录不完整或账号身份已变化。本次不会覆盖账号、密码和配置，请先检查原安装。'
+        }
+        if(Test-Path (Join-Path $DataRoot 'uninstall.json')){
+            if(Test-Path -LiteralPath $ProgramRoot){throw '卸载恢复记录与现有程序目录冲突，请保留现场并核对。'}
+            . (Join-Path $SetupRoot 'setup-uninstall.ps1')
+            [void](Get-GMSSHUninstallRecord $ProgramRoot $DataRoot)
+            return 'Uninstalled'
         }
         return 'Existing'
     }
@@ -100,7 +108,12 @@ function Get-GMSSHInstallPlan {
     }
     if ($Dedicated -and (Get-LocalUser -Name gmssh -ErrorAction SilentlyContinue)) { throw '本机已有 gmssh 账号，安装不会覆盖其密码。请先由管理员确认此账号用途。' }
     if ($Dedicated -and ((Test-Path $connectionPath) -or (Test-Path $ProgramRoot))) { throw '发现已有或未完成的 GMSSH 安装，本次不会覆盖。请保留现场并检查原安装结果。' }
-    if (-not $TrayOnly) {
+    if ($PreserveExisting) {
+        if ($Dedicated -or $MonitorOnly -or $TrayOnly -or (Test-Path $DataRoot) -or (Test-Path $ProgramRoot)) { throw '保留模式参数冲突或 GMSSH 目录已存在，本次未覆盖。' }
+        [void](Get-GMSSHExistingServices -WindowsUser $WindowsUser -SSHRoot $SSHRoot)
+        if(@(Get-NetFirewallProfile -PolicyStore ActiveStore | Where-Object {[string]$_.Enabled -ne 'True'}).Count){throw '保留模式需要 Windows 防火墙已启用，本次未修改。'}
+    }
+    if (-not $TrayOnly -and -not $PreserveExisting) {
         $sshData = $SSHRoot
         $ssh = Get-Service sshd -ErrorAction SilentlyContinue
         if (($ssh -and $ssh.Status -ne 'Stopped') -or (Test-Path (Join-Path $sshData 'sshd_config')) -or
@@ -139,13 +152,14 @@ function Get-GMSSHInstallPlan {
         if (Test-Path (Join-Path $SetupRoot 'setup-connect.ps1')) {
             . (Join-Path $SetupRoot 'setup-connect.ps1')
             [void](Get-GMSSHConnectHelper $SetupRoot)
-            if ($Dedicated -and ((Get-GMSSHConnectTask $ProgramRoot $DataRoot) -or (Get-GMSSHConnectRule $ProgramRoot) -or
+            if (($Dedicated -or $PreserveExisting) -and ((Get-GMSSHConnectTask $ProgramRoot $DataRoot) -or (Get-GMSSHConnectRule $ProgramRoot) -or
                 (Get-NetTCPConnection -State Listen -LocalPort 22257 -ErrorAction SilentlyContinue))) { throw '一键接入任务、规则或端口已被占用，本次尚未创建账号。' }
         }
         $payload = Get-Content (Join-Path $SetupRoot 'desktop-payload.json') -Raw | ConvertFrom-Json
         if ($payload.filename -cne 'desktop-engine.zip' -or $payload.sourceSha256 -cne $manifest.rustdesk.sha256 -or
             (Get-FileHash (Join-Path $SetupRoot 'desktop-engine.zip') -Algorithm SHA256).Hash.ToLowerInvariant() -cne $payload.sha256) { throw '离线桌面组件校验失败。' }
     }
+    if ($PreserveExisting) { return 'PreserveExisting' }
     return 'New'
 }
 
@@ -169,12 +183,23 @@ function Get-GMSSHReadiness {
     $checks = New-Object 'Collections.Generic.List[object]'
     function Add-Check([string]$Name, [bool]$Ok, [string]$Detail) { $checks.Add([ordered]@{name=$Name;ok=$Ok;detail=$Detail}) }
     $connection = Get-Content (Join-Path $DataRoot 'connection.json') -Raw | ConvertFrom-Json
+    $agent=$null
+    if(-not $MonitorOnly){$agent=Get-Content (Join-Path $DataRoot 'agent.json') -Raw | ConvertFrom-Json}
+    $preserved=$agent -and $agent.installationMode -ceq 'preserve-existing'
+    $sshPort=if($connection.sshPort){[int]$connection.sshPort}else{22}
     $ssh = Get-Service sshd -ErrorAction SilentlyContinue
     Add-Check 'SSH 服务' ([bool]($ssh -and $ssh.Status -eq 'Running' -and $ssh.StartType -eq 'Automatic')) '应运行并自动启动'
-    $ports = @(Get-NetTCPConnection -State Listen -LocalPort 22,21118 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty LocalPort -Unique)
-    Add-Check 'SSH 端口' ($ports -contains 22) 'TCP 22 本机监听'
+    $ports = @(Get-NetTCPConnection -State Listen -LocalPort $sshPort,21118 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty LocalPort -Unique)
+    Add-Check 'SSH 端口' ($ports -contains $sshPort) ('TCP '+$sshPort+' 本机监听')
     $sshData = $SSHRoot
-    try {
+    if($preserved){
+        try{
+            $profile=Get-GMSSHExistingServices -WindowsUser $connection.username
+            Add-Check '文件互传与桌面隧道' $true '既有 SSH 有效配置的 SFTP 与本机转发检查'
+            Add-Check '主机身份' ($profile.sshHostPublicKey -ceq $connection.sshHostPublicKey -and $connection.sshHostFingerprint.Contains($profile.sshHostFingerprint)) '既有服务实际公钥与连接文件一致'
+            Add-Check '既有服务身份' ($profile.accountSid -ceq $agent.accountSid -and $profile.sshBinary -ieq $connection.sshBinary -and $profile.sshConfig -ieq $connection.sshConfig -and $profile.sshPort -eq $sshPort -and $profile.engine -ieq $agent.engine) '服务、端口与账号仍匹配保留接入记录'
+        }catch{Add-Check '既有服务配置与身份' $false '原服务状态或身份变化，请由原管理员核对；本次未修改'}
+    } else { try {
         $config = Get-Content (Join-Path $sshData 'sshd_config') -Raw
         Add-Check '文件互传' ($config -match '(?m)^\s*Subsystem\s+sftp\s+sftp-server\.exe\s*$') 'SFTP 子系统配置'
         $public = (Get-Content (Join-Path $sshData 'ssh_host_ed25519_key.pub') -Raw).Trim()
@@ -182,19 +207,20 @@ function Get-GMSSHReadiness {
         try { $fingerprint = 'SHA256:' + [Convert]::ToBase64String($hash.ComputeHash([Convert]::FromBase64String($public.Split(' ')[1]))).TrimEnd('=') }
         finally { $hash.Dispose() }
         Add-Check '主机身份' ($public -ceq $connection.sshHostPublicKey -and $connection.sshHostFingerprint.Contains($fingerprint)) '实际公钥与连接文件一致'
-    } catch { Add-Check 'SSH 配置与身份' $false '无法读取或核验 SSH 配置，请使用管理员自检' }
+    } catch { Add-Check 'SSH 配置与身份' $false '无法读取或核验 SSH 配置，请使用管理员自检' } }
     $account = Get-LocalUser -Name $connection.username -ErrorAction SilentlyContinue
     Add-Check '连接账号' ([bool]($account -and $account.Enabled)) '账号存在且已启用'
     $rule = Get-NetFirewallRule -Name 'GMSSH-Windows-Monitor-SSH' -ErrorAction SilentlyContinue
     $filter = if ($rule) { $rule | Get-NetFirewallAddressFilter }
     $portFilter = if ($rule) { $rule | Get-NetFirewallPortFilter }
     $profiles = @(Get-NetFirewallProfile -PolicyStore ActiveStore | Where-Object { [string]$_.Enabled -ne 'True' })
+    if($preserved){Add-Check '防火墙状态' (-not $profiles.Count) '保留原 SSH 与桌面规则；实际局域网访问需要控制端验证'}else{
     Add-Check '局域网防火墙' ([bool]($rule -and [string]$rule.Enabled -eq 'True' -and $rule.Direction -eq 'Inbound' -and $rule.Action -eq 'Allow' -and
         @($filter.RemoteAddress).Count -eq 1 -and $filter.RemoteAddress -eq $connection.controller -and
-        [string]$portFilter.LocalPort -eq '22' -and [string]$portFilter.Protocol -in @('TCP','6') -and -not $profiles.Count)) '安装器的 SSH 规则及防火墙状态'
+        [string]$portFilter.LocalPort -eq '22' -and [string]$portFilter.Protocol -in @('TCP','6') -and -not $profiles.Count)) '安装器的 SSH 规则及防火墙状态' }
     if (-not $MonitorOnly) {
         $agent = Get-Content (Join-Path $DataRoot 'agent.json') -Raw | ConvertFrom-Json
-        if ($agent.unifiedPassword) {
+        if ($agent.unifiedPassword -or $preserved) {
             try {
                 . (Join-Path $ProgramRoot 'setup-connect.ps1')
                 $codeHealth = Get-GMSSHConnectHealth $ProgramRoot $DataRoot -Wait

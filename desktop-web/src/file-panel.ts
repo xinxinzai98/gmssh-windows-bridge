@@ -16,10 +16,11 @@ export function folderTarget(base:string,name:string,posix=false):string {
   if(target.length>1024)throw Error('目标路径过长，请使用更短的文件夹名称。');
   return target;
 }
-export function installFilePanel(options:{token:()=>string;operations:Operations;posix?:boolean;unavailable?:()=>string;available:()=>boolean;releaseInputs:()=>void;closeBrowseAfterUse?:boolean;changed?:(tasks:readonly TransferTask[])=>void;permit?:(signal:AbortSignal)=>Promise<()=>void>;queue?:(changed:(tasks:readonly TransferTask[])=>void)=>TransferCollection}) {
+export function installFilePanel(options:{token:()=>string;operations:Operations;posix?:boolean;unavailable?:()=>string;available:()=>boolean;writable?:()=>boolean;releaseInputs:()=>void;closeBrowseAfterUse?:boolean;changed?:(tasks:readonly TransferTask[])=>void;permit?:(signal:AbortSignal)=>Promise<()=>void>;queue?:(changed:(tasks:readonly TransferTask[])=>void)=>TransferCollection}) {
   const panel=get('file-panel'),list=get('file-list'),note=get('file-note'),selected=new Map<string,FileEntry>();
   let path='/',entries:FileEntry[]=[],visibleEntries:FileEntry[]=[],truncated=false,request=0,renderTimer:number|undefined,idleCompleted=0,lastTask=0,mode:'files'|'transfers'='files',disposed=false,taskLimit=50,browsing=false,creating=false,folderBase='';
   const computer=()=>path==='/'&&!options.posix;
+  const writable=()=>options.available()&&(options.writable?.()??true);
   type Location={path:string;query:string;order:string;scroll:number;outerScroll:number};
   const history:Location[]=[];let historyIndex=-1;
   const pendingDrops=new Set<AbortController>();
@@ -40,7 +41,7 @@ export function installFilePanel(options:{token:()=>string;operations:Operations
   for(const [node,label] of [[back,'后退到上个目录'],[forward,'前进到下个目录']] as const){node.className='file-history-button';node.setAttribute('aria-label',label);const image=document.createElement('img');image.src='/ui-icons/arrow-left.svg';image.alt='';node.append(image);}forward.classList.add('file-forward');get('parent-folder').before(back,forward);
   const folderForm=document.createElement('form'),folderHeading=document.createElement('strong'),folderName=document.createElement('input'),folderMessage=document.createElement('p'),folderResult=document.createElement('p');
   folderForm.className='file-new-folder';folderForm.hidden=true;folderForm.setAttribute('aria-label','新建文件夹');folderName.type='text';folderName.maxLength=255;folderName.required=true;folderName.autocomplete='off';folderName.placeholder='文件夹名称';folderName.setAttribute('aria-label','新文件夹名称');folderMessage.setAttribute('role','status');folderResult.className='file-folder-result';folderResult.setAttribute('role','status');folderResult.hidden=true;
-  const createFolder=button('创建',()=>{}),cancelFolder=button('取消',()=>{folderForm.hidden=true;folderName.value='';newFolder.focus();}),newFolder=button('新建文件夹',()=>{if(browsing||creating||computer()||!options.available())return;folderBase=path;folderHeading.textContent='在 '+folderBase+' 中新建';folderMessage.textContent='';folderName.value='';folderResult.hidden=true;folderForm.hidden=false;folderName.focus();folderName.scrollIntoView({block:'nearest'});});
+  const createFolder=button('创建',()=>{}),cancelFolder=button('取消',()=>{folderForm.hidden=true;folderName.value='';newFolder.focus();}),newFolder=button('新建文件夹',()=>{if(browsing||creating||computer()||!writable())return;folderBase=path;folderHeading.textContent='在 '+folderBase+' 中新建';folderMessage.textContent='';folderName.value='';folderResult.hidden=true;folderForm.hidden=false;folderName.focus();folderName.scrollIntoView({block:'nearest'});});
   createFolder.type='submit';const folderActions=document.createElement('div');folderActions.append(createFolder,cancelFolder);folderForm.append(folderHeading,folderName,folderActions,folderMessage);get('upload-folder').after(newFolder);get('file-note').before(folderForm,folderResult);
   const placesBox=document.createElement('details'),placesTitle=document.createElement('summary'),placesList=document.createElement('div'),placesMessage=document.createElement('p');placesBox.className='file-places';placesBox.hidden=true;placesTitle.textContent='常用目录';placesMessage.setAttribute('role','status');placesBox.append(placesTitle,placesList,placesMessage);get('file-note').before(placesBox);
   let placeItems:{path:string;label:string}[]=[],placesBusy=false,placesLoaded=false;
@@ -70,7 +71,7 @@ export function installFilePanel(options:{token:()=>string;operations:Operations
   }
   placesBox.ontoggle=()=>{if(placesBox.open&&!placesBusy)void placeAction('list');};
   const location=():Location=>({path,query:fileSearch.value,order:fileOrder.value,scroll:list.scrollTop,outerScroll:get('file-browser-view').scrollTop});
-  folderForm.onsubmit=event=>{event.preventDefault();if(disposed||browsing||creating)return;let target:string;try{if(folderBase!==path)throw Error('目录已变化，请重新打开新建窗口。');target=folderTarget(folderBase,folderName.value,options.posix);}catch(error){folderMessage.textContent=(error as Error).message;return;}
+  folderForm.onsubmit=event=>{event.preventDefault();if(disposed||browsing||creating)return;let target:string;try{if(!writable())throw Error('此授权仅允许读取文件。');if(folderBase!==path)throw Error('目录已变化，请重新打开新建窗口。');target=folderTarget(folderBase,folderName.value,options.posix);}catch(error){folderMessage.textContent=(error as Error).message;return;}
     void (async()=>{creating=true;updateSelection();folderMessage.textContent='正在创建 '+target+'…';
       try{const reply=await options.operations.mkdir(target);if(disposed)return;folderForm.hidden=true;folderName.value='';fileSearch.value='';folderResult.textContent=(reply.created?'已创建文件夹：':'文件夹已存在，未改动：')+reply.path;folderResult.hidden=false;creating=false;await refresh(folderBase);if(!disposed)newFolder.focus();}
       catch(error){if(!disposed)folderMessage.textContent='未确认创建结果：'+(error as Error).message+' 可刷新目录核对后再试。';}
@@ -80,6 +81,7 @@ export function installFilePanel(options:{token:()=>string;operations:Operations
   const tell=(text:string)=>{note.textContent=text;};
   const fail=(error:unknown)=>{get('file-feedback').textContent=error instanceof Error?error.message:String(error);get('file-feedback').hidden=false;};
   const run=(action:()=>void|Promise<void>)=>{if(disposed)return;get('file-feedback').hidden=true;try{Promise.resolve(action()).catch(fail);}catch(error){fail(error);}};
+  const runWrite=(action:()=>void|Promise<void>)=>run(()=>{if(!writable())throw Error('此授权仅允许读取文件，上传不可用。');return action();});
   const join=(name:string)=>computer()?name+'/':path.replace(/\/$/,'')+'/'+name;
   const save=(file:{blob:Blob;name:string})=>{const url=URL.createObjectURL(file.blob),anchor=document.createElement('a');anchor.href=url;anchor.download=file.name;anchor.click();setTimeout(()=>URL.revokeObjectURL(url),60_000);};
   const changed=()=>{
@@ -102,7 +104,7 @@ export function installFilePanel(options:{token:()=>string;operations:Operations
     get(id).onclick=()=>{setMode(value);if(value==='files'&&!browsing&&!creating)void refresh();};get(id).onkeydown=event=>{if(event.key==='ArrowLeft'||event.key==='ArrowRight'){event.preventDefault();const next=value==='files'?'transfers':'files';setMode(next);if(next==='files'&&!browsing&&!creating)void refresh();get(next==='files'?'file-browse-tab':'file-transfers-tab').focus();}};
   }
   function updateSelection():void {
-    const busy=browsing||creating;get<HTMLButtonElement>('upload').disabled=get<HTMLButtonElement>('upload-folder').disabled=newFolder.disabled=busy||computer()||!options.available();refreshButton.disabled=busy;get<HTMLButtonElement>('parent-folder').disabled=busy||path==='/';back.disabled=busy||historyIndex<=0;forward.disabled=busy||historyIndex>=history.length-1;
+    const busy=browsing||creating;get<HTMLButtonElement>('upload').disabled=get<HTMLButtonElement>('upload-folder').disabled=newFolder.disabled=busy||computer()||!writable();refreshButton.disabled=busy;get<HTMLButtonElement>('parent-folder').disabled=busy||path==='/';back.disabled=busy||historyIndex<=0;forward.disabled=busy||historyIndex>=history.length-1;
     back.title=history[historyIndex-1]?.path||'没有上个目录';forward.title=history[historyIndex+1]?.path||'没有下个目录';get('path-form').inert=get('file-location').inert=creating;list.inert=busy;folderName.disabled=createFolder.disabled=busy;cancelFolder.disabled=creating;
     const saved=placeItems.some(item=>item.path===path);remember.textContent=saved?'已收藏':'收藏目录';remember.disabled=busy||placesBusy||!placesLoaded||computer()||saved;for(const node of placesList.querySelectorAll<HTMLButtonElement>('button'))node.disabled=placesBusy||node.textContent==='打开'&&busy;
     get<HTMLButtonElement>('download-selected').disabled=busy||!selected.size;
@@ -184,27 +186,28 @@ export function installFilePanel(options:{token:()=>string;operations:Operations
       view.bar.setAttribute('aria-label',task.name+' 的进度');view.description.textContent=(task.source?'来源：'+task.source+'\n':'')+(task.target?'目标：'+task.target+'\n':'')+(task.createdAt?'创建时间：'+new Date(task.createdAt).toLocaleString()+'\n':'')+(task.code?'状态代码：'+task.code+'\n':'')+(task.sha256?'SHA-256：'+task.sha256:'')+(!queue.native?'远端路径：'+task.path:'');
       view.pause.hidden=!queue.pause||!['queued','running','committing'].includes(task.status);view.pause.setAttribute('aria-label','暂停 · '+task.name);view.cancel.hidden=!task.cleanupPending&&!['queued','running','committing','paused','failed'].includes(task.status);view.cancel.textContent=task.cleanupPending?'清理临时文件':task.status==='failed'?'跳过':'取消';
       view.cancel.setAttribute('aria-label',view.cancel.textContent+' · '+task.name);view.retry.setAttribute('aria-label',(queue.native?'继续':'重试')+' · '+task.name);view.renameButton.setAttribute('aria-label','改名重试 · '+task.name);view.rename.setAttribute('aria-label','重试文件名 · '+task.name);
-      view.retry.hidden=!['failed','cancelled','paused'].includes(task.status);view.retry.textContent=queue.native?'继续':'重试';const conflict=task.kind==='upload'&&task.status==='failed'&&task.message.includes('同名');view.rename.hidden=view.renameButton.hidden=!conflict;
+      view.retry.hidden=!['failed','cancelled','paused'].includes(task.status);view.retry.disabled=view.renameButton.disabled=task.kind==='upload'&&!writable();view.retry.textContent=queue.native?'继续':'重试';const conflict=task.kind==='upload'&&task.status==='failed'&&task.message.includes('同名');view.rename.hidden=view.renameButton.hidden=!conflict;
       const container=get('transfer-list');if(container.children[position]!==view.root)container.insertBefore(view.root,container.children[position]||null);position++;
     }
   }
-  const enqueueInput=(id:string)=>{const input=get<HTMLInputElement>(id);input.onchange=()=>{const files=[...input.files||[]];input.value='';run(()=>queue.addUploads(selectedUploads(files),path));};};
+  const enqueueInput=(id:string)=>{const input=get<HTMLInputElement>(id);input.onchange=()=>{const files=[...input.files||[]];input.value='';runWrite(()=>queue.addUploads(selectedUploads(files),path));};};
   enqueueInput('upload-input');enqueueInput('folder-input');
-  get('upload').onclick=()=>queue.chooseUploads?run(()=>queue.chooseUploads!(path,false)):get<HTMLInputElement>('upload-input').click();get('upload-folder').onclick=()=>queue.chooseUploads?run(()=>queue.chooseUploads!(path,true)):get<HTMLInputElement>('folder-input').click();
+  get('upload').onclick=()=>runWrite(()=>queue.chooseUploads?queue.chooseUploads(path,false):get<HTMLInputElement>('upload-input').click());get('upload-folder').onclick=()=>runWrite(()=>queue.chooseUploads?queue.chooseUploads(path,true):get<HTMLInputElement>('folder-input').click());
   get<HTMLFormElement>('path-form').onsubmit=event=>{event.preventDefault();void refresh(get<HTMLInputElement>('file-path').value);};
   get('parent-folder').onclick=()=>{if(path==='/')return;const parts=path.replace(/\/$/,'').split('/');parts.pop();void refresh(parts.length?parts.join('/')+'/':'/');};
   get<HTMLInputElement>('select-all-files').onchange=event=>{const checked=(event.target as HTMLInputElement).checked;for(const entry of visibleEntries)if(checked)selected.set(join(entry.name),entry);else selected.delete(join(entry.name));for(const check of list.querySelectorAll<HTMLInputElement>('input[type=checkbox]'))check.checked=checked;updateSelection();};
   get('download-selected').onclick=()=>run(()=>queue.addDownloads([...selected].map(([remote,entry])=>({path:remote,name:entry.name,directory:entry.directory,size:entry.size}))));
   get('cancel-transfers').onclick=()=>run(()=>queue.cancelAll());get('clear-transfers').onclick=()=>run(()=>queue.clearFinished());
-  const open=()=>{if(disposed)return;panel.hidden=false;options.releaseInputs();setMode(mode);get('remote-files-label').textContent='本机 ↔ '+(get('session-label').textContent||'此设备');void refresh();};
+  const open=()=>{if(disposed)return;panel.hidden=false;options.releaseInputs();setMode(mode);get('remote-files-label').textContent='本机 '+(options.available()&&!writable()?'← ':'↔ ')+(get('session-label').textContent||'此设备')+(options.available()&&!writable()?'（文件只读）':'');void refresh();};
   get('files').onclick=open;get('close-files').onclick=()=>{panel.hidden=true;};
   const dragOver=(event:DragEvent)=>{if([...event.dataTransfer?.types||[]].includes('Files')){event.preventDefault();panel.classList.add('drop-active');}};
   const drop=async(event:DragEvent)=>{
     if(disposed)return;
     if(!event.dataTransfer||![...event.dataTransfer.types].includes('Files'))return;event.preventDefault();panel.classList.remove('drop-active');panel.hidden=false;options.releaseInputs();
     if(!options.available()||computer()){fail('请先打开目标磁盘和文件夹，再拖入文件。');return;}
+    if(!writable()){fail('此授权仅允许读取文件，拖入上传不可用。');return;}
     const targetPath=path,controller=new AbortController();pendingDrops.add(controller);
-    try{get('file-feedback').hidden=true;const entries=await droppedUploads(event.dataTransfer,controller.signal,options.posix);if(!disposed&&!controller.signal.aborted)await queue.addUploads(entries,targetPath);}catch(error){if(!disposed)fail(error instanceof Error?error.message:'无法读取拖入的文件。');}finally{pendingDrops.delete(controller);}
+    try{get('file-feedback').hidden=true;const entries=await droppedUploads(event.dataTransfer,controller.signal,options.posix);if(!disposed&&!controller.signal.aborted){if(!writable())throw Error('文件权限已变化，未开始上传。');await queue.addUploads(entries,targetPath);}}catch(error){if(!disposed)fail(error instanceof Error?error.message:'无法读取拖入的文件。');}finally{pendingDrops.delete(controller);}
   };
   window.addEventListener('dragover',dragOver);window.addEventListener('drop',drop);
   panel.ondragleave=event=>{if(!panel.contains(event.relatedTarget as Node))panel.classList.remove('drop-active');};

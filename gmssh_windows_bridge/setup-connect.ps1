@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 # Connection-code support. Call mutating functions only after normal elevation.
 function Get-GMSSHConnectHelper([string]$ProgramRoot) {
     $file = Join-Path $ProgramRoot 'gmssh-connect.exe'
@@ -16,9 +16,12 @@ function Get-GMSSHConnectState([string]$DataRoot) {
     if ((Get-Item -LiteralPath $DataRoot).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw '本机接入目录不可信。' }
     $state = Get-Content -LiteralPath (Join-Path $DataRoot 'agent.json') -Raw | ConvertFrom-Json
     $account = Get-LocalUser -Name $state.username -ErrorAction Stop
-    if ($state.computer -ine [Environment]::MachineName -or $state.username -cne 'gmssh' -or -not $state.unifiedPassword -or
-        -not $account.Enabled -or $account.SID.Value -cne $state.managedAccountSid -or $state.trayUserSid -notmatch '^S-1-[0-9]+(?:-[0-9]+){1,15}$') {
-        throw '此设备尚未使用受管理的统一连接密码，请保留手动添加。'
+    $preserved=$state.installationMode -ceq 'preserve-existing'
+    $boundSid=if($preserved){$state.accountSid}else{$state.managedAccountSid}
+    $validMode=if($preserved){-not $state.unifiedPassword -and -not $state.managedAccountSid}else{$state.unifiedPassword -and $state.username -ceq 'gmssh' -and $state.installationMode -in @($null,'','managed')}
+    if (-not $validMode -or $state.computer -ine [Environment]::MachineName -or
+        -not $account.Enabled -or $account.SID.Value -cne $boundSid -or $state.trayUserSid -notmatch '^S-1-[0-9]+(?:-[0-9]+){1,15}$') {
+        throw '接入模式或本地账号身份无法核对，请保留手动添加。'
     }
     $state
 }
@@ -46,11 +49,31 @@ function Invoke-GMSSHConnectHelper {
             finally { [Array]::Clear($bytes,0,$bytes.Length) }
         }
         $process.StandardInput.Close()
-        $waitMilliseconds = if ($Operation -eq 'status') { 3000 } else { 15000 }
-        if (-not $process.WaitForExit($waitMilliseconds)) { $process.Kill(); throw '一键接入操作超时。' }
+        $waitMilliseconds = if ($Operation -eq 'status') { 3000 } elseif ($Operation -eq 'init') { 25000 } else { 15000 }
+        if($Operation -eq 'init' -and ('System.Windows.Forms.Application' -as [type])){
+            $deadline=[DateTime]::UtcNow.AddMilliseconds($waitMilliseconds)
+            while(-not $process.WaitForExit(100)){
+                [Windows.Forms.Application]::DoEvents()
+                if([DateTime]::UtcNow -ge $deadline){$process.Kill();throw '一键接入操作超时。'}
+            }
+        } elseif (-not $process.WaitForExit($waitMilliseconds)) { $process.Kill(); throw '一键接入操作超时。' }
         $output = $stdout.GetAwaiter().GetResult().Trim()
-        [void]$stderr.GetAwaiter().GetResult()
-        if ($process.ExitCode -ne 0 -or $output.Length -gt $(if ($Operation -eq 'manage') { 65536 } else { 32768 })) { throw '一键接入未完成，请检查连接密码或运行升级 / 修复。' }
+        $failureCode = $stderr.GetAwaiter().GetResult().Trim()
+        if ($process.ExitCode -ne 0) {
+            # Never display arbitrary stderr; it may contain native paths or input.
+            $message = switch -CaseSensitive ($failureCode) {
+                'GMSSH_ERR_CREDENTIAL' { '现有 Windows 账号密码未通过验证。请输入账号密码，不是 Windows Hello PIN；本次未修改密码。' }
+                'GMSSH_ERR_DESKTOP_CREDENTIAL' { 'Windows 账号密码已通过验证，但现有 RustDesk 固定密码未通过桌面验证。两份密码可以不同；原密码、已保存凭据和连接码均未修改。' }
+                'GMSSH_ERR_DESKTOP_UNAVAILABLE' { '无法确认现有 RustDesk 的桌面认证。请检查桌面服务和直接 IP 访问；需人工批准或额外验证时先在原客户端核对。已保存凭据和连接码均未修改。' }
+                'GMSSH_ERR_INSTALL_BINDING' { '连接文件与安装记录未通过身份核对，请运行本版本的升级 / 修复。' }
+                'GMSSH_ERR_MACHINE_BINDING' { '安装记录与当前电脑不匹配，已停止接入。' }
+                'GMSSH_ERR_ACCOUNT_BINDING' { '现有 Windows 账号 SID 与安装记录不匹配，已停止接入。' }
+                'GMSSH_ERR_ADMIN_BINDING' { '接入组件未能确认原账号的管理员组身份，已停止接入；请运行升级 / 修复，不会提升账号权限。' }
+                default { '一键接入未完成，请检查连接密码或运行升级 / 修复。' }
+            }
+            throw $message
+        }
+        if ($output.Length -gt $(if ($Operation -eq 'manage') { 65536 } else { 32768 })) { throw '一键接入响应超出限制。' }
         $output
     } finally { $InputJson = $null; $process.Dispose() }
 }
@@ -161,23 +184,45 @@ function Stop-GMSSHConnectTask([string]$ProgramRoot,[string]$DataRoot) {
     }
 }
 
-function Set-GMSSHConnectPassword([string]$ProgramRoot,[string]$DataRoot,[Security.SecureString]$Password) {
+function Set-GMSSHConnectPassword([string]$ProgramRoot,[string]$DataRoot,[Security.SecureString]$Password,[Security.SecureString]$DesktopPassword=$null) {
     $state = Get-GMSSHConnectState $DataRoot
     $task = Register-GMSSHConnectTask -ProgramRoot $ProgramRoot -DataRoot $DataRoot -ValidateOnly
     $wasRunning = [bool]($task -and $task.State -eq 'Running')
     Set-GMSSHConnectPrivateAccess $DataRoot $state.trayUserSid
     Stop-GMSSHConnectTask $ProgramRoot $DataRoot
     $pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Password)
+    $desktopPointer = [IntPtr]::Zero
     try {
         $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer)
-        $inputJson = @{password=$plain} | ConvertTo-Json -Compress
+        $credentials=@{password=$plain}
+        if($DesktopPassword){$desktopPointer=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($DesktopPassword);$desktopPlain=[Runtime.InteropServices.Marshal]::PtrToStringBSTR($desktopPointer);$credentials.desktopPassword=$desktopPlain}
+        $inputJson = $credentials | ConvertTo-Json -Compress
         if ((Invoke-GMSSHConnectHelper -ProgramRoot $ProgramRoot -DataRoot $DataRoot -Operation init -InputJson $inputJson) -cne 'ok') { throw '一键接入未确认保存。' }
     } catch {
         if ($wasRunning) { Start-ScheduledTask -TaskName 'GMSSH Windows Connect' -TaskPath '\' -ErrorAction SilentlyContinue }
         throw
-    } finally { $plain=$null; $inputJson=$null; [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer) }
-    Set-GMSSHConnectPrivateAccess $DataRoot $state.trayUserSid
-    Register-GMSSHConnectTask -ProgramRoot $ProgramRoot -DataRoot $DataRoot
+    } finally { $plain=$null; $desktopPlain=$null; $credentials=$null; $inputJson=$null; [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer);if($desktopPointer -ne [IntPtr]::Zero){[Runtime.InteropServices.Marshal]::ZeroFreeBSTR($desktopPointer)} }
+    try {
+        Set-GMSSHConnectPrivateAccess $DataRoot $state.trayUserSid
+        Register-GMSSHConnectTask -ProgramRoot $ProgramRoot -DataRoot $DataRoot
+    } catch { throw '凭据已经保存，但 GMSSH 后台接入服务恢复未完成。请点击「启用 GMSSH 接入」或运行接入自检，无需重新输入密码。' }
+}
+
+function Enable-GMSSHExistingCredentials([string]$ProgramRoot,[string]$DataRoot) {
+    $state=Get-GMSSHConnectState $DataRoot
+    if($state.installationMode -cne 'preserve-existing'){throw '此操作仅用于保留现有服务的接入。'}
+    . (Join-Path $ProgramRoot 'credential-dialog.ps1')
+    $sshSecret=$null;$desktopSecret=$null;$progress=$null
+    try {
+        $sshSecret=Read-GMSSHPassword 'GMSSH Windows · 既有账号' ('请输入 '+$state.username+' 现有的 Windows 账号密码，不是 PIN。只验证和加密保存，不修改账号密码。') $false $true
+        $desktopSecret=Read-GMSSHPassword 'GMSSH Windows · 既有桌面' '请输入现有 RustDesk 固定连接密码，可以与 Windows 账号密码不同。桌面认证通过后才保存；不会修改原软件的密码。' $false $true
+        $progress=Show-GMSSHCredentialProgress
+        Set-GMSSHConnectPassword $ProgramRoot $DataRoot $sshSecret $desktopSecret
+        $health=Get-GMSSHConnectHealth -ProgramRoot $ProgramRoot -DataRoot $DataRoot -Wait
+        if(-not $health.ready){throw '凭据已经保存，但 GMSSH 后台接入服务尚未就绪。请点击「启用 GMSSH 接入」或运行接入自检，无需重新输入密码。'}
+        $progress.Text='GMSSH Windows · 接入凭据已更新';$progress.UseWaitCursor=$false
+        Show-GMSSHNotice 'GMSSH Windows · 接入凭据已更新' "Windows 账号与 RustDesk 桌面验证均已通过。`r`n凭据已加密保存，GMSSH 后台接入服务已就绪。`r`n`r`n原 Windows 和 RustDesk 密码未修改。`r`n旧 SSH 接入码已刷新，现有独立授权保留。" 'Information' $progress
+    } finally {if($progress){$progress.Close();$progress.Dispose()};if($sshSecret){$sshSecret.Dispose()};if($desktopSecret){$desktopSecret.Dispose()}}
 }
 
 function Get-GMSSHConnectCode([string]$ProgramRoot,[string]$DataRoot,[string]$Address) {

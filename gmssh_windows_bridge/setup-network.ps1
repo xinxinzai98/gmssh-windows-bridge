@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 # Optional echo-request rules. Installation does not enable them automatically.
 function Get-GMSSHPingRules {
     foreach ($version in @(4,6)) {
@@ -59,7 +59,8 @@ function Get-GMSSHIPv6Sources([string]$DataRoot) {
 }
 
 function Get-GMSSHIPv6AccessRules([string]$ProgramRoot,[string]$DataRoot) {
-    [void](Get-GMSSHConnectState $DataRoot)
+    $state=Get-GMSSHConnectState $DataRoot
+    if($state.installationMode -ceq 'preserve-existing'){throw '保留模式不修改既有 SSH 的 IPv6 防火墙规则；请由原服务管理员处理跨网段访问。'}
     $helper = Get-GMSSHConnectHelper $ProgramRoot
     $connection = Get-Content -LiteralPath (Join-Path $DataRoot 'connection.json') -Raw | ConvertFrom-Json
     $sshd = [IO.Path]::GetFullPath([string]$connection.sshBinary)

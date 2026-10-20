@@ -53,7 +53,7 @@ func fileMetadata(info os.FileInfo) (map[string]any, error) {
 	return map[string]any{"size": info.Size(), "modified": modified, "mode": mode}, nil
 }
 
-func (b *controllerBroker) fileRequest(s *controllerSession, r controllerRequest) (any, error) {
+func (b *controllerBroker) fileRequest(s *controllerSession, r controllerRequest, policy permissions) (any, error) {
 	var value struct {
 		Path   string `json:"path,omitempty"`
 		Target string `json:"target,omitempty"`
@@ -65,6 +65,20 @@ func (b *controllerBroker) fileRequest(s *controllerSession, r controllerRequest
 	}
 	if decodeJSON(r.Args, &value) != nil || value.Offset < 0 || value.Offset > 1024*1024*1024*1024 || value.Length < 0 || value.Length > 65536 || len(value.Data) > 65536 {
 		return nil, errDenied
+	}
+	if !policy.Files {
+		if !policy.FilesRead {
+			return nil, errDenied
+		}
+		switch r.Action {
+		case "fs-stat", "fs-list", "file-read", "file-close":
+		case "fs-open":
+			if value.Mode != "rb" {
+				return nil, errDenied
+			}
+		default:
+			return nil, errDenied
+		}
 	}
 	if strings.HasPrefix(r.Action, "file-") {
 		file := s.files[value.Handle]

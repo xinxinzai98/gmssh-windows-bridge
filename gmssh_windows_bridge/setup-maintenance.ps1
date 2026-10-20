@@ -34,6 +34,7 @@ function Update-GMSSHInstallation {
     if ((Get-GMSSHInstallPlan -SetupRoot $SetupRoot -Dedicated $false -DataRoot $DataRoot -ProgramRoot $ProgramRoot) -ne 'Existing') { throw '没有可更新的受管理安装。' }
     $statePath = Join-Path $DataRoot 'agent.json'
     $state = Get-Content $statePath -Raw | ConvertFrom-Json
+    $preserved=$state.installationMode -ceq 'preserve-existing'
     $connection = Get-Content (Join-Path $DataRoot 'connection.json') -Raw | ConvertFrom-Json
     if ($state.trayUserSid -notmatch '^S-1-[0-9]+(?:-[0-9]+){1,15}$') { throw '缺少原托盘用户身份，请先检查现有安装。' }
     foreach ($folder in @($ProgramRoot,$DataRoot)) {
@@ -41,7 +42,9 @@ function Update-GMSSHInstallation {
     }
     # Keep the existing engine, branding and licenses, including locked images.
     $items = @('gmssh-agent.ps1','setup-desktop.ps1','credential-dialog.ps1','setup-checks.ps1','setup-maintenance.ps1')
+    foreach($name in @('setup-uninstall.ps1','uninstall-windows.ps1')){if(Test-Path -LiteralPath (Join-Path $SetupRoot $name)){$items+=$name}}
     if (Test-Path -LiteralPath (Join-Path $SetupRoot 'setup-network.ps1')) { $items += 'setup-network.ps1' }
+    if (Test-Path -LiteralPath (Join-Path $SetupRoot 'setup-existing.ps1')) { $items += 'setup-existing.ps1' }
     if (Test-Path -LiteralPath (Join-Path $SetupRoot 'controller-panel.ps1')) { $items += @('controller-panel.ps1','collector.ps1','login.ps1','system-info.ps1','readonly-tools.ps1') }
     if (Test-Path -LiteralPath (Join-Path $SetupRoot 'ai-context.ps1')) { $items += @('ai-context.ps1','ai-desktop.ps1') }
     if (Test-Path -LiteralPath (Join-Path $SetupRoot 'go-qrcode-LICENSE.txt')) { $items += 'go-qrcode-LICENSE.txt' }
@@ -70,7 +73,13 @@ function Update-GMSSHInstallation {
     $taskWasRunning = [bool]($task -and $task.State -eq 'Running')
     $ssh = Get-CimInstance Win32_Service -Filter "Name='sshd'"
     $desktop = Get-CimInstance Win32_Service -Filter "Name='RustDesk'"
-    if (-not $ssh -or [Environment]::ExpandEnvironmentVariables($ssh.PathName).Trim().Trim('"') -ine $connection.sshBinary -or
+    if ($preserved) {
+        . (Join-Path $SetupRoot 'setup-existing.ps1')
+        $profile=Get-GMSSHExistingServices -WindowsUser $state.username
+        if($profile.accountSid -cne $state.accountSid -or $profile.sshBinary -ine $connection.sshBinary -or
+            $profile.sshConfig -ine $connection.sshConfig -or $profile.sshPort -ne $connection.sshPort -or
+            $profile.sshHostPublicKey -cne $connection.sshHostPublicKey -or $profile.engine -ine $state.engine){throw '既有服务或账号身份已变化，保留接入更新已停止。'}
+    } elseif (-not $ssh -or [Environment]::ExpandEnvironmentVariables($ssh.PathName).Trim().Trim('"') -ine $connection.sshBinary -or
         -not $desktop -or $desktop.PathName -ine ('"'+$state.engine+'" --service') -or
         (Get-AuthenticodeSignature -LiteralPath $state.engine).Status -ne 'Valid') { throw '现有服务与安装记录不一致，已停止更新。' }
     $backupRoot = Join-Path $DataRoot 'backups'
@@ -84,6 +93,7 @@ function Update-GMSSHInstallation {
     if ($connectTask) { Export-ScheduledTask -TaskName 'GMSSH Windows Connect' -TaskPath '\' | Set-Content (Join-Path $backup 'connect.xml') -Encoding Unicode }
     $serviceNames = @('sshd')
     if ([IO.Path]::GetFullPath($state.engine).StartsWith(([IO.Path]::GetFullPath($ProgramRoot).TrimEnd('\')+'\desktop-engine\'),[StringComparison]::OrdinalIgnoreCase)) { $serviceNames += 'RustDesk' }
+    if ($preserved) { $serviceNames = @() }
     $services = @(foreach ($name in $serviceNames) { $value=Get-Service $name; [pscustomobject]@{name=$name;start=[string]$value.StartType;running=($value.Status -eq 'Running')} })
     $taskChanged = $false
     $connectChanged = $false
@@ -102,7 +112,7 @@ function Update-GMSSHInstallation {
         $temporary = $statePath+'.'+[Guid]::NewGuid().ToString('N')+'.tmp'
         try { $state | ConvertTo-Json -Depth 6 | Set-Content $temporary -Encoding UTF8; Move-Item -LiteralPath $temporary -Destination $statePath -Force }
         finally { if (Test-Path $temporary) { Remove-Item -LiteralPath $temporary -Force } }
-        if ($withConnect -and $state.unifiedPassword) {
+        if ($withConnect -and ($state.unifiedPassword -or $preserved)) {
             $phase = 'ConnectRegistration'
             $connectChanged = $true
             Register-GMSSHConnectTask -ProgramRoot $ProgramRoot -DataRoot $DataRoot

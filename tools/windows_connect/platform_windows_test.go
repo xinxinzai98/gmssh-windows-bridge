@@ -4,10 +4,24 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"syscall"
 	"testing"
+	"time"
 )
+
+func TestWindowsInfoSeparatesDiagnosticStream(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	body, err := runControllerInfo(ctx, "", `[Console]::Error.WriteLine('#< CLIXML synthetic diagnostic'); [Console]::Write('{"ok":true}')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(body, []byte(`{"ok":true}`)) {
+		t.Fatal("fixed information response mixed stderr into JSON")
+	}
+}
 
 func TestWindowsAccountBinding(t *testing.T) {
 	host, err := os.Hostname()

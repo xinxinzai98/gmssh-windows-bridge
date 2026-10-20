@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- Prepare 0.4.0a34 as one Windows/Mac candidate with the credential-validation, progress/result feedback and guarded optional Windows unlock fixes already exercised on the independent Windows test host. Pin the unmodified RustDesk 1.5.1+68 nightly by official asset, installer digest, complete file-manifest digest and the actual upstream build commit. Preserve existing engines during normal upgrades.
+- Reject mismatched source/project/wheel versions, incomplete wheel contents, stale Windows scripts/brands/licenses/dependency pins, changed offline OpenSSH installers and modified desktop-engine payloads during public export. Reject duplicate, missing and extra bundle entries. Fresh-machine installation, additional policy acceptance and publication remain separate gates.
+- Add a Windows Settings uninstall entry with a scoped preview, recoverable program backup, owned task/rule removal and preserved configuration. Reinstallation validates the backup and original account before restoring; existing SSH/RustDesk stay intact, and only a verified GMSSH-created account/internal engine can be disabled or removed. The actual preserved upgrade/uninstall/reinstall cycle passed with original services, account, credentials and independent grants retained. Windows-native synthetic transactions cover rollback and the managed-account/internal-engine branches.
+- Verify installed CLI/MCP access and a unique Notepad document's Unicode multiline input, save, full content/hash and reopen after reinstall. A taskbar provider that cannot acquire focus or expose Invoke still fails explicitly rather than sending input to another window.
+- Confirm Windows unlock results through the existing authenticated desktop context without reading the Windows password again. Distinguish an unlocked session, lock/secure desktop, lost authorization and an unconfirmed result; keep the Mac GUI switch as a separate acceptance gate.
+- Store non-ASCII PowerShell source as UTF-8 with BOM so Windows PowerShell 5.1 parses the checkout consistently with the installer payload.
+
+- Develop 0.4.0a33 locally: add an explicit preserve-existing path for compatible Windows SSH/RustDesk services, pin the existing account SID, host key, config and custom SSH port, and add only GMSSH-owned files/tasks. Preserve service startup, firewall, account and desktop settings during setup, pause and upgrade.
+- Keep separate existing SSH/desktop credentials in the protected encrypted store. Reuse independent grants for desktop access, keep the desktop secret off legacy enrollment responses, and label the optional SSH-only sharing path. Update native desktop acceptance documentation; preserved installation and full CLI/MCP device acceptance remain pending.
+
+- Fix native AI screenshot scaling under Windows PowerShell 5.1 by selecting the floating-point `Math.Min` overload. Add a desktop-free regression for 1440p, ultrawide, portrait and small displays; preserve the 1600×1000 image bound.
+- Use Windows PowerShell 5.1-compatible `UInt16` casts for native key actions and exercise the actual argument expressions without sending keyboard input.
+
+- Develop 0.4.0a32 locally: enforce independent `files_read` grants at the Windows file API, including raw write/open/remove/rename rejection. Negotiate the additive capability, preserve six-field legacy read/write grants, and distinguish actual server policy from a controller-only read restriction.
+- Block new and queued requests promptly when a session closes, a policy changes or a grant is revoked. Keep closing resources counted until asynchronous cleanup finishes; report interrupted/timeout/closed operations without automatically replaying commands or writes. Add an owner read-only preset and readable file-center mode with uploads/creation disabled.
+
+- Develop controller 0.4.0a31 locally: add `files_read` for search/read/preview/hash-wait tools while retaining legacy `files` read/write behavior. Check the same local policy before CLI/MCP connections, and intersect read permission with the current server file channel during access checks.
+- Add offline `device_tools` / `gmssh-ai tools DEVICE` to describe the local tool subset and allowed wait conditions without claiming remote readiness. Add a user-operated read-only form preset and clear local-mode labels; permission changes still require saving and never expand server grants.
+
 - Develop controller 0.4.0a30 locally: add bounded literal text search in a specified file, unique-fragment replacement previews/commits and verified creation of new text files over the existing SFTP interfaces. Keep original hashes and backups, preserve BOM/surrounding line endings, stop ambiguous edits and never overwrite a creation target.
 - Distinguish an unknown creation commit from failure or success, retaining the intended hash and recovery paths without automatic retry or deleting the destination. Continue to use Windows a27 protocol; no endpoint, real-device or current-app changes.
 

@@ -115,6 +115,15 @@ class CodeTests(unittest.TestCase):
         self.assertEqual(self.calls[0][0], '/v1/connect')
         self.assertTrue(inspect_code(code)['public']['desktopAuth'] == 'shared-ssh')
 
+    def test_preserved_desktop_code_redeems_only_ssh_and_keeps_manual_desktop_auth(self):
+        self.payload['connection']['desktopAuth'] = 'manual'
+        code = encode(self.payload)
+        self.assertEqual(inspect_code(code)['public']['desktopAuth'], 'manual')
+        self.assertEqual(redeem_code(code, self.public['addresses'][0]), {'password': self.password})
+        self.payload['connection'].pop('desktopAuth')
+        with self.assertRaises(ValueError):
+            inspect_code(encode(self.payload))
+
     def test_supplied_ipv6_target_uses_the_original_ssh_and_tls_identity(self):
         class IPv6Server(ThreadingHTTPServer): address_family=socket.AF_INET6
         try: server=IPv6Server(('::1',0),self.server.RequestHandlerClass)
@@ -179,7 +188,7 @@ class CodeTests(unittest.TestCase):
         for change in [{'schema': True}, {'port': 22}, {'token': 'short'}, {'expiresAt': 1},
                        {'certificate': self.cert + self.cert}, {'password': self.password},
                        {'connection': {**self.public, 'addresses': ['192.0.2.42']}},
-                       {'connection': {**self.public, 'desktopAuth': 'manual'}}]:
+                       {'connection': {**self.public, 'desktopAuth': 'unrecognized'}}]:
             with self.subTest(change=tuple(change)):
                 with self.assertRaises(ValueError):
                     inspect_code(encode({**self.payload, **change}))

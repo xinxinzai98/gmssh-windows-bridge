@@ -4,24 +4,25 @@ const compiled=esbuild.build({entryPoints:[path.join(__dirname,'../desktop-web/s
   name:'mock-transports',setup(build){
     build.onResolve({filter:/^\.\/(direct|operations)$/},args=>({path:args.path,namespace:'mock'}));
     build.onLoad({filter:/.*/,namespace:'mock'},args=>({contents:args.path==='./direct'
-      ?'export class DirectClient { constructor(canvas,events){this.events=events;this.connected=false;globalThis.setClient(this)} mouse(event){globalThis.recordMouse(event)} connect(...args){globalThis.recordConnect(args)} disconnect(){this.connected=false;this.events.stopped()} }'
-      :'export class Operations {}'}));
+      ?'export class DirectClient { constructor(canvas,events){this.events=events;this.connected=false;globalThis.setClient(this)} mouse(event){globalThis.recordMouse(event)} connect(...args){globalThis.recordConnect(args)} disconnect(){this.connected=false;this.events.stopped()} unlockWindows(password){globalThis.recordUnlock(password)} }'
+      :'export class Operations { request(op,values){return globalThis.recordOperation(op,values)} }'}));
   }
 }]});
 async function harness(config,embedded=false){
-  const nodes=new Map(),wire=[],connections=[],windowListeners=new Map();let client;
-  function node(id){if(!nodes.has(id))nodes.set(id,{value:'',disabled:true,classList:{add(){},remove(){},toggle(){}},listeners:new Map(),attributes:new Map(),append(){},before(){},after(){},querySelectorAll:()=>[],setAttribute(name,value){this.attributes.set(name,value)},getAttribute(name){return this.attributes.get(name)},addEventListener(name,handler){this.listeners.set(name,handler)},focus(){},setPointerCapture(){},width:1920,height:1080,getBoundingClientRect:()=>({left:10,top:40,width:1280,height:800})});return nodes.get(id)}
-  const posts=[],window={setTimeout,clearTimeout,addEventListener:(name,handler)=>{if(!windowListeners.has(name))windowListeners.set(name,[]);windowListeners.get(name).push(handler)},removeEventListener:(name,handler)=>{const list=windowListeners.get(name)||[];const index=list.indexOf(handler);if(index>=0)list.splice(index,1);}};window.parent=embedded?{postMessage:(data,origin)=>posts.push({data,origin})}:window;
+  const nodes=new Map(),wire=[],connections=[],windowListeners=new Map(),operationRequests=[],unlocks=[];let client,operationReply={configured:false,autoUnlock:false},statusReplies=[];
+  function node(id){if(!nodes.has(id))nodes.set(id,{value:'',disabled:true,classList:{add(){},remove(){},toggle(){}},listeners:new Map(),attributes:new Map(),append(){},before(){},after(){},showModal(){this.open=true},querySelectorAll:()=>[],setAttribute(name,value){this.attributes.set(name,value)},getAttribute(name){return this.attributes.get(name)},addEventListener(name,handler){this.listeners.set(name,handler)},focus(){},setPointerCapture(){},width:1920,height:1080,getBoundingClientRect:()=>({left:10,top:40,width:1280,height:800})});return nodes.get(id)}
+  let timerId=0;const timers=new Map();
+  const posts=[],window={setTimeout(handler,delay){if(![1000,2000].includes(delay))return setTimeout(handler,delay);const id=++timerId;timers.set(id,{handler,delay});return id},clearTimeout(id){if(!timers.delete(id))clearTimeout(id)},addEventListener:(name,handler)=>{if(!windowListeners.has(name))windowListeners.set(name,[]);windowListeners.get(name).push(handler)},removeEventListener:(name,handler)=>{const list=windowListeners.get(name)||[];const index=list.indexOf(handler);if(index>=0)list.splice(index,1);}};window.parent=embedded?{postMessage:(data,origin)=>posts.push({data,origin})}:window;
   const scope={window,setTimeout,clearTimeout,document:{getElementById:node,createElement:tag=>node(Symbol(tag)),querySelectorAll:()=>[],addEventListener(){}},location:{hash:'',href:'http://127.0.0.1/test'},URL,URLSearchParams,TextEncoder,crypto:require('node:crypto').webcrypto,
     fetch:config?async()=>({ok:true,json:async()=>({transport:'monitor',keychain:true,has_saved_password:true,capabilities:{},...config})}):()=>new Promise(()=>{}),
-    requestAnimationFrame:()=>1,recordMouse:event=>wire.push(JSON.parse(JSON.stringify(event))),recordConnect:args=>connections.push(JSON.parse(JSON.stringify(args))),setClient:value=>{client=value}};
+    requestAnimationFrame:()=>1,recordMouse:event=>wire.push(JSON.parse(JSON.stringify(event))),recordConnect:args=>connections.push(JSON.parse(JSON.stringify(args))),setClient:value=>{client=value},recordUnlock:password=>unlocks.push(password),recordOperation:(op,values)=>{operationRequests.push({op,...values});return Promise.resolve(values?.action==='check'?(statusReplies.shift()||{state:'unknown'}):{...operationReply})}};
   vm.runInNewContext((await compiled).outputFiles[0].text,scope);
   await new Promise(resolve=>setImmediate(resolve));
   const pointer=(name,x,y,button=0,buttons=0)=>node('screen').listeners.get(name)({clientX:x,clientY:y,button,buttons,pointerId:1,preventDefault(){}});
   // Replay a peer that positions its pointer on move messages before applying buttons.
   function clicks(){let cursor={x:-1,y:-1};const output=[];for(const event of wire){const kind=event.mask&7;if(kind===0)cursor={x:event.x,y:event.y};else if(kind===1||kind===2)output.push({kind,button:event.mask>>3,...cursor})}return output}
   const reopen=(source=window.parent)=>{for(const handler of windowListeners.get('message')||[])handler({source,data:{type:'gmssh-desktop-tool',tool:'reconnect'}})};
-  return {pointer,clicks,reopen,connections,node,client,posts,message(data,source=window.parent){for(const handler of [...windowListeners.get('message')||[]])handler({data,source,origin:'null'});}};
+  return {pointer,clicks,reopen,connections,node,client,posts,operationRequests,unlocks,runRecoveryTimer(){for(const [id,timer] of [...timers])if(timer.delay===2000){timers.delete(id);timer.handler()}},async runStatusTimer(){for(const [id,timer] of [...timers])if(timer.delay===1000){timers.delete(id);timer.handler()}await new Promise(resolve=>setImmediate(resolve))},setStatusReplies(value){statusReplies=value},setOperationReply(value){operationReply=value},message(data,source=window.parent){for(const handler of [...windowListeners.get('message')||[]])handler({data,source,origin:'null'});}};
 }
 test('an immediate click reaches the scaled canvas position without a preceding move',async()=>{
   const h=await harness();h.pointer('pointerdown',650,440);h.pointer('pointerup',650,440);
@@ -68,4 +69,68 @@ test('an older parent that does not acknowledge independent files retains the ex
 test('failed desktop authentication stops saved-credential retries until an explicit login submission',async()=>{
   const h=await harness({});h.client.events.lifecycle('failed','DESKTOP_AUTH_FAILED');h.reopen();h.reopen();assert.equal(h.connections.length,0);
   h.node('desktop-password').value='synthetic-new-login';h.node('login').listeners.get('submit')({preventDefault(){}});assert.equal(h.connections.length,1);assert.equal(h.node('desktop-password').value,'');
+});
+
+test('Windows auto-unlock stays off by default and only tries once across frames and reconnects',async()=>{
+  const h=await harness({capabilities:{windows_login:true}});h.client.connected=true;h.client.windowsUnlockSupported=true;h.client.connectionGeneration=1;
+  h.client.events.frame();await new Promise(resolve=>setImmediate(resolve));assert.equal(h.unlocks.length,0);
+  const enabled=await harness({capabilities:{windows_login:true}});enabled.client.connected=true;enabled.client.windowsUnlockSupported=true;enabled.client.connectionGeneration=1;
+  enabled.setOperationReply({configured:true,autoUnlock:true,password:'synthetic-Windows-secret'});
+  enabled.client.events.frame();enabled.client.events.frame();await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(enabled.unlocks,['synthetic-Windows-secret']);
+  enabled.client.events.stopped();enabled.client.events.frame();await new Promise(resolve=>setImmediate(resolve));assert.equal(enabled.unlocks.length,1);
+  assert.equal(enabled.node('desktop-password').value,'');assert.equal(enabled.node('windows-login-password').value,'');
+});
+test('an incompatible peer never fetches Windows credentials and disabling removes only Windows settings',async()=>{
+  const h=await harness({capabilities:{windows_login:true}});h.client.connected=true;h.client.windowsUnlockSupported=false;
+  h.client.events.frame();await new Promise(resolve=>setImmediate(resolve));assert.equal(h.operationRequests.length,0);
+  h.node('desktop-password').value='synthetic-connection-password';
+  await h.node('windows-unlock').onclick();h.node('windows-auto-unlock').checked=false;await h.node('save-windows-unlock').onclick();
+  assert.equal(h.operationRequests.at(-1).action,'clear');assert.equal(h.node('desktop-password').value,'synthetic-connection-password');
+  assert.equal(h.unlocks.length,0);
+});
+test('a Windows login session switch reconnects once using only saved desktop authentication',async()=>{
+  const h=await harness({capabilities:{windows_login:true}});h.client.connected=true;h.client.windowsUnlockSupported=true;h.client.connectionGeneration=1;
+  h.setOperationReply({configured:true,autoUnlock:true,password:'synthetic-Windows-secret'});
+  h.client.events.frame();await new Promise(resolve=>setImmediate(resolve));
+  h.client.connected=false;h.client.events.lifecycle('failed','DESKTOP_FAILED');h.client.events.stopped();h.runRecoveryTimer();
+  assert.deepEqual(h.connections,[['','','monitor',{saved:true,remember:false,token:''}]]);
+  h.client.connected=true;h.client.events.frame();await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(h.unlocks,['synthetic-Windows-secret']);
+  h.client.connected=false;h.client.events.lifecycle('failed','DESKTOP_FAILED');h.client.events.stopped();h.runRecoveryTimer();assert.equal(h.connections.length,1);
+});
+test('login recovery respects manual disconnect, authentication failure and unsaved credentials',async()=>{
+  for(const mode of ['off','disconnect','auth','unsaved','typed']){
+    const h=await harness({capabilities:{windows_login:true},has_saved_password:mode!=='unsaved'});h.client.connected=true;h.client.windowsUnlockSupported=true;
+    if(mode!=='off')h.setOperationReply({configured:true,autoUnlock:true,password:'synthetic-Windows-secret'});
+    h.client.events.frame();await new Promise(resolve=>setImmediate(resolve));h.client.connected=false;
+    h.client.events.lifecycle('failed',mode==='auth'?'DESKTOP_AUTH_FAILED':'DESKTOP_FAILED');h.client.events.stopped();
+    if(mode==='disconnect')h.node('disconnect').listeners.get('click')();
+    if(mode==='typed')h.node('desktop-password').value='synthetic-typed-secret';
+    h.runRecoveryTimer();assert.equal(h.connections.length,0,mode);
+  }
+});
+test('Windows unlock success comes from the live result, without another password attempt',async()=>{
+  const h=await harness({capabilities:{windows_login:true}});h.client.connected=true;h.client.windowsUnlockSupported=true;h.client.connectionGeneration=1;
+  h.setOperationReply({configured:true,autoUnlock:true,password:'synthetic-Windows-secret'});h.setStatusReplies([{state:'locked-or-secure'},{state:'unlocked'}]);
+  h.client.events.frame();await new Promise(resolve=>setImmediate(resolve));
+  assert.match(h.node('status').textContent,/正在确认/);await h.runStatusTimer();assert.doesNotMatch(h.node('status').textContent,/当前已解锁/);
+  h.client.events.stopped();h.client.events.frame();await h.runStatusTimer();
+  assert.equal(h.node('status').textContent,'Windows 当前已解锁。');assert.equal(h.node('windows-unlock-note').textContent,'Windows 当前已解锁。');
+  assert.deepEqual(h.unlocks,['synthetic-Windows-secret']);assert.equal(h.operationRequests.filter(x=>x.action==='load').length,1);
+  assert.ok(h.operationRequests.filter(x=>x.action==='check').every(x=>JSON.stringify(x.settings)==='{}'));
+});
+test('unconfirmed Windows login stays explicit and disconnect cancels pending result queries',async()=>{
+  for(const mode of ['timeout','disconnect','unauthorized']){
+    const h=await harness({capabilities:{windows_login:true}});h.client.connected=true;h.client.windowsUnlockSupported=true;
+    h.setOperationReply({configured:true,autoUnlock:true,password:'synthetic-Windows-secret'});
+    if(mode==='unauthorized')h.setStatusReplies([{state:'unauthorized'}]);
+    h.client.events.frame();await new Promise(resolve=>setImmediate(resolve));
+    if(mode==='disconnect')h.node('disconnect').listeners.get('click')();
+    for(let i=0;i<31;i++)await h.runStatusTimer();
+    assert.equal(h.unlocks.length,1);
+    if(mode==='disconnect')assert.equal(h.operationRequests.filter(x=>x.action==='check').length,0);
+    else if(mode==='unauthorized')assert.match(h.node('status').textContent,/授权或设备身份/);
+    else assert.match(h.node('status').textContent,/未能确认.*不会自动重试密码/);
+  }
 });

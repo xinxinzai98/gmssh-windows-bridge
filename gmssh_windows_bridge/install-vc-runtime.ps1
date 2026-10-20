@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'setup-checks.ps1')
 $metadata = (Get-Content (Join-Path $PSScriptRoot 'windows-installers.json') -Raw | ConvertFrom-Json).vcredist

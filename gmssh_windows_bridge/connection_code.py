@@ -47,8 +47,8 @@ def inspect_code(text):
         raise ValueError('连接码中的接入凭证无效。') from None
     public_text = json.dumps(data['connection'], ensure_ascii=False, separators=(',', ':'))
     public = inspect_connection(public_text)
-    if public['desktopAuth'] != 'shared-ssh' or not all(connection_code_address(value) for value in public['addresses']):
-        raise ValueError('连接码需要使用统一连接密码，以及局域网 IPv4 或可用 IPv6 地址。')
+    if data['connection'].get('desktopAuth') not in ('shared-ssh', 'manual') or not all(connection_code_address(value) for value in public['addresses']):
+        raise ValueError('连接码需要明确的桌面认证模式，以及局域网 IPv4 或可用 IPv6 地址。')
     certificate = data['certificate']
     if not isinstance(certificate, str) or len(certificate) > 4096 or certificate.count('-----BEGIN CERTIFICATE-----') != 1:
         raise ValueError('连接码中的设备证书无效。')

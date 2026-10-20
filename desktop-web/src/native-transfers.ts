@@ -3,7 +3,7 @@ import { Operations } from './operations';
 
 type Call = (action:string,data?:Record<string,unknown>)=>Promise<any>;
 const messages:Record<string,string>={
-  HOST_UNVERIFIED:'尚未确认 SSH 主机指纹，文件连接已停止',HOST_PINS_INVALID:'本机 SSH 主机身份记录不可读，原记录已保留',HOST_PINS_WRITE_FAILED:'主机身份未能保存，请检查本机空间和权限',AUTH_FAILED:'SSH 认证失败，请编辑此设备的连接凭据后重试',INVALID_PRIVATE_KEY:'SSH 私钥或私钥口令无效，请检查连接配置',
+  HOST_UNVERIFIED:'尚未确认 SSH 主机指纹，文件连接已停止',HOST_PINS_INVALID:'本机 SSH 主机身份记录不可读，原记录已保留',HOST_PINS_WRITE_FAILED:'主机身份未能保存，请检查本机空间和权限',AUTH_FAILED:'连接认证失败，请核对设备凭据或独立授权状态',INVALID_PRIVATE_KEY:'SSH 私钥或私钥口令无效，请检查连接配置',
   PLACES_INVALID:'常用目录记录无法读取，原记录已保留，其他文件功能仍可使用',PLACES_WRITE_FAILED:'常用目录未能保存，请检查本机空间或权限',PLACES_LIMIT:'每台设备最多收藏 12 个目录，请先移除不常用的收藏',INVALID_PLACE:'收藏目录信息无效，请重新选择',PLACE_NOT_FOUND:'该收藏已被移除，请重新打开常用目录列表',
   COMMIT_UNSUPPORTED:'该磁盘不支持不覆盖保存，临时文件已保留；请选择其他磁盘重新下载',
   CANCELLED_FILE_RETAINED:'已取消；达到完整大小的目标文件已保留，可继续核验',
@@ -21,6 +21,8 @@ const messages:Record<string,string>={
   PICKER_BUSY:'已有文件选择窗口，请先完成该窗口',QUERY_BUSY:'正在核对连接，请稍后再试',
   TRANSFER_LIMIT:'最多 2000 项、单文件 1 TiB；请分批传输',CANCELLED:'已取消',TRANSFER_IO:'传输中断，已传部分已保留，可继续',
   REMOTE_IO:'远端读写失败，检查连接或权限后可继续',PROTOCOL_UNSUPPORTED:'本地文件服务版本不匹配，请重开更新后的管理端',
+  OPERATION_TIMEOUT:'等待远端响应超时，请核对原任务后继续',OPERATION_INTERRUPTED:'操作响应中断，请核对原任务后继续',
+  SESSION_CLOSED:'文件会话已结束或权限已变更，请重新核对授权',SERVER_UPGRADE_REQUIRED:'此授权需要更新管理端或服务端',
 };
 export const transferMessage=(code:string)=>messages[code]||'文件任务暂不可用，请检查连接后继续';
 export class NativeFileOperations extends Operations {

@@ -3,8 +3,8 @@
 package main
 
 import (
-	"errors"
 	"os"
+	"strings"
 	"syscall"
 	"unsafe"
 )
@@ -58,7 +58,7 @@ func validateLocalPassword(username, password string) error {
 	var token syscall.Handle
 	ok, _, _ := logonProc.Call(uintptr(unsafe.Pointer(name)), uintptr(unsafe.Pointer(domain)), uintptr(unsafe.Pointer(&secret[0])), 3, 0, uintptr(unsafe.Pointer(&token)))
 	if ok == 0 {
-		return errors.New("连接密码未通过验证")
+		return errCredential
 	}
 	syscall.CloseHandle(token)
 	return nil
@@ -67,15 +67,65 @@ func validateLocalPassword(username, password string) error {
 func validatePlatformBinding(b binding) error {
 	host, err := os.Hostname()
 	if err != nil {
-		return errUnavailable
+		return errMachineBinding
 	}
 	sid, _, _, err := syscall.LookupSID("", host+"\\"+b.Username)
 	if err != nil {
-		return errUnavailable
+		return errAccountBinding
 	}
 	text, err := sid.String()
 	if err != nil || text != b.ManagedSID {
-		return errUnavailable
+		return errAccountBinding
+	}
+	if (b.RequireAdministrator || strings.EqualFold(b.Username, "gmssh")) && !existingLocalAdministrator(b.Username) {
+		return errAdminBinding
 	}
 	return nil
+}
+
+// Query account membership, rather than the caller's potentially UAC-filtered token.
+func existingLocalAdministrator(username string) bool {
+	administrators, err := syscall.StringToSid("S-1-5-32-544")
+	if err != nil {
+		return false
+	}
+	name, _, _, err := administrators.LookupAccount("")
+	if err != nil {
+		return false
+	}
+	user, err := syscall.UTF16PtrFromString(username)
+	if err != nil {
+		return false
+	}
+	api := syscall.NewLazyDLL("netapi32.dll")
+	var buffer uintptr
+	var entries, total uint32
+	result, _, _ := api.NewProc("NetUserGetLocalGroups").Call(0, uintptr(unsafe.Pointer(user)), 0, 1, uintptr(unsafe.Pointer(&buffer)), 0xffffffff, uintptr(unsafe.Pointer(&entries)), uintptr(unsafe.Pointer(&total)))
+	if buffer != 0 {
+		defer api.NewProc("NetApiBufferFree").Call(buffer)
+	}
+	if result != 0 || buffer == 0 || entries > 4096 {
+		return false
+	}
+	type groupName struct{ name *uint16 }
+	for _, group := range unsafe.Slice((*groupName)(unsafe.Pointer(buffer)), int(entries)) {
+		if group.name == nil {
+			return false
+		}
+		var units []uint16
+		for i := 0; i < 257; i++ {
+			value := *(*uint16)(unsafe.Add(unsafe.Pointer(group.name), uintptr(i)*2))
+			if value == 0 {
+				break
+			}
+			units = append(units, value)
+		}
+		if len(units) > 256 {
+			return false
+		}
+		if strings.EqualFold(syscall.UTF16ToString(units), name) {
+			return true
+		}
+	}
+	return false
 }

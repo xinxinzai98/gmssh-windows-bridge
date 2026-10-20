@@ -5,7 +5,7 @@ param([switch]$Worker,[int]$ParentProcessId=0,[long]$ParentStartTicks=0)
 $ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
 Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes,System.Windows.Forms,System.Drawing
-Add-Type -TypeDefinition @'
+Add-Type -ReferencedAssemblies System.dll,System.Core.dll,System.Windows.Forms.dll,System.Drawing.dll -TypeDefinition @'
 using System;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -18,9 +18,47 @@ public static class GMSSHAIDesktop {
  static Timer watchdog;
  static Timer parentGuard;
  static long budget;
+ static readonly int sessionId=System.Diagnostics.Process.GetCurrentProcess().SessionId;
+ static long sessionEpoch;
+ static volatile bool sessionWatching;
+ static readonly ManualResetEvent sessionReady=new ManualResetEvent(false);
+ public static long SessionEpoch {get{return Interlocked.Read(ref sessionEpoch);}}
+ [DllImport("wtsapi32.dll",CharSet=CharSet.Unicode)] static extern bool WTSQuerySessionInformation(IntPtr server,int session,int info,out IntPtr buffer,out uint bytes);
+ [DllImport("wtsapi32.dll")] static extern void WTSFreeMemory(IntPtr buffer);
+ [DllImport("wtsapi32.dll",SetLastError=true)] static extern bool WTSRegisterSessionNotification(IntPtr window,int flags);
+ [DllImport("wtsapi32.dll")] static extern bool WTSUnRegisterSessionNotification(IntPtr window);
+ public static bool SessionUnlocked(){
+  IntPtr buffer=IntPtr.Zero;uint bytes=0;
+  try{
+   if(!WTSQuerySessionInformation(IntPtr.Zero,sessionId,25,out buffer,out bytes)||buffer==IntPtr.Zero||bytes<20)return false;
+   // WTSINFOEX's union is 8-byte aligned. Read only Level and the Level1 header.
+   return Marshal.ReadInt32(buffer,0)==1&&Marshal.ReadInt32(buffer,8)==sessionId&&Marshal.ReadInt32(buffer,12)==0&&Marshal.ReadInt32(buffer,16)==1;
+  }finally{if(buffer!=IntPtr.Zero)WTSFreeMemory(buffer);}
+ }
+ sealed class SessionWindow:System.Windows.Forms.NativeWindow,IDisposable {
+  public SessionWindow(){
+   CreateHandle(new System.Windows.Forms.CreateParams{Caption="GMSSH AI session state",Parent=new IntPtr(-3)});
+   if(!WTSRegisterSessionNotification(Handle,0)){DestroyHandle();throw new InvalidOperationException("SESSION_WATCH_UNAVAILABLE");}
+  }
+  protected override void WndProc(ref System.Windows.Forms.Message message){
+   if(message.Msg==0x02B1&&message.LParam.ToInt32()==sessionId)Interlocked.Increment(ref sessionEpoch);
+   base.WndProc(ref message);
+  }
+  public void Dispose(){WTSUnRegisterSessionNotification(Handle);DestroyHandle();}
+ }
+ public static void StartSessionWatch(){
+  var thread=new Thread(()=>{
+   SessionWindow window=null;
+   try{window=new SessionWindow();sessionWatching=true;sessionReady.Set();System.Windows.Forms.Application.Run();}
+   catch{sessionReady.Set();}
+   finally{sessionWatching=false;if(window!=null)window.Dispose();}
+  });
+  thread.IsBackground=true;thread.SetApartmentState(ApartmentState.STA);thread.Start();
+  if(!sessionReady.WaitOne(2000)||!sessionWatching)throw new InvalidOperationException("SESSION_WATCH_UNAVAILABLE");
+ }
  public static void GuardParent(int pid,long ticks,int session){
   if(parentGuard!=null)parentGuard.Dispose();
-  parentGuard=new Timer(_=>{try{using(var p=System.Diagnostics.Process.GetProcessById(pid)){if(p.HasExited||p.StartTime.ToUniversalTime().Ticks!=ticks||p.SessionId!=session)Environment.Exit(0);}}catch{Environment.Exit(0);}},null,0,2000);
+  parentGuard=new Timer(_=>{if(!sessionWatching)Environment.Exit(2);try{using(var p=System.Diagnostics.Process.GetProcessById(pid)){if(p.HasExited||p.StartTime.ToUniversalTime().Ticks!=ticks||p.SessionId!=session)Environment.Exit(0);}}catch{Environment.Exit(0);}},null,0,2000);
  }
  public static void ArmWatchdog(){long serial=Interlocked.Increment(ref budget);watchdog=new Timer(_=>{if(Interlocked.Read(ref budget)==serial)Environment.Exit(2);},null,7500,Timeout.Infinite);}
  public static void StopWatchdog(){Interlocked.Increment(ref budget);if(watchdog!=null){watchdog.Dispose();watchdog=null;}}
@@ -48,19 +86,55 @@ public static class GMSSHAIDesktop {
  [StructLayout(LayoutKind.Sequential)] struct KEY {public ushort vk,scan;public uint flags,time;public UIntPtr extra;}
  [StructLayout(LayoutKind.Explicit)] struct UNION {[FieldOffset(0)] public MOUSE mouse;[FieldOffset(0)] public KEY key;}
  [StructLayout(LayoutKind.Sequential)] struct INPUT {public uint type;public UNION data;}
- public static bool Unlocked(){IntPtr h=OpenInputDesktop(0,false,1);if(h==IntPtr.Zero)return false;try{var s=new StringBuilder(128);int r;return GetUserObjectInformation(h,2,s,256,out r)&&s.ToString()=="Default";}finally{CloseDesktop(h);}}
- public static bool Focus(long h){SetForegroundWindow(new IntPtr(h));return GetForegroundWindow().ToInt64()==h;}
- static void Send(INPUT[] input){if(!Unlocked()||SendInput((uint)input.Length,input,Marshal.SizeOf(typeof(INPUT)))!=input.Length)throw new InvalidOperationException("FOCUS_DENIED");}
- public static void Click(int x,int y){if(!SetCursorPos(x,y))throw new InvalidOperationException("FOCUS_DENIED");var a=new INPUT[2];a[0].data.mouse.flags=2;a[1].data.mouse.flags=4;Send(a);}
- public static void Text(string text){var a=new INPUT[text.Length*2];for(int i=0;i<text.Length;i++){a[i*2].type=a[i*2+1].type=1;a[i*2].data.key.scan=a[i*2+1].data.key.scan=text[i];a[i*2].data.key.flags=4;a[i*2+1].data.key.flags=6;}Send(a);}
- public static void Key(ushort key,ushort modifier){var a=new INPUT[modifier==0?2:4];int i=0;if(modifier!=0){a[i].type=1;a[i++].data.key.vk=modifier;}a[i].type=1;a[i++].data.key.vk=key;a[i].type=1;a[i].data.key.vk=key;a[i++].data.key.flags=2;if(modifier!=0){a[i].type=1;a[i].data.key.vk=modifier;a[i].data.key.flags=2;}Send(a);}
+ public static bool Unlocked(){if(!sessionWatching||!SessionUnlocked())return false;IntPtr h=OpenInputDesktop(0,false,1);if(h==IntPtr.Zero)return false;try{var s=new StringBuilder(128);int r;return GetUserObjectInformation(h,2,s,256,out r)&&s.ToString()=="Default";}finally{CloseDesktop(h);}}
+ public static bool Focus(long h){
+  if(!Unlocked()||!IsWindow(new IntPtr(h)))return false;
+  if(GetForegroundWindow().ToInt64()==h)return true;
+  if(!SetForegroundWindow(new IntPtr(h)))return GetForegroundWindow().ToInt64()==h;
+  // Activation across input queues completes asynchronously; never force it.
+  var deadline=DateTime.UtcNow.AddMilliseconds(500);
+  do{if(!Unlocked()||!IsWindow(new IntPtr(h)))return false;if(GetForegroundWindow().ToInt64()==h)return true;Thread.Sleep(10);}while(DateTime.UtcNow<deadline);
+  return false;
+ }
+ static void Send(INPUT[] input,long window){
+  if(!Unlocked())throw new InvalidOperationException("DESKTOP_LOCKED");
+  if(GetForegroundWindow().ToInt64()!=window)throw new InvalidOperationException("FOCUS_DENIED");
+  if(SendInput((uint)input.Length,input,Marshal.SizeOf(typeof(INPUT)))!=input.Length)throw new InvalidOperationException("DESKTOP_OUTCOME_UNKNOWN");
+ }
+ public static void Click(int x,int y,long window){if(!Unlocked()||GetForegroundWindow().ToInt64()!=window||!SetCursorPos(x,y))throw new InvalidOperationException("FOCUS_DENIED");var a=new INPUT[2];a[0].data.mouse.flags=2;a[1].data.mouse.flags=4;Send(a,window);}
+ public static void Text(string text,long window){
+  var a=new INPUT[text.Length*2];int count=0;
+  for(int i=0;i<text.Length;i++){
+   a[count].type=a[count+1].type=1;
+   if(text[i]=='\r'||text[i]=='\n'){
+    if(text[i]=='\r'&&i+1<text.Length&&text[i+1]=='\n')i++;
+    a[count].data.key.vk=a[count+1].data.key.vk=13;
+    a[count+1].data.key.flags=2;
+   }else{
+    a[count].data.key.scan=a[count+1].data.key.scan=text[i];
+    a[count].data.key.flags=4;a[count+1].data.key.flags=6;
+   }
+   count+=2;
+  }
+  Array.Resize(ref a,count);Send(a,window);
+ }
+ public static void Key(ushort key,ushort modifier,long window){var a=new INPUT[modifier==0?2:4];int i=0;if(modifier!=0){a[i].type=1;a[i++].data.key.vk=modifier;}a[i].type=1;a[i++].data.key.vk=key;a[i].type=1;a[i].data.key.vk=key;a[i++].data.key.flags=2;if(modifier!=0){a[i].type=1;a[i].data.key.vk=modifier;a[i].data.key.flags=2;}Send(a,window);}
  public static string ReadLine(Stream stream){var bytes=new byte[32769];int count=0;DateTime end=DateTime.UtcNow.AddSeconds(3);while(count<bytes.Length){var t=stream.ReadAsync(bytes,count,1);int ms=(int)(end-DateTime.UtcNow).TotalMilliseconds;if(ms<=0||!t.Wait(ms)||t.Result!=1)throw new IOException("INVALID_QUERY");if(bytes[count++]==10)return new UTF8Encoding(false,true).GetString(bytes,0,count-1);}throw new IOException("INVALID_QUERY");}
 }
 '@
 $script:observations=@{}
+$script:desktopEpoch=0
 $script:inputOwner='';$script:inputUntil=[DateTime]::MinValue
 $pauseFile=Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'GMSSHWindowsBridge\ai-paused'
 function Short-AIText($text,[int]$length=256) { $s=[string]$text;if($s.Length -gt $length){$s=$s.Substring(0,$length)};return $s }
+function Get-AIBounds($rectangle) {
+    $bounds=@{x=[double]$rectangle.X;y=[double]$rectangle.Y;width=[double]$rectangle.Width;height=[double]$rectangle.Height}
+    foreach($value in $bounds.Values){
+        if([double]::IsNaN($value) -or [double]::IsInfinity($value)){return @{x=0;y=0;width=0;height=0}}
+    }
+    if($bounds.width -le 0 -or $bounds.height -le 0){return @{x=0;y=0;width=0;height=0}}
+    return $bounds
+}
 function Get-AIWindow([string]$handle) {
     if($handle -notmatch '^[1-9][0-9]{0,18}$'){throw 'INVALID_QUERY'}
     if(-not [GMSSHAIDesktop]::IsWindow([IntPtr][long]$handle)){throw 'TARGET_NOT_FOUND'}
@@ -69,7 +143,7 @@ function Get-AIWindow([string]$handle) {
     return $element
 }
 function Get-AINode($element,[string]$id) {
-    $c=$element.Current;$rectangle=$c.BoundingRectangle
+    $c=$element.Current;$bounds=Get-AIBounds $c.BoundingRectangle
     $value=$null;$pattern=$null
     if(-not $c.IsPassword -and $element.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern,[ref]$pattern)){
         $value=Short-AIText $pattern.Current.Value 1024
@@ -77,10 +151,27 @@ function Get-AINode($element,[string]$id) {
     if(-not $c.IsPassword -and $null -eq $value -and $element.TryGetCurrentPattern([Windows.Automation.TextPattern]::Pattern,[ref]$pattern)){
         $value=Short-AIText ($pattern.DocumentRange.GetText(1024)) 1024
     }
-    return @{id=$id;name=(Short-AIText $c.Name);automationId=(Short-AIText $c.AutomationId);
+    $node=@{id=$id;name=(Short-AIText $c.Name);automationId=(Short-AIText $c.AutomationId);
         controlType=$c.ControlType.ProgrammaticName.Replace('ControlType.','');className=(Short-AIText $c.ClassName);
-        enabled=[bool]$c.IsEnabled;offscreen=[bool]$c.IsOffscreen;password=[bool]$c.IsPassword;value=$value;
-        bounds=@{x=$rectangle.X;y=$rectangle.Y;width=$rectangle.Width;height=$rectangle.Height}}
+        enabled=[bool]$c.IsEnabled;offscreen=([bool]$c.IsOffscreen -or $bounds.width -le 0 -or $bounds.height -le 0);password=[bool]$c.IsPassword;value=$value;
+        bounds=$bounds}
+    if($c.ControlType -eq [Windows.Automation.ControlType]::Window -and $c.NativeWindowHandle -gt 0){
+        $node.window=[string]$c.NativeWindowHandle;$node.processId=$c.ProcessId
+    }
+    return $node
+}
+function Get-AIInputWindow($element,[long]$observedWindow) {
+    $parent=$element
+    for($depth=0;$parent -and $depth -lt 16;$depth++){
+        $current=$parent.Current
+        if($current.ControlType -eq [Windows.Automation.ControlType]::Window -and $current.NativeWindowHandle -gt 0){
+            return [long]$current.NativeWindowHandle
+        }
+        # The taskbar and some UIA providers expose their native root as Pane.
+        if($current.NativeWindowHandle -eq $observedWindow){return $observedWindow}
+        $parent=[Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($parent)
+    }
+    throw 'FOCUS_DENIED'
 }
 function Get-AIObservation($request,[string]$owner) {
     $now=[DateTime]::UtcNow
@@ -117,14 +208,21 @@ function Get-AIObservation($request,[string]$owner) {
             }
         }catch{}
     }
-    $script:observations[$snapshot]=@{owner=$owner;window=$request.window;expires=$now.AddSeconds(30);targets=$targets}
+    $script:observations[$snapshot]=@{owner=$owner;window=$request.window;expires=$now.AddSeconds(30);targets=$targets;epoch=[GMSSHAIDesktop]::SessionEpoch}
     return @{snapshot=$snapshot;window=$request.window;expiresInSeconds=30;nodes=@($rows.ToArray());truncated=$queue.Count -gt 0;sampledAt=$now.ToString('o')}
 }
 function Invoke-AIDesktop($request,[string]$owner) {
-    if(-not [GMSSHAIDesktop]::Unlocked()){throw 'DESKTOP_LOCKED'}
+    $epoch=[GMSSHAIDesktop]::SessionEpoch
+    if($script:desktopEpoch -ne $epoch){
+        $script:observations.Clear();$script:inputOwner='';$script:inputUntil=[DateTime]::MinValue;$script:desktopEpoch=$epoch
+    }
+    if(-not [GMSSHAIDesktop]::Unlocked()){
+        $script:observations.Clear();$script:inputOwner='';$script:inputUntil=[DateTime]::MinValue
+        throw 'DESKTOP_LOCKED'
+    }
     if($request.operation -eq 'context'){
         return @{schema=1;user=[Security.Principal.WindowsIdentity]::GetCurrent().Name;sessionId=[Diagnostics.Process]::GetCurrentProcess().SessionId;
-            unlocked=$true;paused=(Test-Path -LiteralPath $pauseFile);foregroundWindow=[GMSSHAIDesktop]::GetForegroundWindow().ToInt64().ToString();
+            unlocked=$true;paused=(Test-Path -LiteralPath $pauseFile);foregroundWindow=[GMSSHAIDesktop]::GetForegroundWindow().ToInt64().ToString();sessionEpoch=$epoch;
             capabilities=@('observe','find','screenshot','invoke','set-value','click','type-text','key')}
     }
     if($request.operation -in @('observe','find')){return Get-AIObservation $request $owner}
@@ -135,7 +233,7 @@ function Invoke-AIDesktop($request,[string]$owner) {
         try{
             $graphics=[Drawing.Graphics]::FromImage($capture)
             try{$graphics.CopyFromScreen($screen.Location,[Drawing.Point]::Empty,$screen.Size)}finally{$graphics.Dispose()}
-            $ratio=[Math]::Min(1,[Math]::Min(1600/$screen.Width,1000/$screen.Height))
+            $ratio=[Math]::Min(1.0,[Math]::Min(1600/$screen.Width,1000/$screen.Height))
             $small=New-Object Drawing.Bitmap($capture,[Drawing.Size]::new([Math]::Max(1,[int]($screen.Width*$ratio)),[Math]::Max(1,[int]($screen.Height*$ratio))))
             $stream=New-Object IO.MemoryStream
             try{
@@ -150,7 +248,7 @@ function Invoke-AIDesktop($request,[string]$owner) {
     $now=[DateTime]::UtcNow
     if($script:inputOwner -and $script:inputOwner -ne $owner -and $script:inputUntil -gt $now){throw 'DESKTOP_BUSY'}
     $observation=$script:observations[[string]$request.snapshot]
-    if(-not $observation -or $observation.owner -ne $owner -or $observation.expires -lt $now){throw 'STALE_TARGET'}
+    if(-not $observation -or $observation.owner -ne $owner -or $observation.expires -lt $now -or $observation.epoch -ne [GMSSHAIDesktop]::SessionEpoch){throw 'STALE_TARGET'}
     $saved=$observation.targets[[string]$request.target]
     if(-not $saved -or $null -eq $saved.processStart){throw 'STALE_TARGET'}
     try{
@@ -165,6 +263,8 @@ function Invoke-AIDesktop($request,[string]$owner) {
     if(Test-Path -LiteralPath $pauseFile){throw 'AI_PAUSED'}
     # Consume before dispatch: provider errors may occur after accepting input.
     $script:observations.Remove([string]$request.snapshot)
+    if(-not [GMSSHAIDesktop]::Unlocked()){$script:observations.Clear();throw 'DESKTOP_LOCKED'}
+    if($observation.epoch -ne [GMSSHAIDesktop]::SessionEpoch){throw 'STALE_TARGET'}
     $pattern=$null
     switch($request.operation){
         invoke {
@@ -178,18 +278,21 @@ function Invoke-AIDesktop($request,[string]$owner) {
         default {
             if($node.offscreen -or $node.bounds.width -le 0 -or $node.bounds.height -le 0){throw 'STALE_TARGET'}
             foreach($property in @('x','y','width','height')){if([Math]::Abs($node.bounds[$property]-$saved.node.bounds[$property]) -gt 2){throw 'STALE_TARGET'}}
-            if(-not [GMSSHAIDesktop]::Focus([long]$observation.window)){throw 'FOCUS_DENIED'}
+            $inputWindow=Get-AIInputWindow $element ([long]$observation.window)
+            if(-not [GMSSHAIDesktop]::Focus($inputWindow)){throw 'FOCUS_DENIED'}
             if($request.operation -eq 'click'){
-                [GMSSHAIDesktop]::Click([int]($node.bounds.x+$node.bounds.width/2),[int]($node.bounds.y+$node.bounds.height/2))
+                [GMSSHAIDesktop]::Click([int]($node.bounds.x+$node.bounds.width/2),[int]($node.bounds.y+$node.bounds.height/2),$inputWindow)
             }else{
                 $element.SetFocus()
+                $focusDeadline=[DateTime]::UtcNow.AddMilliseconds(250)
+                while(-not $element.Current.HasKeyboardFocus -and [DateTime]::UtcNow -lt $focusDeadline){Start-Sleep -Milliseconds 10}
                 if(-not $element.Current.HasKeyboardFocus){throw 'FOCUS_DENIED'}
-                if($request.operation -eq 'type-text'){[GMSSHAIDesktop]::Text([string]$request.text)}else{
+                if($request.operation -eq 'type-text'){[GMSSHAIDesktop]::Text([string]$request.text,$inputWindow)}else{
                     $keys=@{ENTER=13;TAB=9;ESC=27;BACKSPACE=8;DELETE=46;LEFT=37;UP=38;RIGHT=39;DOWN=40;HOME=36;END=35;PAGEUP=33;PAGEDOWN=34;F5=116}
                     $key=[string]$request.key;$modifier=0
                     if($key -match '^(CTRL|ALT)\+([A-Z0-9]|F4)$'){$modifier=if($Matches[1] -eq 'CTRL'){17}else{18};$code=if($Matches[2] -eq 'F4'){115}else{[int][char]$Matches[2]}}
                     elseif($keys.ContainsKey($key)){$code=$keys[$key]}else{throw 'INVALID_QUERY'}
-                    [GMSSHAIDesktop]::Key([ushort]$code,[ushort]$modifier)
+                    [GMSSHAIDesktop]::Key([uint16]$code,[uint16]$modifier,$inputWindow)
                 }
             }
         }
@@ -201,6 +304,7 @@ if(-not $Worker){return}
 $session=[Diagnostics.Process]::GetCurrentProcess().SessionId
 if($session -eq 0){throw 'NO_INTERACTIVE_SESSION'}
 if($ParentProcessId -le 0 -or $ParentStartTicks -le 0){throw 'NO_TRAY_PARENT'}
+[GMSSHAIDesktop]::StartSessionWatch()
 [GMSSHAIDesktop]::GuardParent($ParentProcessId,$ParentStartTicks,$session)
 $security=New-Object IO.Pipes.PipeSecurity
 $security.SetAccessRuleProtection($true,$false)
@@ -218,8 +322,8 @@ try { while($true){
             if(([string]$envelope.request.text).Length -gt 4096){throw 'INVALID_QUERY'}
             $reply=@{ok=$true;result=(Invoke-AIDesktop $envelope.request ([string]$envelope.owner))}
         }catch{
-            $code=[string]$_.Exception.Message
-            if($code -notin @('DESKTOP_LOCKED','AI_PAUSED','STALE_TARGET','TARGET_NOT_FOUND','AMBIGUOUS_TARGET','UNSUPPORTED_PATTERN','FOCUS_DENIED','DESKTOP_BUSY','INVALID_QUERY','PASSWORD_FIELD')){$code='QUERY_FAILED'}
+            $code=[string]$_.Exception.GetBaseException().Message
+            if($code -notin @('DESKTOP_LOCKED','AI_PAUSED','STALE_TARGET','TARGET_NOT_FOUND','AMBIGUOUS_TARGET','UNSUPPORTED_PATTERN','FOCUS_DENIED','DESKTOP_OUTCOME_UNKNOWN','DESKTOP_BUSY','INVALID_QUERY','PASSWORD_FIELD')){$code='QUERY_FAILED'}
             $reply=@{ok=$false;code=$code}
         }
         $raw=[Text.UTF8Encoding]::new($false).GetBytes(($reply | ConvertTo-Json -Depth 10 -Compress)+"`n")

@@ -78,7 +78,7 @@ window.installGMSSHWorkspace=function({viewerUrl}){
     clearInterval(historyTimer);paint++;paneMode=mode||prefs(id).layout;selected=saved.selected=id;if(!saved.tabs.includes(id)){if(saved.tabs.length>=50){note.textContent='最多打开 50 台设备工作区，请先关闭不使用的工作区。';return;}saved.tabs.push(id);}
     saved.devices[id]={...prefs(id),...(mode?{layout:mode}:{})};visible=true;root.hidden=false;tab.setAttribute('aria-pressed','true');body.replaceChildren();note.textContent='';
     selector.replaceChildren(...saved.tabs.map(value=>{const option=make('option','',device(value)?.name||'已移除的设备');option.value=value;return option;}));selector.value=id;
-    selector.title=current.name;deviceIcon.src=new URL('ui-icons/'+(current.windows?'windows':'monitor')+'.svg',base).href;deviceIcon.style.filter=current.windows?'none':'';filesButton.disabled=!!permissions&&!permissions.files;
+    selector.title=current.name;deviceIcon.src=new URL('ui-icons/'+(current.windows?'windows':'monitor')+'.svg',base).href;deviceIcon.style.filter=current.windows?'none':'';filesButton.disabled=!!permissions&&!permissions.files&&!permissions.files_read;
     for(const [key,b] of modes){b.setAttribute('aria-pressed',String(key===prefs(id).layout));b.disabled=!!permissions&&(key==='desktop'&&!permissions.view||key==='terminal'&&!permissions.terminal||key==='split'&&(!permissions.view||!permissions.terminal));}
     if(prefs(id).layout==='overview'){const pane=window.gmsshHomeController?.workspaceOverview?.(id);if(pane)body.append(pane);}
     if(['desktop','split'].includes(prefs(id).layout)){if(current.windows)window.gmsshWindowsControllers?.get(id)?.show?.();else window.gmsshHomeController?.openNative?.(id,'desktop');}
@@ -102,7 +102,7 @@ window.installGMSSHWorkspace=function({viewerUrl}){
     if(event.data?.type!=='gmssh-workspace-desktop')return;
     for(const [id,c] of window.gmsshWindowsControllers||[]){const frame=c.frame();if(!frame||event.source!==frame.contentWindow||event.origin!==new URL(frame.src).origin)continue;
       const d=event.data,current=device(id);if(!current)return;
-      if(d.permissions){const p=d.permissions;if(Object.keys(p).sort().join()==='clipboard,files,input,power,terminal,view'&&Object.values(p).every(value=>typeof value==='boolean'))window.gmsshHomeController?.permissions?.(id,p);return;}
+      if(d.permissions){const p=d.permissions;if(['clipboard,files,input,power,terminal,view','clipboard,files,files_read,input,power,terminal,view'].includes(Object.keys(p).sort().join())&&Object.values(p).every(value=>typeof value==='boolean'))window.gmsshHomeController?.permissions?.(id,p);return;}
       if(d.preferences){const p=d.preferences;if(['fit','100'].includes(p.zoom)&&['low','balanced','best'].includes(p.quality)&&Number.isInteger(p.display)&&p.display>=0&&p.display<=31){saved.devices[id]={...prefs(id),zoom:p.zoom,quality:p.quality,display:p.display};void persist();}return;}
       if(typeof d.instance!=='string'||!/^[\w-]{1,100}$/.test(d.instance)||!['connecting','connected','disconnected','failed'].includes(d.state))return;
       desktopInstances.set(id,d.instance);void call('session',{machineId:id,name:current.name,channel:'desktop',instance:d.instance,state:d.state,...(typeof d.reason==='string'&&/^[A-Z_]{1,48}$/.test(d.reason)?{reason:d.reason}:{})}).catch(()=>{note.textContent='连接历史未能保存。';});sendPreferences(id);return;

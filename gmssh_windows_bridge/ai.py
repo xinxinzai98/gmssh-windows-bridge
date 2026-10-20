@@ -23,7 +23,8 @@ from .controller_access import ControllerClient, configuration, inspect_authoriz
 from .file_stream import StreamError
 from .pairing import _object, choose_target, inspect_connection
 
-PERMISSIONS = {'inspect', 'terminal', 'files', 'view', 'input'}
+PERMISSIONS = {'inspect', 'terminal', 'files_read', 'files', 'view', 'input'}
+WAIT_PERMISSIONS = {'ui_exists': 'view', 'ui_absent': 'view', 'service_state': 'inspect', 'file_sha256': 'files_read'}
 TASK_STATES = {'unconfirmed', 'unknown', 'running', 'cancelling', 'completed', 'failed', 'cancelled', 'interrupted', 'forgotten'}
 TASK_HISTORY_LIMIT = 200
 SCHEMA = {'type': 'object', 'required': ['schema', 'ok', 'tool', 'sampledAt'],
@@ -52,6 +53,14 @@ def identifier(value):
     if not isinstance(value, str) or re.fullmatch('[0-9a-f]{32}', value) is None:
         raise StreamError('INVALID_ARGUMENT')
     return value
+
+
+def permission_allowed(allow, permission):
+    if permission == 'access':
+        return bool(allow)
+    if permission == 'files_read':
+        return 'files_read' in allow or 'files' in allow
+    return permission in allow
 
 
 def private_json(file, maximum=1024*1024):
@@ -208,9 +217,11 @@ class Registry:
             if set(result)-{'state','code','checkedAt','effective','features','transport'} or not isinstance(result.get('effective'),dict) or set(result['effective'])-PERMISSIONS or any(type(v) is not bool for v in result['effective'].values()):
                 raise StreamError('CONFIG_UNSAFE')
             features = result.get('features')
-            if not isinstance(features,dict) or set(features)-{'durableTasks','desktopProtocol','desktopState'}:
+            if not isinstance(features,dict) or set(features)-{'durableTasks','desktopProtocol','desktopState','serverFileAccess'}:
                 raise StreamError('CONFIG_UNSAFE')
-            if any(type(v) is not bool for k,v in features.items() if k!='desktopState') or features.get('desktopState','unchecked') not in {'unchecked','ready','paused','locked','unavailable'}:
+            if (any(type(v) is not bool for k,v in features.items() if k not in {'desktopState','serverFileAccess'})
+                    or features.get('desktopState','unchecked') not in {'unchecked','ready','paused','locked','unavailable'}
+                    or features.get('serverFileAccess','unchecked') not in {'unchecked','read-only','read-write','denied','ssh-account'}):
                 raise StreamError('CONFIG_UNSAFE')
         return value['devices']
 
@@ -447,6 +458,7 @@ SELECTOR = {'window': {'type': 'string', 'pattern': '^[1-9][0-9]{0,18}$'},
             'controlType': {'type': 'string', 'maxLength': 64}}
 TOOLS = [
     specification('devices_list', 'List only explicitly enrolled AI devices. Never connects or retrieves credentials.'),
+    specification('device_tools', 'List this device\'s locally permitted tools and wait conditions without connecting or retrieving credentials. Local policy only: remote authorization, protocol and readiness remain unchecked; use device_access_check for a current check.', permission='access'),
     specification('device_context', 'Read OS, user session, shell/tool availability, disks and effective AI capabilities.', permission='inspect'),
     specification('device_access_check', 'Verify current authentication, effective permissions, protocol and desktop readiness without running a command or taking a screenshot. This is a dated check, not a persistent connection.', permission='access'),
     specification('system_query', 'Bounded read-only process, service or Windows event query.',
@@ -473,20 +485,20 @@ TOOLS = [
                   {'condition': {'enum': ['ui_exists', 'ui_absent', 'service_state', 'file_sha256']}, 'timeout': {'type': 'integer', 'minimum': 1, 'maximum': 60},
                    **SELECTOR, 'service': {'type': 'string', 'maxLength': 64}, 'state': {'enum': ['Running', 'Stopped', 'Paused']}, 'path': PATH, 'sha256': HASH}, ('condition',), 'dynamic'),
     specification('files_search', 'List/search file names under an explicit Windows directory. <=200 rows, 2000 entries, depth 4; no symlink traversal.',
-                  {'path': PATH, 'query': {'type': 'string', 'maxLength': 128}, 'recursive': {'type': 'boolean'}}, ('path',), 'files'),
+                  {'path': PATH, 'query': {'type': 'string', 'maxLength': 128}, 'recursive': {'type': 'boolean'}}, ('path',), 'files_read'),
     specification('files_read', 'Read a UTF-8 text file <=1 MiB, <=200 lines/32 KiB per page. Continue long lines using nextByte as startByte and the returned sha256 as expectedSha256; do not mix byte and line modes.',
                   {'path': PATH, 'startLine': {'type': 'integer', 'minimum': 1}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 200},
-                   'startByte': {'type': 'integer', 'minimum': 0, 'maximum': ai_files.MAX_TEXT}, 'expectedSha256': HASH}, ('path',), 'files'),
+                   'startByte': {'type': 'integer', 'minimum': 0, 'maximum': ai_files.MAX_TEXT}, 'expectedSha256': HASH}, ('path',), 'files_read'),
     specification('files_find_text', 'Find literal, case-sensitive text within ONE UTF-8 file <=1 MiB. Returns matching line numbers and bounded context, not a directory scan. Continue with nextLine and expectedSha256.',
                   {'path': PATH, 'query': {'type': 'string', 'minLength': 1, 'maxLength': 256},
-                   'startLine': {'type': 'integer', 'minimum': 1}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 100}, 'expectedSha256': HASH}, ('path', 'query'), 'files'),
+                   'startLine': {'type': 'integer', 'minimum': 1}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 100}, 'expectedSha256': HASH}, ('path', 'query'), 'files_read'),
     *[specification(name, description, {'path': PATH, 'oldText': {'type': 'string', 'minLength': 1, 'maxLength': 32768}, 'newText': TEXT, 'expectedSha256': HASH},
-                    ('path', 'oldText', 'newText', 'expectedSha256'), 'files', name == 'files_replace')
+                    ('path', 'oldText', 'newText', 'expectedSha256'), 'files' if name == 'files_replace' else 'files_read', name == 'files_replace')
       for name, description in [('files_replace_preview', 'Preview replacing exactly one literal occurrence; hash required, ambiguity stops. Preserves UTF-8 BOM and surrounding line endings. Each fragment <=32 KiB.'),
                                 ('files_replace', 'Replace exactly one literal occurrence against the expected hash, retaining a backup. Missing, duplicate or changed text stops. Preview first. Each fragment <=32 KiB.')]],
     specification('files_create', 'Create a new UTF-8 file <=1 MiB in an existing directory. Verify a temporary file then commit without overwriting any existing target. An unknown commit outcome must be checked, not retried blindly.',
                   {'path': PATH, 'content': {'type': 'string', 'maxLength': 1048576}}, ('path', 'content'), 'files', True),
-    *[specification(name, description, {'path': PATH, 'content': {'type': 'string', 'maxLength': 1048576}, 'expectedSha256': HASH}, ('path', 'content', 'expectedSha256'), 'files', name == 'files_apply')
+    *[specification(name, description, {'path': PATH, 'content': {'type': 'string', 'maxLength': 1048576}, 'expectedSha256': HASH}, ('path', 'content', 'expectedSha256'), 'files' if name == 'files_apply' else 'files_read', name == 'files_apply')
       for name, description in [('files_preview', 'Preview an exact-content text edit against the expected file hash.'),
                                 ('files_apply', 'Apply a verified text edit; retain original in a unique sibling backup; never overwrite a competing destination.')]],
     specification('files_restore', 'Restore a retained sibling AI backup against the current file hash. Creates a new backup before restoring.',
@@ -524,7 +536,7 @@ class Operations:
         device = next((v for v in self.registry.devices() if v['id'] == device_id), None)
         if device is None:
             raise StreamError('DEVICE_NOT_ENABLED')
-        if permission and permission not in device['allow']:
+        if permission and not permission_allowed(device['allow'], permission):
             raise StreamError('ACCESS_DENIED')
         return device
 
@@ -555,15 +567,13 @@ class Operations:
             else:
                 permission = tool['permission']
                 if name == 'wait_for':
-                    permission = {'ui_exists': 'view', 'ui_absent': 'view', 'service_state': 'inspect', 'file_sha256': 'files'}[arguments['condition']]
-                if name == 'device_access_check':
-                    permission = None
+                    permission = WAIT_PERMISSIONS[arguments['condition']]
                 device = self.device(arguments['device'], permission)
-                if name == 'device_access_check' and not device['allow']:
-                    raise StreamError('ACCESS_DENIED')
                 if name == 'desktop_act' and 'view' not in device['allow']:
                     raise StreamError('ACCESS_DENIED')
-                if name == 'tasks_list':
+                if name == 'device_tools':
+                    result = self.local_tools(device)
+                elif name == 'tasks_list':
                     result = self.registry.task_history(device['id'], arguments.get('limit', 100))
                 else:
                     with self.connector(self.registry, device) as client:
@@ -572,7 +582,7 @@ class Operations:
                     self.registry.record_check(device, result)
             reply.update(ok=True, result=result)
         except Exception as error:
-            code = error.code if isinstance(error, StreamError) else 'AUTH_FAILED' if isinstance(error, paramiko.AuthenticationException) else 'PEER_CHANGED' if isinstance(error, paramiko.BadHostKeyException) else 'NOT_FOUND' if isinstance(error, FileNotFoundError) else 'ALREADY_EXISTS' if isinstance(error, FileExistsError) else 'ACCESS_DENIED' if isinstance(error, PermissionError) else 'INVALID_ARGUMENT' if isinstance(error, (ValueError, TypeError, KeyError, UnicodeError)) else 'CONNECTION_FAILED'
+            code = error.code if isinstance(error, StreamError) else 'AUTH_FAILED' if isinstance(error, paramiko.AuthenticationException) else 'PEER_CHANGED' if isinstance(error, paramiko.BadHostKeyException) else 'OPERATION_TIMEOUT' if isinstance(error, TimeoutError) else 'OPERATION_INTERRUPTED' if isinstance(error, EOFError) else 'NOT_FOUND' if isinstance(error, FileNotFoundError) else 'ALREADY_EXISTS' if isinstance(error, FileExistsError) else 'ACCESS_DENIED' if isinstance(error, PermissionError) else 'INVALID_ARGUMENT' if isinstance(error, (ValueError, TypeError, KeyError, UnicodeError)) else 'CONNECTION_FAILED'
             reply['error'] = {'code': code, 'message': error_message(code)}
             if isinstance(error, StreamError) and hasattr(error, 'recovery'):
                 reply['error']['recovery'] = error.recovery
@@ -583,13 +593,28 @@ class Operations:
                     pass
         return reply
 
+    @staticmethod
+    def local_tools(device):
+        rows = []
+        conditions = [key for key, permission in WAIT_PERMISSIONS.items() if permission_allowed(device['allow'], permission)]
+        for tool in TOOLS:
+            permission = tool['permission']
+            if permission == 'dynamic':
+                if conditions:
+                    rows.append({'name': tool['name'], 'mutates': tool['mutates'], 'conditions': conditions})
+            elif permission and permission_allowed(device['allow'], permission):
+                rows.append({'name': tool['name'], 'mutates': tool['mutates']})
+        return {'scope': 'local-policy', 'remoteStateChecked': False, 'readOnly': not any(row['mutates'] for row in rows),
+                'tools': rows, 'nextCheck': 'device_access_check'}
+
     def execute(self, client, device, name, args):
         controller = getattr(client, 'controller_protocol', None) == 2
         if name == 'device_access_check':
             policy = client.policy if controller else {'view': False, 'input': False, 'files': True, 'terminal': True}
             protocol = client.ai_capabilities.get('aiProtocol') if controller else None
-            effective = {key: key in device['allow'] and (key == 'inspect' or policy.get(key) is True) for key in sorted(PERMISSIONS)}
-            features = {'durableTasks': controller and protocol == 1, 'desktopProtocol': controller and protocol == 1, 'desktopState': 'unchecked'}
+            effective = {key: permission_allowed(device['allow'], key) and (key == 'inspect' or policy.get(key) is True or key == 'files_read' and policy.get('files') is True) for key in sorted(PERMISSIONS)}
+            features = {'durableTasks': controller and protocol == 1, 'desktopProtocol': controller and protocol == 1, 'desktopState': 'unchecked',
+                        'serverFileAccess': ('read-write' if policy.get('files') else 'read-only' if policy.get('files_read') else 'denied') if controller else 'ssh-account'}
             code = 'PERMISSIONS_REDUCED' if any(not effective[key] for key in device['allow']) else 'OK'
             if controller and protocol != 1 and set(device['allow']) & {'terminal', 'view', 'input'}:
                 code = 'SERVER_UPGRADE_REQUIRED'
@@ -600,9 +625,12 @@ class Operations:
                     context = client.call('ai-desktop', args={'operation': 'context'})
                     if type(context.get('paused')) is not bool or type(context.get('unlocked')) is not bool:
                         raise StreamError('INVALID_RESPONSE')
-                    features['desktopState'] = 'paused' if context['paused'] else 'ready' if context['unlocked'] else 'locked'
-                    if features['desktopState'] != 'ready' and 'input' in device['allow'] and code == 'OK':
-                        code = 'AI_PAUSED' if context['paused'] else 'DESKTOP_LOCKED'
+                    features['desktopState'] = 'locked' if not context['unlocked'] else 'paused' if context['paused'] else 'ready'
+                    if code == 'OK':
+                        if features['desktopState'] == 'locked':
+                            code = 'DESKTOP_LOCKED'
+                        elif features['desktopState'] == 'paused' and 'input' in device['allow']:
+                            code = 'AI_PAUSED'
                 except StreamError as error:
                     if error.code not in {'DESKTOP_LOCKED', 'DESKTOP_WORKER_UNAVAILABLE', 'NO_INTERACTIVE_SESSION', 'DESKTOP_BUSY'}:
                         raise
@@ -689,7 +717,7 @@ class Operations:
             return client.call('ai-desktop', args=request)
         if name == 'wait_for':
             return self.wait_for(client, device, args)
-        with client.open_sftp() as sftp:
+        with self.file_session(client) as sftp:
             if name == 'files_search':
                 return ai_files.search(sftp, args['path'], args.get('query', ''), args.get('recursive', False))
             if name == 'files_read':
@@ -711,6 +739,14 @@ class Operations:
                     raise StreamError('SOURCE_CHANGED')
                 return ai_files.apply(sftp, path, raw.decode('utf-8'), args['expectedSha256'])
         raise StreamError('UNKNOWN_TOOL')
+
+    @staticmethod
+    @contextmanager
+    def file_session(client):
+        with client.open_sftp() as sftp:
+            if hasattr(sftp, 'get_channel'):
+                sftp.get_channel().settimeout(8)
+            yield sftp
 
     def task_receipt(self, device, result, request_key=None):
         if not isinstance(result, dict) or not isinstance(result.get('taskId'), str) or re.fullmatch('[0-9a-f]{32}', result['taskId']) is None or not isinstance(result.get('state'), str) or result['state'] not in TASK_STATES-{'unknown', 'unconfirmed'} or not isinstance(result.get('code'), str) or re.fullmatch('[A-Z_]{1,48}', result['code']) is None:
@@ -751,7 +787,7 @@ class Operations:
                 passed = any(v['name'].casefold() == args['service'].casefold() and v['state'] == args['state'] for v in last['items'])
             else:
                 try:
-                    with client.open_sftp() as sftp:
+                    with self.file_session(client) as sftp:
                         actual = ai_files.digest(ai_files.read_bytes(sftp, args['path']))
                     last = {'path': args['path'], 'sha256': actual}
                     passed = actual == args['sha256']
@@ -778,6 +814,7 @@ def error_message(code):
             'DESKTOP_WORKER_UNAVAILABLE': '桌面组件未运行，请在 Windows 登录后打开 GMSSH 托盘。',
             'NO_INTERACTIVE_SESSION': 'Windows 当前没有可用的交互桌面会话。',
             'DESKTOP_BUSY': '桌面正被另一个操作使用，请稍后重试。',
+            'FOCUS_DENIED': 'Windows 尚未确认目标窗口或控件的焦点，未发送点击或按键；请重新观察目标后再操作。',
             'MCP_VERSION_MISMATCH': '本机 Python 与应用组件版本不一致，请更新运行环境。',
             'MCP_CHECK_FAILED': 'MCP 启动检查未通过，请先准备 AI 组件再重试。',
             'CREDENTIAL_REQUIRED': '请由用户在 CLI 接入流程设置凭据；无需向 AI 提供密码。',
@@ -798,7 +835,10 @@ def error_message(code):
             'TEXT_NOT_FOUND': '原文片段没有找到，请重新读取文件后再生成修改。',
             'TEXT_NOT_UNIQUE': '原文片段出现多次，请增加上下文以唯一定位，不会批量替换。',
             'ALREADY_EXISTS': '同名文件已存在，未覆盖原文件。',
-            'CREATE_OUTCOME_UNKNOWN': '新文件提交结果未确认，请先按返回的路径和哈希核对，不要直接重试或覆盖。'}.get(code, code)
+            'CREATE_OUTCOME_UNKNOWN': '新文件提交结果未确认，请先按返回的路径和哈希核对，不要直接重试或覆盖。',
+            'SESSION_CLOSED': '原会话已结束或权限已变更，请检查授权后重新连接。',
+            'OPERATION_TIMEOUT': '等待远端响应超时，请先核对原任务或文件状态，不要重复提交修改。',
+            'OPERATION_INTERRUPTED': '操作已中断，已产生的影响不会自动撤销，请先核对原任务或文件。'}.get(code, code)
 
 
 def main(argv=None):
@@ -829,7 +869,8 @@ def main(argv=None):
             sub.add_argument('--wait', type=int, help='Wait 1–60 seconds; timeout does not cancel the task')
     tasks = commands.add_parser('tasks', help='List recent local task receipts without connecting')
     tasks.add_argument('device'); tasks.add_argument('--limit', type=int, default=100)
-    commands.add_parser('tools', help='Print shared tool schemas')
+    tools = commands.add_parser('tools', help='Print schemas, or a device\'s locally permitted tools without connecting')
+    tools.add_argument('device', nargs='?')
     commands.add_parser('mcp', help='Run official MCP SDK over stdio; no TCP listener')
     config = commands.add_parser('mcp-config', help='Print MCP configuration; never edits client settings')
     config.add_argument('--format', choices=['json', 'codex', 'codex-cli'], default='json')
@@ -858,7 +899,7 @@ def main(argv=None):
         elif args.command == 'credential':
             result = registry.update_credential(args.device, getpass.getpass('当前 SSH 连接密码（仅更新本机钥匙串）：'))
         elif args.command == 'tools':
-            result = {'tools': [{k: v for k, v in tool.items() if k not in {'permission', 'mutates'}} for tool in TOOLS]}
+            result = Operations(registry).call('device_tools', {'device': args.device}) if args.device else {'tools': [{k: v for k, v in tool.items() if k not in {'permission', 'mutates'}} for tool in TOOLS]}
         elif args.command == 'enroll':
             if args.authorization_stdin:
                 raw = sys.stdin.buffer.read(65537)

@@ -294,7 +294,7 @@ class PairingManager {
     const resolvePassword=async()=>{
       if(!code)return;
       const result=await this.request({operation:'redeem-code',connection:code,target});
-      if(connection.authorization&&result.permissions&&Object.keys(result.permissions).sort().join()==='clipboard,files,input,power,terminal,view'&&Object.values(result.permissions).every(value=>typeof value==='boolean')){Object.assign(connection.authorization.controller.permissions,result.permissions);text=connectionText(connection);const record=this.records.find(value=>value.id===connection.id);if(record){record.public=connection;record.connection=text;this.options(record);this.save();const running=this.running.get(record.id);if(running?.authorization)running.authorization.permissions=connection.authorization.controller.permissions;}}
+      if(connection.authorization&&result.permissions&&['clipboard,files,input,power,terminal,view','clipboard,files,files_read,input,power,terminal,view'].includes(Object.keys(result.permissions).sort().join())&&Object.values(result.permissions).every(value=>typeof value==='boolean')){connection.authorization.controller.permissions={...result.permissions};text=connectionText(connection);const record=this.records.find(value=>value.id===connection.id);if(record){record.public=connection;record.connection=text;this.options(record);this.save();const running=this.running.get(record.id);if(running?.authorization)running.authorization.permissions=connection.authorization.controller.permissions;}}
       if(typeof result.password!=='string'||!result.password||Buffer.byteLength(result.password)>1024)throw Error('Windows 接入响应无效。');
       password=result.password;result.password='';
     };

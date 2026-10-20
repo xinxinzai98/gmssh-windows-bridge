@@ -8,6 +8,8 @@ $agentScript = $PSCommandPath
 $statePath = Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'GMSSHWindowsBridge\agent.json'
 if (-not (Test-Path $statePath)) { throw 'GMSSH Windows has not been configured.' }
 $state = Get-Content $statePath -Raw | ConvertFrom-Json
+$preserved = $state.installationMode -ceq 'preserve-existing'
+$withConnectionCode = [bool]($state.unifiedPassword -or $preserved)
 $dataRoot = Split-Path $statePath
 . (Join-Path $root 'setup-checks.ps1')
 if (Test-Path (Join-Path $root 'setup-network.ps1')) { . (Join-Path $root 'setup-network.ps1') }
@@ -21,17 +23,23 @@ if ($Action -ne 'Tray') {
             IPv6Access { . (Join-Path $root 'credential-dialog.ps1'); Show-GMSSHIPv6Access $root $dataRoot }
             EnablePing { Set-GMSSHPingAccess $true }
             DisablePing { Set-GMSSHPingAccess $false }
-            Start { Start-Service RustDesk; Start-Service sshd; if ($state.unifiedPassword -and (Test-Path (Join-Path $root 'gmssh-connect.exe'))) { Register-GMSSHConnectTask -ProgramRoot $root -DataRoot $dataRoot } }
-            Stop { if (Test-Path (Join-Path $root 'gmssh-connect.exe')) { Stop-GMSSHConnectTask $root $dataRoot }; Stop-Service sshd; Stop-Service RustDesk }
+            Start {
+                if(-not $preserved){Start-Service RustDesk;Start-Service sshd}
+                if($preserved -and -not (Test-Path (Join-Path $dataRoot 'private\connect-meta.dat'))){Enable-GMSSHExistingCredentials $root $dataRoot}
+                elseif($withConnectionCode -and (Test-Path (Join-Path $root 'gmssh-connect.exe'))){Register-GMSSHConnectTask -ProgramRoot $root -DataRoot $dataRoot}
+            }
+            Stop { if (Test-Path (Join-Path $root 'gmssh-connect.exe')) { Stop-GMSSHConnectTask $root $dataRoot }; if(-not $preserved){Stop-Service sshd; Stop-Service RustDesk} }
             EnableCode {
                 [void](Get-GMSSHConnectState $dataRoot)
+                if($preserved){Enable-GMSSHExistingCredentials $root $dataRoot;break}
                 . (Join-Path $root 'credential-dialog.ps1')
                 $secret = Read-GMSSHPassword 'GMSSH Windows · 启用连接码' '请输入当前 GMSSH 连接密码。验证后将加密保存在本机，用于一键接入；不会修改密码。' $false
                 try { Set-GMSSHConnectPassword $root $dataRoot $secret } finally { $secret.Dispose() }
             }
             ResetCode {
                 Add-Type -AssemblyName System.Windows.Forms
-                if ([Windows.Forms.MessageBox]::Show('重置后旧连接码将无法再用于添加设备。已保存的共享密码连接保留；如需使其失效，请修改连接密码。独立授权请在「会话与授权」中撤销。','GMSSH Windows · 重置连接码','OKCancel') -ne 'OK') { return }
+                $resetDescription=if($preserved){'重置后旧 SSH 接入码不能再添加设备。已保存的原 SSH 密码和连接不会因此失效，请由原服务管理员管理；独立授权在「会话与授权」中撤销。'}else{'重置后旧连接码将无法再用于添加设备。已保存的共享密码连接保留；如需使其失效，请修改连接密码。独立授权请在「会话与授权」中撤销。'}
+                if ([Windows.Forms.MessageBox]::Show($resetDescription,'GMSSH Windows · 重置连接码','OKCancel') -ne 'OK') { return }
                 Reset-GMSSHConnectCode $root $dataRoot
                 [Windows.Forms.Clipboard]::SetText((Get-GMSSHConnectCode $root $dataRoot))
                 [void][Windows.Forms.MessageBox]::Show('新连接码已复制，旧码已失效。','GMSSH Windows')
@@ -41,11 +49,13 @@ if ($Action -ne 'Tray') {
                 [void][Windows.Forms.MessageBox]::Show((Format-GMSSHReadiness (Get-GMSSHReadiness)), 'GMSSH Windows · 接入自检')
             }
             Password {
+                if($preserved){throw '保留模式不修改原账号和桌面密码；请使用「更新接入凭据」。'}
                 $options = @{ RustDesk=$state.engine; ChangePasswordOnly=$true }
                 if ($state.unifiedPassword) { $options.ManagedAccount = $state.username }
                 & (Join-Path $root 'setup-desktop.ps1') @options
             }
             SSHPassword {
+                if($preserved){throw '保留模式不修改既有账号密码。'}
                 if ($state.unifiedPassword) { throw '此设备使用统一密码，请选择「修改连接密码」。' }
                 $account = Get-LocalUser -Name gmssh
                 if ($state.username -cne 'gmssh' -or $state.managedAccountSid -cne $account.SID.Value) { throw 'Account is not managed by this program.' }
@@ -56,8 +66,12 @@ if ($Action -ne 'Tray') {
             }
         }
     } catch {
-        Add-Type -AssemblyName System.Windows.Forms
-        [void][Windows.Forms.MessageBox]::Show(('操作未完成：' + $_.Exception.Message), 'GMSSH Windows')
+        . (Join-Path $root 'credential-dialog.ps1')
+        if($_.Exception -is [OperationCanceledException]){
+            Show-GMSSHNotice 'GMSSH Windows · 已取消' '已取消密码输入，未更新保存的凭据。' 'Information'
+            exit 2
+        }
+        Show-GMSSHNotice 'GMSSH Windows · 操作未完成' $_.Exception.Message 'Warning'
         exit 1
     }
     return
@@ -154,10 +168,12 @@ $addressesLabel = New-AgentLabel $machine '正在读取…' 120 55 454 22
 $accountCaption = New-AgentLabel $machine '连接账号' 18 85 98 22; $accountCaption.ForeColor = $muted
 $role = if ($state.accountRole -eq 'Administrator') { '管理员' } else { '已有账号' }
 $accountLabel = New-AgentLabel $machine ($state.username + '（' + $role + '）') 120 85 454 22
-$passwordNote = if ($state.unifiedPassword) { 'SSH 与桌面使用同一连接密码' } else { 'SSH 与桌面使用各自的密码' }
+$passwordNote = if ($preserved) { '保留既有账号与服务；GMSSH 不修改原密码' } elseif ($state.unifiedPassword) { 'SSH 与桌面使用同一连接密码' } else { 'SSH 与桌面使用各自的密码' }
 $passwordHint = New-AgentLabel $machine $passwordNote 18 114 556 20; $passwordHint.ForeColor = $muted
 $sshCard = New-AgentCard 24 240 184 92
-$sshTitle = New-AgentLabel $sshCard 'SSH 服务 · TCP 22' 18 12 150 24
+$sshPort=22
+try{$sshPort=(Get-GMSSHConnectionInfo).sshPort}catch{}
+$sshTitle = New-AgentLabel $sshCard ('SSH 服务 · TCP '+$sshPort) 18 12 150 24
 $sshStatus = New-AgentLabel $sshCard '正在读取…' 18 45 150 27
 $sshStatus.Font = New-Object Drawing.Font('Segoe UI', 13, [Drawing.FontStyle]::Bold)
 $desktopCard = New-AgentCard 220 240 184 92
@@ -168,12 +184,13 @@ $connectCard = New-AgentCard 416 240 200 92
 $connectTitle = New-AgentLabel $connectCard '连接码服务' 18 12 164 24
 $connectStatus = New-AgentLabel $connectCard '正在读取…' 18 45 164 27
 $connectStatus.Font = New-Object Drawing.Font('Segoe UI', 13, [Drawing.FontStyle]::Bold)
-$passwordLabel = if ($state.unifiedPassword) { '修改连接密码' } else { '修改桌面密码' }
-$copyLabel = if ($state.unifiedPassword) { '复制连接码' } else { '复制连接信息' }
+$passwordLabel = if ($preserved) { '更新接入凭据' } elseif ($state.unifiedPassword) { '修改连接密码' } else { '修改桌面密码' }
+$copyLabel = if ($preserved) { '创建接入授权' } elseif ($withConnectionCode) { '复制连接码' } else { '复制连接信息' }
 $copy = New-AgentButton $panel $copyLabel 24 344 184 42 $true
 $share = New-AgentButton $panel '二维码分享' 220 344 184 42
+if($preserved){$share.Text='授权与二维码'}
 $change = New-AgentButton $panel $passwordLabel 416 344 200 42
-$capabilityText = if ($state.unifiedPassword) { "连接码可反复使用，仅交给信任的人。`r`n修改连接密码或重置连接码后，旧码失效。" } else { "键鼠、文本剪贴板通过桌面端；文件通过 SSH。`r`n可用性以控制端连接为准。" }
+$capabilityText = if ($preserved) { "接入凭据加密保存在本机，仅分享给信任的人。`r`n暂停仅关闭 GMSSH 接入，原 SSH 与桌面继续运行。" } elseif ($state.unifiedPassword) { "连接码可反复使用，仅交给信任的人。`r`n修改连接密码或重置连接码后，旧码失效。" } else { "键鼠、文本剪贴板通过桌面端；文件通过 SSH。`r`n可用性以控制端连接为准。" }
 $capabilityNote = New-AgentLabel $panel $capabilityText 24 394 592 36
 $capabilityNote.ForeColor = $muted
 $activityTitle = New-AgentLabel $panel '本次会话活动' 24 434 592 22
@@ -185,6 +202,7 @@ $activity.Font = New-Object Drawing.Font('Segoe UI', 9)
 $panel.Controls.Add($activity)
 $startButton = New-AgentButton $panel '启动后台服务' 24 511 132 30
 $stopButton = New-AgentButton $panel '停止后台服务' 168 511 132 30
+if($preserved){$startButton.Text='启用 GMSSH 接入';$stopButton.Text='暂停 GMSSH 接入'}
 $checkButton = New-AgentButton $panel '接入自检' 312 511 132 30
 $closeHint = New-AgentLabel $panel '关闭后服务继续运行' 456 515 160 24
 $closeHint.ForeColor = $muted; $closeHint.TextAlign = 'MiddleRight'
@@ -217,7 +235,7 @@ function Refresh-Status {
         $addressesLabel.Text = if ($addresses.Count) { $addresses -join ', ' } else { '未发现可用的 IPv4 / IPv6 地址' }
         $tooltip.SetToolTip($addressesLabel,($addresses -join "`r`n"))
         Set-ServiceLabel $sshStatus $ssh; Set-ServiceLabel $desktopStatus $desktop
-        $codeHealth = if (-not $state.unifiedPassword) { [pscustomobject]@{ready=$true;state='手动接入';detail='此安装保留手动连接'} }
+        $codeHealth = if (-not $withConnectionCode) { [pscustomobject]@{ready=$true;state='手动接入';detail='此安装保留手动连接'} }
             elseif (Get-Command Get-GMSSHConnectHealth -ErrorAction SilentlyContinue) { Get-GMSSHConnectHealth $root $dataRoot }
             else { [pscustomobject]@{ready=$false;state='组件待修复';detail='请运行本版本的升级 / 修复以补齐连接码组件'} }
         $connectStatus.Text = $codeHealth.state
@@ -229,6 +247,7 @@ function Refresh-Status {
         $tray.Text = 'GMSSH Windows · ' + $overall.Text
         $startButton.Enabled = $start.Enabled = [bool]($ssh -and $desktop -and ($ssh.Status -ne 'Running' -or $desktop.Status -ne 'Running' -or $codeHealth.state -eq '未就绪'))
         $stopButton.Enabled = $stop.Enabled = [bool]($ssh -and $desktop -and ($ssh.Status -eq 'Running' -or $desktop.Status -eq 'Running' -or ($state.unifiedPassword -and $codeHealth.ready)))
+        if($preserved){$startButton.Enabled=$start.Enabled=-not $codeHealth.ready;$stopButton.Enabled=$stop.Enabled=$codeHealth.ready}
         $current = 'SSH：' + $sshStatus.Text + '；桌面：' + $desktopStatus.Text + '；连接码：' + $connectStatus.Text + '。'
         if ($current -cne $script:lastServiceStatus) { Add-AgentActivity $current; $script:lastServiceStatus = $current }
         $script:lastStatusError = ''
@@ -250,15 +269,21 @@ function Refresh-Status {
     }
 }
 function Invoke-AgentAction([string]$Name) {
+    $operation=$null;$panelWasEnabled=$panel.Enabled;$menuWasEnabled=$menu.Enabled
     try {
+        $panel.Enabled=$menu.Enabled=$false;$panel.UseWaitCursor=$true
+        Add-AgentActivity $(if($Name -eq 'EnableCode' -and $preserved){'正在等待管理员确认并验证接入凭据，请在操作窗口中完成。'}else{'正在处理操作，请查看操作窗口。'})
+        $panel.Refresh()
         $arguments = '-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $agentScript + '" -Action ' + $Name
-        $operation = Start-Process (Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe') -ArgumentList $arguments -Verb RunAs -Wait -PassThru
+        $operation = Start-Process (Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe') -ArgumentList $arguments -Verb RunAs -PassThru
+        while(-not $operation.WaitForExit(100)){[Windows.Forms.Application]::DoEvents()}
+        if($operation.ExitCode -eq 2){Add-AgentActivity '已取消，未更新保存的凭据。';Refresh-Status;return $false}
         if ($operation.ExitCode -ne 0) {
             Add-AgentActivity '操作未完成，详情请查看操作窗口提示。'
             Refresh-Status
             return $false
         }
-        Add-AgentActivity $(switch ($Name) { IPv6Access { 'IPv6 接入设置已关闭，保存结果见设置窗口提示。' }; EnablePing { '已允许 IPv4 / IPv6 ping 回显请求。' }; DisablePing { 'GMSSH 的 ping 回显规则已关闭。' }; Start { '启动服务操作已完成。' }; Stop { '停止服务操作已完成。' }; Check { '接入自检已完成；检查结果见自检窗口。' }; EnableCode { '长效连接码已启用。' }; ResetCode { '连接码设置窗口已关闭。' }; default { '密码窗口已关闭；修改结果见窗口提示。' } })
+        Add-AgentActivity $(switch ($Name) { IPv6Access { 'IPv6 接入设置已关闭，保存结果见设置窗口提示。' }; EnablePing { '已允许 IPv4 / IPv6 ping 回显请求。' }; DisablePing { 'GMSSH 的 ping 回显规则已关闭。' }; Start { '启动服务操作已完成。' }; Stop { '停止服务操作已完成。' }; Check { '接入自检已完成；检查结果见自检窗口。' }; EnableCode { if($preserved){'Windows 账号与桌面验证通过，接入凭据已更新。'}else{'长效连接码已启用。'} }; ResetCode { '连接码设置窗口已关闭。' }; default { '密码窗口已关闭；修改结果见窗口提示。' } })
         Refresh-Status
         return $true
     } catch {
@@ -266,7 +291,7 @@ function Invoke-AgentAction([string]$Name) {
         [void][Windows.Forms.MessageBox]::Show('操作未完成，请检查管理员授权和服务状态。', 'GMSSH Windows')
         Refresh-Status
         return $false
-    }
+    } finally {$panel.UseWaitCursor=$false;$panel.Enabled=$panelWasEnabled;$menu.Enabled=$menuWasEnabled;if($operation){$operation.Dispose()}}
 }
 function Show-Panel {
     Refresh-Status
@@ -294,11 +319,16 @@ if (Test-Path (Join-Path $root 'controller-panel.ps1')) {
     $sessionsButton.Add_Click({ Show-GMSSHControllers })
     $tooltip.SetToolTip($sessionsButton,'管理当前独立授权会话；关闭窗口后后台服务继续运行')
 }
-$password = $menu.Items.Add($passwordLabel); $password.Add_Click({ Invoke-AgentAction Password })
-if ($state.unifiedPassword) { $resetCode = $menu.Items.Add('重置连接码'); $resetCode.Add_Click({ Invoke-AgentAction ResetCode }) }
+$password = $menu.Items.Add($passwordLabel); $password.Add_Click({ if($preserved){Invoke-AgentAction EnableCode}else{Invoke-AgentAction Password} })
+if ($withConnectionCode) { $resetCode = $menu.Items.Add('重置连接码'); $resetCode.Add_Click({ Invoke-AgentAction ResetCode }) }
 $publicCopy = $menu.Items.Add('复制普通连接信息（不含密码）')
 $publicCopy.Add_Click({ try { [Windows.Forms.Clipboard]::SetText(((Get-GMSSHConnectionInfo) | ConvertTo-Json -Depth 5)); Add-AgentActivity '公开连接信息已复制，不含连接码或密码。' } catch { Add-AgentActivity '公开连接信息无法复制。' } })
+if($preserved){
+    $sshCode=$menu.Items.Add('复制 SSH 接入码（桌面需单独认证）')
+    $sshCode.Add_Click({try{[Windows.Forms.Clipboard]::SetText((Get-GMSSHConnectCode $root $dataRoot))}catch{[void][Windows.Forms.MessageBox]::Show('请先更新接入凭据，再复制 SSH 接入码。','GMSSH Windows')}})
+}
 $qrMenu = $menu.Items.Add('二维码分享'); $qrMenu.Add_Click({ Show-ConnectionQR })
+if($preserved){$qrMenu.Text='SSH 接入码二维码（桌面单独认证）'}
 if ($state.managedAccountSid -and -not $state.unifiedPassword) {
     $sshPassword = $menu.Items.Add('修改 SSH 密码'); $sshPassword.Add_Click({ Invoke-AgentAction SSHPassword })
     $sshChange = New-AgentButton $sshCard '修改 SSH 密码' 160 48 110 28
@@ -308,6 +338,7 @@ if ($state.managedAccountSid -and -not $state.unifiedPassword) {
 [void]$menu.Items.Add((New-Object Windows.Forms.ToolStripSeparator))
 $start = $menu.Items.Add('启动后台服务'); $start.Add_Click({ Invoke-AgentAction Start })
 $stop = $menu.Items.Add('停止后台服务'); $stop.Add_Click({ Invoke-AgentAction Stop })
+if($preserved){$start.Text='启用 GMSSH 接入';$stop.Text='暂停 GMSSH 接入'}
 $check = $menu.Items.Add('接入自检（管理员）'); $check.Add_Click({ Invoke-AgentAction Check })
 $pingMenu = $menu.Items.Add('允许 ping')
 if ($state.unifiedPassword) { $ipv6Menu=$menu.Items.Add('IPv6 接入设置');$ipv6Menu.Add_Click({ Invoke-AgentAction IPv6Access }) }
@@ -317,14 +348,18 @@ function Invoke-PingToggle {
 }
 $pingMenu.Add_Click({ Invoke-PingToggle }); $pingButton.Add_Click({ Invoke-PingToggle })
 [void]$menu.Items.Add((New-Object Windows.Forms.ToolStripSeparator))
+if(Test-Path (Join-Path $root 'uninstall-windows.ps1')){
+    $uninstallMenu=$menu.Items.Add('卸载 GMSSH（系统设置）')
+    $uninstallMenu.Add_Click({try{Start-Process 'ms-settings:appsfeatures'}catch{Show-GMSSHNotice '卸载 GMSSH' '请打开 Windows 设置 → 应用 → 已安装的应用，选择 GMSSH Windows → 卸载。' 'Information'}})
+}
 $exit = $menu.Items.Add('退出托盘（服务继续运行）'); $exit.Add_Click({ $context.ExitThread() })
 $tray.Add_DoubleClick({ Show-Panel })
 $panel.Add_FormClosing({ param($sender,$event); $event.Cancel = $true; $panel.Hide() })
-$change.Add_Click({ Invoke-AgentAction Password })
+$change.Add_Click({ if($preserved){Invoke-AgentAction EnableCode}else{Invoke-AgentAction Password} })
 function Show-ConnectionQR {
     $form = $null; $picture = $null; $stream = $null; $bytes = $null; $image = $null; $code = $null
     try {
-        if ($state.unifiedPassword) {
+        if ($withConnectionCode) {
             try { $code = Get-GMSSHConnectCode $root $dataRoot }
             catch { if (-not (Invoke-AgentAction EnableCode)) { return }; $code = Get-GMSSHConnectCode $root $dataRoot }
         } else { $code = (Get-GMSSHConnectionInfo) | ConvertTo-Json -Depth 5 -Compress }
@@ -344,7 +379,7 @@ function Show-ConnectionQR {
         $picture = New-Object Windows.Forms.PictureBox
         $picture.SetBounds(24,90,512,512); $picture.SizeMode = 'Zoom'; $picture.BackColor = [Drawing.Color]::White
         $picture.Image = New-Object Drawing.Bitmap($image); $form.Controls.Add($picture)
-        $description = if ($state.unifiedPassword) { '二维码等同长效连接码，只分享给可信任的人。改密码或重置连接码后，旧二维码失效。' } else { '二维码包含公开连接配置，不含密码。管理端识别后需输入现有 SSH 密码。' }
+        $description = if ($withConnectionCode) { '二维码等同长效连接码，只分享给可信任的人。更新接入凭据或重置连接码后，旧二维码失效。' } else { '二维码包含公开连接配置，不含密码。管理端识别后需输入现有 SSH 密码。' }
         $note = New-AgentLabel $form $description 24 612 512 40; $note.ForeColor = $muted
         $copyImage = New-AgentButton $form '复制二维码' 24 662 164 34 $true
         $saveImage = New-AgentButton $form '保存图片' 200 662 164 34
@@ -368,10 +403,15 @@ function Show-ConnectionQR {
         if ($bytes) { [Array]::Clear($bytes,0,$bytes.Length) }; $code = $null; $encoded = $null
     }
 }
-$share.Add_Click({ Show-ConnectionQR })
+$share.Add_Click({ if($preserved){if((Get-GMSSHConnectHealth $root $dataRoot).ready -or (Invoke-AgentAction EnableCode)){Show-GMSSHControllers}}else{Show-ConnectionQR} })
 $copy.Add_Click({
     try {
-        if ($state.unifiedPassword) {
+        if($preserved){
+            if(-not (Get-GMSSHConnectHealth $root $dataRoot).ready){if(-not (Invoke-AgentAction EnableCode)){return}}
+            Show-GMSSHControllers
+            return
+        }
+        if ($withConnectionCode) {
             [void](Get-GMSSHConnectHelper $root)
             try { $code = Get-GMSSHConnectCode $root $dataRoot }
             catch { if (-not (Invoke-AgentAction EnableCode)) { return }; $code = Get-GMSSHConnectCode $root $dataRoot }

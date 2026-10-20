@@ -6,7 +6,7 @@ import type { TransferTask } from './transfers';
 import { nativeCall,NativeTransfers,NativeFileOperations } from './native-transfers';
 
 const get=(id:string)=>document.getElementById(id)!;
-let token='',available=false,configured=false,loaded=false,parentOrigin='*',timer:number|undefined,posix=false;
+let token='',available=false,writable=false,configured=false,loaded=false,parentOrigin='*',timer:number|undefined,posix=false;
 let tasks:readonly TransferTask[]=[];
 let activity='',starting=false,pendingTool='',fileDenied=false;
 let panel:ReturnType<typeof installFilePanel>|undefined;
@@ -21,7 +21,7 @@ function permit(signal:AbortSignal):Promise<()=>void>{
 }
 const snapshot=()=>({active:tasks.filter(t=>['queued','running'].includes(t.status)).length,failed:tasks.filter(t=>t.status==='failed').length,total:tasks.length,
   tasks:[...tasks.filter(t=>['running','failed'].includes(t.status)),...tasks.filter(t=>t.status==='queued'),...tasks.filter(t=>['done','cancelled'].includes(t.status)).slice().reverse()].slice(0,100).map(t=>({id:t.id,name:t.name.slice(0,255),kind:t.kind,status:t.status,bytes:t.bytes,size:t.size,message:(t.phase==='waiting'?'等待前面的文件传输':t.message).slice(0,512)}))});
-function install(native:boolean,places:boolean){panel=installFilePanel({token:()=>token,operations:posix?new NativeFileOperations(call):new Operations(()=>token),posix,unavailable:()=>fileDenied?'此独立授权未允许文件访问，请在服务端调整权限。':'请先接通此设备的 SSH 连接，再使用文件互传。',available:()=>posix?native:available&&!!token,releaseInputs:()=>{},closeBrowseAfterUse:true,permit,queue:native?changed=>new NativeTransfers(call,changed,places):undefined,changed(value){
+function install(native:boolean,places:boolean){panel=installFilePanel({token:()=>token,operations:posix?new NativeFileOperations(call):new Operations(()=>token),posix,unavailable:()=>fileDenied?'此独立授权未允许文件访问，请在服务端调整权限。':'请先接通此设备的 SSH 连接，再使用文件互传。',available:()=>posix?native:available&&!!token,writable:()=>posix?native:writable&&!!token,releaseInputs:()=>{},closeBrowseAfterUse:true,permit,queue:native?changed=>new NativeTransfers(call,changed,places):undefined,changed(value){
   tasks=value;if(native)return;const state=snapshot(),key=state.active+':'+state.failed;
   if(key!==activity){activity=key;clearTimeout(timer);timer=undefined;send('gmssh-file-state',state);}
   else if(timer===undefined)timer=window.setTimeout(()=>{timer=undefined;send('gmssh-file-state',snapshot());},150);
@@ -48,6 +48,6 @@ window.addEventListener('message',event=>{
   }else if(data?.type==='gmssh-file-state-request')send('gmssh-file-state',snapshot());
 });
 get('close-files').onclick=()=>send('gmssh-file-hide');
-fetch('/config.json').then(async reply=>{if(!reply.ok)throw Error();return reply.json();}).then(config=>{available=config.capabilities?.files===true;fileDenied=!!config.authorization&&!config.authorization.files;loaded=true;open();}).catch(()=>{get('file-feedback').hidden=false;get('file-feedback').textContent='本地文件服务未就绪，请重新打开管理端。';});
+fetch('/config.json').then(async reply=>{if(!reply.ok)throw Error();return reply.json();}).then(config=>{available=config.capabilities?.files===true;writable=config.capabilities?.files_write!==false&&available;fileDenied=!!config.authorization&&!config.authorization.files&&!config.authorization.files_read;loaded=true;open();}).catch(()=>{get('file-feedback').hidden=false;get('file-feedback').textContent='本地文件服务未就绪，请重新打开管理端。';});
 window.addEventListener('pagehide',()=>{clearTimeout(timer);panel?.dispose();},{once:true});
 send('gmssh-file-ready');

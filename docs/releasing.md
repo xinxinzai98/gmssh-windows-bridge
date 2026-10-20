@@ -1,13 +1,13 @@
 # 发布检查
 
-## 0.4.0a8 Alpha 发布包
+## 0.4.0a34 Alpha 候选
 
 普通使用者入口见[安装与接入](getting-started.md)。源码留在 Git；可执行安装包、源码 ZIP、wheel 与 SHA-256 清单放到 GitHub 的Alpha 预发布 Release。发布范围只包含项目源码目录和新构建的通用附件，保留开发者现有环境。
 
 - `tools/build_share_bundle.py` 从允许的源码目录创建导出包，排除用户配置、密钥、数据库、日志、应用副本和构建缓存。它检查开发者绝对路径、私钥格式和访问令牌格式；可用仓库外的私有字符串清单进一步检查已知设备信息。检查不代替人工审查。
 - Mac ZIP 只包含本项目 wheel、安装命令、依赖版本和说明。使用者本机生成的 `.app` 包含其自身路径，属于安装结果，不得再拿来作为通用 Release 附件。
-- 公共 Windows 包使用 `--public-release --runtime-source microsoft`，强制 `LocalSubnet`、无指定电脑、无保留模式，且不捆绑 VC++ 安装文件。已满足要求的运行库直接复用；否则从固定微软 HTTPS 地址获取并核对 SHA-256 和签名。
-- 未取得对应许可时不发布完整原版 GMSSH Mac 程序。RustDesk 1.5.0 引擎保持原文件，旁边提供 [AGPL-3.0](https://github.com/rustdesk/rustdesk/blob/1.5.0/LICENCE) 与[对应源码和构建说明](https://github.com/rustdesk/rustdesk/tree/1.5.0)，包括引用的子模块。微软运行库的[再分发限制](https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files)是公共包改用官方获取的原因。
+- 公共 Windows 包使用 `--public-release --runtime-source microsoft`，强制 `LocalSubnet`、无指定电脑或预设设备模式，且不捆绑 VC++ 安装文件。0.4.0a33 在运行时核对既有服务后提供保留接入；保留模式不安装运行库。新装时已满足要求的运行库直接复用，否则从固定微软 HTTPS 地址获取并核对 SHA-256 和签名。
+- 未取得对应许可时不发布完整原版 GMSSH Mac 程序。0.4.0a34 固定使用 RustDesk `1.5.1+68` nightly 引擎，保持原文件，旁边提供 [AGPL-3.0](https://github.com/rustdesk/rustdesk/blob/53996e3c404ea5083df0775057e4149e49102084/LICENCE) 与[对应源码和构建说明](https://github.com/rustdesk/rustdesk/tree/53996e3c404ea5083df0775057e4149e49102084)，包括引用的子模块。微软运行库的[再分发限制](https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files)是公共包改用官方获取的原因。
 
 源码检查与发布包导出：
 
@@ -34,8 +34,8 @@ GitHub 应同时提供 Windows 服务端和 Mac 增强控制端。只发 Windows
 
 | 对象 | 交付方式 | 依赖与当前状态 |
 |---|---|---|
-| Windows 服务端 | `GMSSH-Windows-Setup.exe` 与本项目源码 | 0.4.0a6 已通过试验机备份重装、接入自检和核心连接实测；纯新机 OpenSSH MSI 首装、Windows 重启恢复与改密提交仍待验收 |
-| Mac 增强端 | `gmssh-windows-bridge` wheel、前端源码、本地启动器构建工具 | 依赖用户安装的原版 GMSSH 2.0.4；0.4.0a7 候选支持 `--pairing-only` 通用控制端及连接文件导入，多台新电脑的完整实机验收仍待完成 |
+| Windows 服务端 | `GMSSH-Windows-Setup.exe` 与本项目源码 | 0.4.0a34 保留模式已完成备份升级、实际卸载、重装恢复；原账号、服务、凭据和独立授权保留。重启与改密等设备证据见[验证记录](validation.md)，不把已有系统组件的验收视为纯净系统首装证明 |
+| Mac 增强端 | `gmssh-windows-bridge` wheel、前端源码、本地启动器构建工具 | 依赖用户安装的原版 GMSSH 2.0.4；已核对独立验收环境中的 CLI/MCP 和管理端重开恢复，通用安装结果仍依赖用户本机的原版基座与权限 |
 | 私有验收包 | 按指定设备生成的启动器或账号工具 | 包含本机路径或设备配置，仅供相应设备使用，不作为通用 Release 附件 |
 
 Mac 构建器从已安装 GMSSH 复制运行框架，并以只读方式引用原版 `app.asar`，在独立启动器中加载本项目的页面适配。**生成的完整 `.app` 仍包含原版运行组件，不能因为包装代码是 MIT 就视为可以公开再分发。** 应先发布自己的源码和构建/安装工具；公开完整应用前核对原版许可或取得明确授权。此次核对官方仓库的 license 元数据及本机 2.0.4 包元数据，没有据此建立完整应用再分发许可。
@@ -46,7 +46,9 @@ Mac 开发预览使用本地 ad-hoc 签名。更新后须在真实应用中验�
 
 预览构建与应用安装分开处理；同一标识的旧预览版不应一直保持系统注册。2026-10-14 的一次更新在权限已允许时出现应用内 errno 65，按明确授权撤销 5 个旧预览版注册、刷新当前版后恢复，并完成真实界面文件往返验收。回退文件仍可保留；重新打开旧副本会再次注册它，不能把清理注册当作一次性的永久修复。
 
-Windows 内部引擎保留 RustDesk 1.5.0 的原始二进制，不声称自己实现或获得 RustDesk 全部能力。公开捆绑版本时，须保留实际版本的源码获取方式、许可与版权通知。本项目自己的 MIT 许可不替代第三方许可；开发者自用的旧离线 VC++ 包不得因文件可下载就视为获得再分发许可。
+Windows 内部引擎保留 RustDesk 的原始二进制，不声称自己实现或获得 RustDesk 全部能力。0.4.0a34 的依赖清单固定官方 asset `657923634`、安装文件 SHA-256、104 个文件的清单摘要及实际构建源码 `53996e3c404ea5083df0775057e4149e49102084`。对应上游构建是 [39347293462](https://github.com/rustdesk/rustdesk/actions/runs/39347293462)；`nightly` 标签指向较早源码，不能作为该二进制的源码版本。通过 asset API 取得文件时使用 `Accept: application/octet-stream`；下载结果不匹配时停止，不能更新哈希后直接发布。公开捆绑版本时须保留实际版本的源码获取方式、许可与版权通知。本项目自己的 MIT 许可不替代第三方许可。
+
+公共导出会同时检查 Python 项目版本、wheel 元数据和完整包文件、Windows 配置版本、每份 Windows 脚本与图标/许可、离线 OpenSSH、依赖清单与内置引擎的逐文件哈希，拒绝新版本文件名里夹带旧组件、缺件、重复件或额外文件。保留模式升级仍不覆盖用户原有桌面引擎；旧引擎的自动解锁能力需另行核对和授权升级。
 
 ## 本地验收与公开发布
 
@@ -62,9 +64,11 @@ Windows 内部引擎保留 RustDesk 1.5.0 的原始二进制，不声称自己�
 ```bash
 python -m unittest discover -s tests -v
 python -m pip wheel . --no-deps --wheel-dir dist
-python -m pip install --force-reinstall --no-deps dist/gmssh_windows_bridge-0.4.0a8-py3-none-any.whl
+python -m pip install --force-reinstall --no-deps dist/gmssh_windows_bridge-0.4.0a34-py3-none-any.whl
 python -I -m gmssh_windows_bridge --help
 python -I -m gmssh_windows_bridge --version
 ```
 
 本项目代码许可证为 MIT。构建、检查和本地文件交付与 GitHub 推送、创建 tag/Release 分开进行；远端 CI 的结果须从实际运行记录确认。
+
+CI 的 Linux Go 任务还会安装本项目的 Python 桌面依赖，并运行 `python tests/ai_controller_integration.py --go go`，检查真实固定证书 HTTPS 上的两端协议。它只启动本机回环夹具，使用临时合成文件和授权，不连接设备、不读取钥匙串，也不代替 Windows 图形流程或设备权限撤销的验收。

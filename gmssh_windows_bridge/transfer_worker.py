@@ -61,7 +61,7 @@ class Peer:
             if reply.get('ok') is not True:
                 code=reply.get('code')
                 if code=='SSHPoolUnavailable':code='NEED_CONNECTION'
-                raise StreamError(code if code in {'NEED_CONNECTION','PEER_CHANGED','SOURCE_CHANGED','PARTIAL_CHANGED','HASH_MISMATCH','CONFLICT','INVALID_TRANSFER','UNSUPPORTED_FILE','TRANSFER_LIMIT','ACCESS_DENIED','DISK_FULL'} else 'REMOTE_IO')
+                raise StreamError(code if code in {'NEED_CONNECTION','PEER_CHANGED','SOURCE_CHANGED','PARTIAL_CHANGED','HASH_MISMATCH','CONFLICT','INVALID_TRANSFER','UNSUPPORTED_FILE','TRANSFER_LIMIT','ACCESS_DENIED','AUTH_FAILED','SERVER_UPGRADE_REQUIRED','SESSION_CLOSED','OPERATION_TIMEOUT','OPERATION_INTERRUPTED','DISK_FULL'} else 'REMOTE_IO')
             if isinstance(reply.get('progress'),dict):
                 p=reply['progress'];emit(event='progress',phase=str(p.get('phase','verifying'))[:20],bytes=p.get('bytes',0),total=p.get('total',0));continue
             return reply.get('result',{})

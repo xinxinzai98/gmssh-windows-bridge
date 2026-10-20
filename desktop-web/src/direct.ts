@@ -5,8 +5,9 @@ import { boundedText, countAppVariants, topLevelFieldNumbers, validatePeerInfo, 
 import { Vp9CanvasRenderer } from "../vendor/video";
 import { clipboardText, multiClipboard } from './clipboard';
 import { DesktopDiagnostics } from './diagnostics';
+import { supportsWindowsUnlock, windowsUnlockFrame } from './windows-unlock';
 
-export type DesktopPermissions=Record<'view'|'input'|'clipboard'|'files'|'terminal'|'power',boolean>;
+export type DesktopPermissions=Record<'view'|'input'|'clipboard'|'files'|'terminal'|'power',boolean>&{files_read?:boolean};
 type Events = { status(text: string): void; peer(name: string): void; frame(): void; stopped(): void; credential?(saved: boolean): void; clipboard?(text:string):void; displays?(items:DisplayInfo[],current:number):void; lifecycle?(state:'connecting'|'connected'|'disconnected'|'failed',code?:string):void;permissions?(value:DesktopPermissions):void };
 
 export async function challengeResponse(password: Uint8Array, salt: string, challenge: string): Promise<Uint8Array> {
@@ -34,10 +35,14 @@ export class DirectClient {
   #displays:DisplayInfo[] = [];
   #generation = 0;
   #timer = 0;
+  #windowsUnlock = false;
+  #relayWindowsUnlock = true;
   #permissions:DesktopPermissions={view:true,input:true,clipboard:true,files:true,terminal:true,power:true};
 
   constructor(private canvas: HTMLCanvasElement, private events: Events) {}
   get connected(): boolean { return this.#stage === "connected" && this.#socket?.readyState === WebSocket.OPEN; }
+  get windowsUnlockSupported():boolean { return this.connected && this.#windowsUnlock && this.#relayWindowsUnlock && this.#permissions.input; }
+  get connectionGeneration():number { return this.#generation; }
 
   connect(sshPassword: string, desktopPassword: string, transport = "ssh", options: { saved: boolean; remember: boolean; token?: string } = { saved: false, remember: false }): void {
     this.disconnect();
@@ -65,7 +70,8 @@ export class DirectClient {
         if (typeof event.data === "string") {
           const result = JSON.parse(event.data);
           if(result.type==='controller_permissions'){
-            const p=result.permissions;if(!p||Object.keys(p).sort().join()!=='clipboard,files,input,power,terminal,view'||Object.values(p).some(value=>typeof value!=='boolean'))throw Error('授权权限响应无效。');
+            const p=result.permissions;if(!p||!['clipboard,files,input,power,terminal,view','clipboard,files,files_read,input,power,terminal,view'].includes(Object.keys(p).sort().join())||Object.values(p).some(value=>typeof value!=='boolean'))throw Error('授权权限响应无效。');
+            this.#relayWindowsUnlock=result.windows_unlock===true;
             this.#permissions={...p};this.events.permissions?.(this.#permissions);return;
           }
           if (result.type === "desktop_credential" && this.#stage === "hash" && typeof result.password === "string" && utf8.encode(result.password).length <= 4096) {
@@ -129,6 +135,7 @@ export class DirectClient {
       const reply = message.loginResponse;
       if (!reply || !reply.peerInfo || reply.error !== undefined) throw new Error(reply?.error ? boundedText(reply.error, "login error") : "RustDesk 未批准连接。");
       const display = validatePeerInfo(reply.peerInfo);
+      this.#windowsUnlock = supportsWindowsUnlock(reply.peerInfo.platform, reply.peerInfo.version);
       this.diagnostics.approved(reply.peerInfo.version);
       const renderer = await Vp9CanvasRenderer.create(this.canvas, () => {
         if (generation !== this.#generation) return;
@@ -180,6 +187,11 @@ export class DirectClient {
   mouse(event: MouseEvent): void { if (this.connected&&this.#permissions.input) { const display=this.#displays[this.#display]; this.#send({ mouseEvent: (event.mask&7)===3 ? event : {...event,x:event.x+(display?.x||0),y:event.y+(display?.y||0)} }); } }
   key(event: KeyEvent): void { if (this.connected&&this.#permissions.input) this.#send({ keyEvent: event }); }
   text(text:string):void { if(!this.#permissions.input)throw Error('此授权仅允许查看，未允许键盘输入。');if(new TextEncoder().encode(text).length>8192)throw Error('单次文本输入暂限 8 KiB。');if(this.connected)this.#send({keyEvent:{seq:text,mode:KeyboardMode.Legacy}}); }
+  unlockWindows(password:string):void {
+    if(!this.windowsUnlockSupported)throw Error('请连接允许键盘控制的桌面，并使用支持解锁的 GMSSH 服务端及 Windows 桌面引擎 1.5.1 或更新版本。');
+    const frame=windowsUnlockFrame(password);
+    try{this.#socket!.send(frame);}finally{frame.fill(0);}
+  }
   clipboard(text:string):void { if(!this.#permissions.clipboard)throw Error('此授权未允许剪贴板同步。');const content=utf8.encode(text);if(content.length>8192)throw Error('单次发送剪贴板暂限 8 KiB。');if(this.connected)this.#send({clipboard:{content,format:ClipboardFormat.Text,compress:false}}); }
   shortcut(name:string):void {
     const base={down:false,press:true,modifiers:[] as ControlKey[],mode:KeyboardMode.Legacy};
@@ -201,6 +213,8 @@ export class DirectClient {
     wipe(this.#remember); this.#remember = undefined;
     window.clearTimeout(this.#timer);
     this.#stage = "hash";
+    this.#windowsUnlock = false;
+    this.#relayWindowsUnlock = true;
     this.events.stopped();
   }
 }

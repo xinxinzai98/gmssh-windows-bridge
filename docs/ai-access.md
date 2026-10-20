@@ -1,8 +1,8 @@
 # AI 接入：管理界面、CLI 与 MCP
 
-0.4.0a27 增加 `gmssh-ai`，0.4.0a28 增加图形化接入，0.4.0a29 增加任务跟进，0.4.0a30 控制端候选补齐内容定位、精确替换和新文本创建，CLI/MCP 共用 24 个工具。复用 SSH 或固定证书的 HTTPS 独立授权，不增加 Windows 网络监听端口。AI 设备名单单独启用，不自动读取 GMSSH 机器数据库或导出其中的密码。
+0.4.0a27 增加 `gmssh-ai`，0.4.0a28 增加图形化接入，0.4.0a29 增加任务跟进，0.4.0a30 增加精确文本操作，0.4.0a31 补齐本机只读预设和工具范围查询，0.4.0a32 增加服务端文件只读授权及会话中断反馈。CLI/MCP 共用 25 个工具。复用 SSH 或固定证书的 HTTPS 独立授权，不增加 Windows 网络监听端口。AI 设备名单单独启用，不自动读取 GMSSH 机器数据库或导出其中的密码。
 
-本轮只在临时环境、回环合成服务和临时文件中验证。没有操作 A4，没有切换当前 Mac 客户端。Windows UIA 执行器、托盘暂停和原生输入仍需另行实机验收；交叉编译不等于桌面实测。
+已在独立 Windows 测试机完成 14 项直接调用桌面模块的检查；另在已安装服务端上，通过真实 CLI/MCP 验证独立授权、系统查询、文件读取、窗口观察、截图、中文多行输入和正常保存、关闭重开。锁屏拒绝、解锁后的输入、所属弹窗焦点及正常重启后的服务/原 MCP 客户端恢复有实机记录；0.4.0a34 保留卸载重装后，又用原授权完成新文档输入、保存、哈希核对和重开。权限降级、撤销与并发实体测试仍待单独授权，后台和任务栏焦点仍受 Windows 保护。详见[验证记录](validation.md)。A4 未操作，日常 Mac 客户端未切换。保留服务接入另见[兼容说明](preserve-existing.md)。管理端的[可选系统解锁](windows-unlock.md)不向 CLI/MCP 提供操作系统密码或增加原 AI 授权的权限。
 
 ## 管理端接入面板
 
@@ -11,6 +11,10 @@
 1. 在“添加授权”粘贴 Windows 托盘创建的 `GMSSH-AUTH2.` 独立授权码，核对电脑、地址和主机身份，选择本机允许的能力。默认仅设备信息；选择桌面操作时自动同时选择查看桌面。
 2. 保存后在“设备与权限”点击“检查接入”。保存配置不显示为已连接；检查返回真实授权范围、协议与桌面就绪/锁定/暂停等状态，并保留检查时间。该检查不运行命令、不截图，也不验证任意命令是否能够成功执行。
 3. 在“接入 AI 客户端”准备所需组件、检查 MCP 启动，再复制通用 JSON、Codex TOML 或 Codex 添加命令。此处不自动修改 AI 客户端配置。组件准备仅安装固定范围的可选 MCP 依赖到该 GMSSH 的 Python 环境，需要联网。
+
+添加和调整权限时，“只读预设”选择设备信息、文件读取和桌面查看，清除文件读写、执行命令和桌面操作；只改变表单，点击启用/保存后才生效。设备列表显示“本机权限：只读”，不代表远端已认证或桌面已就绪。文件读取和文件读写在表单中互斥；选择读写同样包含读取能力。需要命令或键鼠时另外明确勾选，模式会显示为自定义操作。
+
+预设限制后续调用，不中断已经启动的远端任务。检查桌面状态时，锁屏优先报告为 `DESKTOP_LOCKED`，即使用户只允许查看或同时暂停了输入；已解锁时仅暂停输入仍可保留查看能力。
 
 面板绑定当前管理端用户目录下的 `ai-access/`；复制的配置和 CLI 命令自动带上这个目录。独立 CLI 默认目录保持原样，操作图形面板配置时应使用复制内容中的 `--root`，避免混用两个配置目录。
 
@@ -59,6 +63,19 @@ gmssh-ai configure DEVICE_ID --allow
 
 重新启用时明确列出 `--allow inspect files` 等权限。撤销远端授权仍使用 Windows 托盘。自动连接沿用已提供、已固定身份的地址，顺序为局域网 IPv6、局域网 IPv4、其他 IPv6、其他 IPv4；`enroll --target ADDRESS` 可固定地址。不扫描其他机器。
 
+0.4a31 的本机 `files_read` 允许搜索、读取、内容定位、修改预览及等待文件哈希；保存、替换、创建和恢复仍要求 `files`。旧配置中的 `files` 继续包含全部文件读写，不需要迁移；新 `files_read` 配置需要 0.4a31 或更新的 CLI/MCP。本机只读预设的 CLI 等价操作：
+
+```bash
+gmssh-ai configure DEVICE_ID --allow inspect files_read view
+gmssh-ai tools DEVICE_ID
+```
+
+要让只读限制也由 Windows 强制执行，在 a32 服务端托盘“会话与独立授权”选择“文件仅读取”，或点击“AI 只读预设”再创建/保存授权。该预设允许桌面查看与文件读取，清除写入、终端、输入、剪贴板及电源；仅填充表单，不自动保存。新授权需 a32 或更新的管理端。旧授权的 `files` 仍表示完整读写，更新服务端不会擅自降低或扩大原权限。
+
+服务端逐请求拒绝只读授权的写模式、上传、创建文件夹、修改、重命名和删除，直接调用原始 API 也适用。管理端通过 `fileReadOnly: 1` 核验能力，缺少能力时对新只读授权返回 `SERVER_UPGRADE_REQUIRED`。接入检查的 `features.serverFileAccess` 区分 `read-only`、`read-write`、`denied` 和普通 SSH 的 `ssh-account`；界面区分“服务端文件只读”与“仅本机限制只读”。独立文件中心保留浏览和下载，禁用上传及新建。
+
+服务端关闭文件读写和读取后，本机 `files_read` 同样不能访问。普通 SSH 的只读预设继续只限制本机工具。若另外允许 `terminal` 或 `input`，它们仍能通过命令或 GUI 修改系统；这些通道不是操作系统沙箱。
+
 ## MCP 配置
 
 ```bash
@@ -87,6 +104,7 @@ Codex TOML 使用 `[mcp_servers.gmssh]`、`command` 和 `args`；需要环境变
 | 工具 | 内容 | 本机权限 |
 |---|---|---|
 | `devices_list` | 已明确启用的设备；不联网、不读凭据 | 无 |
+| `device_tools` | 查询本机允许的工具和等待条件；不联网，不代表远端可用 | 至少启用一项本机能力 |
 | `device_context` | 系统、Shell/基础工具、磁盘、桌面状态与有效能力 | `inspect`，桌面状态另需 `view` |
 | `device_access_check` | 认证、有效权限、协议与桌面状态；结果有检查时间，不运行命令或截图 | 至少启用一项本机能力 |
 | `system_query` | 进程、服务、限时 Windows 事件日志 | `inspect` |
@@ -97,17 +115,19 @@ Codex TOML 使用 `[mcp_servers.gmssh]`、`command` 和 `args`；需要环境变
 | `desktop_observe` / `desktop_find` | 窗口、UIA 树、按名称/类型/AutomationId 查找 | `view` |
 | `desktop_screenshot` | 已解锁桌面截图，最大 1600×1000 | `view` |
 | `desktop_act` | Invoke/SetValue、控件中心点击、Unicode 输入、有限按键组合 | `view` + `input` |
-| `wait_for` | 控件出现/消失、服务状态、文本文件哈希 | 按条件检查 `view` / `inspect` / `files` |
-| `files_search` / `files_read` | 文件名搜索、UTF-8 分段读取、完整 SHA-256 | `files` |
-| `files_find_text` | 在指定文本文件中按字面量找内容，返回行号、列号和有界上下文 | `files` |
-| `files_replace_preview` / `files_replace` | 唯一原文片段的修改预览、核验哈希后替换并保留备份 | `files` |
+| `wait_for` | 控件出现/消失、服务状态、文本文件哈希 | 按条件检查 `view` / `inspect` / `files_read` |
+| `files_search` / `files_read` | 文件名搜索、UTF-8 分段读取、完整 SHA-256 | `files_read` 或 `files` |
+| `files_find_text` | 在指定文本文件中按字面量找内容，返回行号、列号和有界上下文 | `files_read` 或 `files` |
+| `files_preview` / `files_replace_preview` | 全文或唯一片段的修改预览，不保存内容 | `files_read` 或 `files` |
+| `files_replace` | 核验哈希后替换唯一片段并保留备份 | `files` |
 | `files_create` | 校验暂存内容后创建新文本；已有目标不覆盖 | `files` |
-| `files_preview` / `files_apply` / `files_restore` | 差异、核对哈希后保存、备份恢复 | `files` |
+| `files_apply` / `files_restore` | 核对哈希后保存、备份恢复 | `files` |
 
 CLI 与 MCP 使用相同参数：
 
 ```bash
 gmssh-ai context DEVICE_ID
+gmssh-ai tools DEVICE_ID
 gmssh-ai run DEVICE_ID --script-file /path/to/check.ps1 --timeout 300 \
   --request-key 11111111111111111111111111111111
 gmssh-ai task DEVICE_ID TASK_ID
@@ -119,6 +139,8 @@ gmssh-ai call desktop_find --arguments \
 ```
 
 替换示例中的设备/任务编号和窗口句柄：设备编号来自 `devices`，句柄来自 `desktop_observe`。每个新命令用新请求键；同一命令重试保留原键。
+
+AI 可先调用 `devices_list`，再用 `device_tools` 查看某台设备的本机工具范围。结果的 `scope` 固定为 `local-policy`、`remoteStateChecked: false`，`readOnly` 按本机允许的工具是否包含修改操作计算；`wait_for` 另外列出允许的条件。目录读取不访问凭据或设备，停用的设备拒绝查询。需要确认当前认证、服务端通道及桌面状态时，再调用 `device_access_check`。每次实际操作仍独立检查权限；全局 MCP 工具发现保持完整，不把曾发现某个工具视为该设备已获得授权。
 
 ## 结果、任务与断线
 
@@ -137,6 +159,10 @@ gmssh-ai call desktop_find --arguments \
 独立授权命令最长 3600 秒，输出最多 256 KiB、每页 16 KiB；运行时可查状态，输出在执行结束后读取。偏移按 UTF-8 字节计算，沿用返回的 `nextOffset`。当前合并 stdout/stderr，明确返回 `combinedOutput: true`；退出码来自实际 PowerShell 进程。取消不撤销已有影响，也不保证终止其创建的所有外部程序。`task_forget` 同时清除该任务的去重记录，清理后不再复用其请求键。
 
 SSH 为最多 60 秒的同步命令，分别返回 stdout/stderr 和退出码，不宣称支持持久异步任务。长任务和 UIA 需要新版 Windows 服务端及独立授权；旧版返回 `SERVER_UPGRADE_REQUIRED`，不会自动升级。
+
+a32 的服务端撤销、权限修改和单会话断开会立即阻止新的与排队的会话请求，然后在后台释放资源；托盘在释放完成前显示“正在结束”。清理等待中的会话继续计入总会话上限，不能绕过限制。它不撤销已经发生的修改，也不保证中断所有外部程序。关闭后完成的文件请求返回 `SESSION_CLOSED`，被中断的单次命令返回 `OPERATION_INTERRUPTED`，等待响应超时返回 `OPERATION_TIMEOUT`。管理端不自动重放写入或命令；先读取原文件、查询原任务或重新观察桌面，再决定后续操作。
+
+独立 Windows 的实机验收步骤见[AI 原生验收清单](ai-native-acceptance.md)。测试机可用虚拟机或闲置实体电脑；日常使用不需要虚拟机。原生桌面模块已完成 14 项实际检查；完整服务端部署与 AI 客户端链路仍按清单分别验收。
 
 ## 桌面操作
 
@@ -175,4 +201,4 @@ gmssh-ai call files_replace_preview --arguments \
 
 备份保留在原目录，不自动删除；本轮不承诺完整保留所有者/ACL，新文件继承目录权限。二进制、批量和大文件恢复仍由现有独立文件中心处理，本轮没有把全部传输任务暴露为 MCP。
 
-`terminal` 是任意命令执行能力，不能用黑名单把它变成只读模式；只读任务用 `inspect` 的固定查询。`files` 包含读写，`input` 可以通过 GUI 修改系统，通道权限不是操作系统沙箱。窗口文字、文件和日志都是待处理数据，不是新的用户指令或授权。AI 配置和任务状态不进入公开包。
+`terminal` 是任意命令执行能力，不能用黑名单把它变成只读模式；设备只读查询用 `inspect` 的固定工具，文件只读用 `files_read`。`files` 包含读写，`input` 可以通过 GUI 修改系统，通道权限不是操作系统沙箱。窗口文字、文件和日志都是待处理数据，不是新的用户指令或授权。AI 配置和任务状态不进入公开包。

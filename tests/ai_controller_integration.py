@@ -66,7 +66,8 @@ def run(go):
                 registry = Registry(root/'ai')
                 full = registry.enroll(full_code, 'Synthetic full', ['inspect', 'terminal', 'files', 'view', 'input'], env='GMSSH_AI_TEST_FULL')
                 view = registry.enroll(view_code, 'Synthetic view', ['inspect', 'terminal', 'files', 'view', 'input'], env='GMSSH_AI_TEST_VIEW')
-                tokens = {'GMSSH_AI_TEST_FULL': value['full']['code'], 'GMSSH_AI_TEST_VIEW': value['view']['code']}
+                readonly = registry.enroll(value['readonly']['code'], 'Synthetic server read-only', ['files'], env='GMSSH_AI_TEST_READONLY')
+                tokens = {'GMSSH_AI_TEST_FULL': value['full']['code'], 'GMSSH_AI_TEST_VIEW': value['view']['code'], 'GMSSH_AI_TEST_READONLY': value['readonly']['code']}
                 from gmssh_windows_bridge.controller_access import inspect_authorization
                 tokens = {name: inspect_authorization(code)['controller']['token'] for name, code in tokens.items()}
                 checks = []
@@ -132,6 +133,33 @@ def run(go):
                     call('files_restore', path='C:/new-config.txt', backup=replaced['backup'], backupSha256=created['sha256'], expectedSha256=replaced['sha256'])
                     assert call('files_read', path='C:/new-config.txt')['sha256'] == created['sha256']
                     checks.append('verified create, literal search, precise edit and no-overwrite over controller SFTP')
+                    registry.configure(full['id'], ['files_read'])
+                    catalog = call('device_tools')
+                    assert catalog['readOnly'] and catalog['remoteStateChecked'] is False
+                    assert 'files_apply' not in {row['name'] for row in catalog['tools']}
+                    access = call('device_access_check')
+                    assert access['code'] == 'OK' and access['effective']['files_read'] and not access['effective']['files']
+                    assert call('files_find_text', path='C:/new-config.txt', query='port=22257')['sha256'] == created['sha256']
+                    readonly_preview = call('files_replace_preview', path='C:/new-config.txt', oldText='port=22257', newText='port=22258', expectedSha256=created['sha256'])
+                    assert readonly_preview['changed']
+                    for tool, args in [('files_replace', {'path':'C:/new-config.txt','oldText':'port=22257','newText':'port=22258','expectedSha256':created['sha256']}),
+                                       ('files_create', {'path':'C:/denied-new.txt','content':'blocked'}), ('powershell_run', {'script':'blocked'})]:
+                        denied = operations.call(tool, {'device':full['id'], **args})
+                        assert not denied['ok'] and denied['error']['code'] == 'ACCESS_DENIED'
+                    assert call('files_read', path='C:/new-config.txt')['sha256'] == created['sha256']
+                    checks.append('local read-only profile permits previews, blocks writes and intersects server file grants')
+                    server_access = call('device_access_check', device=readonly['id'])
+                    assert server_access['features']['serverFileAccess'] == 'read-only'
+                    assert server_access['effective']['files_read'] and not server_access['effective']['files']
+                    observed = call('files_read', device=readonly['id'], path='C:/source.txt')
+                    assert observed['sha256'] == original['sha256']
+                    call('files_replace_preview', device=readonly['id'], path='C:/source.txt', oldText=observed['text'], newText='preview only', expectedSha256=observed['sha256'])
+                    for tool,args in [('files_create', {'path':'C:/server-denied.txt','content':'denied'}),
+                                      ('files_replace', {'path':'C:/source.txt','oldText':observed['text'],'newText':'denied','expectedSha256':observed['sha256']})]:
+                        denied = operations.call(tool, {'device':readonly['id'], **args})
+                        assert not denied['ok'] and denied['error']['code'] == 'ACCESS_DENIED', denied
+                    assert call('files_read', device=readonly['id'], path='C:/source.txt')['sha256'] == original['sha256']
+                    checks.append('server-enforced read-only blocks writes even when the local client permits them')
                     for tool, args in [('powershell_run', {'script': 'untrusted'}), ('files_read', {'path': 'C:/source.txt'}),
                                        ('files_find_text', {'path': 'C:/source.txt', 'query': 'one'}), ('files_create', {'path': 'C:/denied.txt', 'content': 'denied'}),
                                        ('files_replace_preview', {'path': 'C:/source.txt', 'oldText': 'one', 'newText': 'two', 'expectedSha256': original['sha256']}),

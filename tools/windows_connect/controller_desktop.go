@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -18,6 +19,29 @@ type wireField struct {
 	kind   int
 	value  uint64
 	body   []byte
+}
+
+type windowsLogonState struct {
+	session uint32
+	locked  bool
+}
+
+// WTSINFOEX level 1 uses an eight-byte-aligned union on supported Windows 10+.
+func decodeWindowsLogonState(session uint32, info []byte, hasUser bool) (windowsLogonState, error) {
+	if len(info) < 20 || binary.LittleEndian.Uint32(info[:4]) != 1 ||
+		binary.LittleEndian.Uint32(info[8:12]) != session {
+		return windowsLogonState{}, errDesktopUnavailable
+	}
+	state := binary.LittleEndian.Uint32(info[12:16])
+	// Before the first sign-in Windows reports Connected, with no WTS user.
+	if state != 0 && !(state == 1 && !hasUser) {
+		return windowsLogonState{}, errDesktopUnavailable
+	}
+	flags := binary.LittleEndian.Uint32(info[16:20])
+	if hasUser && flags > 1 {
+		return windowsLogonState{}, errDesktopUnavailable
+	}
+	return windowsLogonState{session: session, locked: !hasUser || flags == 0}, nil
 }
 
 func fields(raw []byte) ([]wireField, error) {
@@ -59,6 +83,78 @@ func bytesField(number int, body []byte) []byte {
 	raw := binary.AppendUvarint(nil, uint64(number<<3|2))
 	raw = binary.AppendUvarint(raw, uint64(len(body)))
 	return append(raw, body...)
+}
+
+func validateLocalDesktopPassword(password, computer string) error {
+	conn, err := net.DialTimeout("tcp", "127.0.0.1:21118", 2*time.Second)
+	if err != nil {
+		return errDesktopUnavailable
+	}
+	return validateDesktopPassword(conn, password, computer, 10*time.Second)
+}
+
+// Perform only the normal view-only challenge/login before changing stored
+// credentials. A rejection, timeout or different peer leaves the old state intact.
+func validateDesktopPassword(conn net.Conn, password, computer string, timeout time.Duration) error {
+	d := newDesktopSession(conn)
+	defer d.close()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	sent := false
+	for {
+		select {
+		case raw, ok := <-d.frames:
+			if !ok {
+				return errDesktopUnavailable
+			}
+			packet, err := fields(raw)
+			if err != nil || len(packet) != 1 || packet[0].kind != 2 {
+				return errDesktopUnavailable
+			}
+			switch packet[0].number {
+			case 5:
+				if _, err = d.write(raw, permissions{View: true}, password, "credential verification"); err != nil {
+					return errDesktopUnavailable
+				}
+			case 9:
+				if sent {
+					return errDesktopUnavailable
+				}
+				login := bytesField(4, []byte("GMSSH-credential-verification"))
+				login = append(login, bytesField(11, []byte("1.4.9"))...)
+				login = append(login, bytesField(13, []byte("Web"))...)
+				if _, err = d.write(bytesField(7, login), permissions{View: true}, password, "credential verification"); err != nil {
+					return errDesktopUnavailable
+				}
+				sent = true
+			case 8:
+				reply, err := fields(packet[0].body)
+				if !sent || err != nil || len(reply) != 1 || reply[0].kind != 2 {
+					return errDesktopUnavailable
+				}
+				if reply[0].number == 1 && string(reply[0].body) == "Wrong Password" {
+					return errDesktopCredential
+				}
+				if reply[0].number != 2 {
+					return errDesktopUnavailable
+				}
+				peer, err := fields(reply[0].body)
+				if err != nil {
+					return errDesktopUnavailable
+				}
+				for _, f := range peer {
+					if f.number == 2 && f.kind == 2 && strings.EqualFold(string(f.body), computer) {
+						return nil
+					}
+				}
+				return errDesktopUnavailable
+			default:
+				return errDesktopUnavailable
+			}
+		case <-timer.C:
+			return errDesktopUnavailable
+		}
+	}
 }
 func appendWire(raw []byte, f wireField) []byte {
 	if f.kind == 0 {
@@ -193,6 +289,20 @@ func permittedPacket(raw []byte, p permissions, password, salt, challenge, name 
 		return nil, false, errDenied
 	}
 	switch f.number {
+	case 34: // RustDesk >=1.5.1 checks its logon screen before accepting OSLogin.
+		if !p.Input {
+			return nil, false, errDenied
+		}
+		fs, err := fields(f.body)
+		if err != nil || len(fs) != 1 || fs[0].number != 2 || fs[0].kind != 2 || len(fs[0].body) == 0 || len(fs[0].body) > 1024 || !utf8.Valid(fs[0].body) {
+			return nil, false, errDenied
+		}
+		for _, b := range fs[0].body {
+			if b < 32 || b == 127 {
+				return nil, false, errDenied
+			}
+		}
+		return raw, false, nil
 	case 10, 15:
 		if !p.Input {
 			return nil, false, errDenied
@@ -267,10 +377,11 @@ type desktopSession struct {
 	salt, challenge string
 	loginSent       bool
 	state           string
+	logonState      func() (windowsLogonState, error)
 }
 
 func newDesktopSession(conn net.Conn) *desktopSession {
-	d := &desktopSession{conn: conn, frames: make(chan []byte, 1), done: make(chan struct{}), state: "handshaking"}
+	d := &desktopSession{conn: conn, frames: make(chan []byte, 1), done: make(chan struct{}), state: "handshaking", logonState: controllerLogonState}
 	go d.receive()
 	return d
 }
@@ -395,34 +506,80 @@ func (d *desktopSession) write(raw []byte, p permissions, password, name string)
 	d.writeMu.Lock()
 	defer d.writeMu.Unlock()
 	d.mu.Lock()
-	salt, challenge, sent := d.salt, d.challenge, d.loginSent
+	salt, challenge, sent, state := d.salt, d.challenge, d.loginSent, d.state
 	d.mu.Unlock()
 	safe, login, err := permittedPacket(raw, p, password, salt, challenge, name, sent)
 	if err != nil {
 		return nil, err
+	}
+	packet, _ := fields(safe)
+	if len(packet) == 1 && packet[0].number == 34 {
+		if state != "connected" {
+			return nil, errDenied
+		}
+		if d.logonState == nil {
+			return nil, errDesktopUnavailable
+		}
+		// The password always stays in guarded OSLogin. Normal mouse activation
+		// is allowed only after a live Windows lock/prelogin check, and never on
+		// an unlocked desktop. Recheck after activation before sending a secret.
+		before, err := d.logonState()
+		if err != nil {
+			return nil, errDesktopUnavailable
+		}
+		if !before.locked {
+			return map[string]bool{"written": true}, nil
+		}
+		for _, mask := range []uint64{9, 10} {
+			if err := d.sendPacket(bytesField(10, uintField(1, mask))); err != nil {
+				return nil, err
+			}
+		}
+		timer := time.NewTimer(1200 * time.Millisecond)
+		defer timer.Stop()
+		select {
+		case <-d.done:
+			return nil, errDesktopUnavailable
+		case <-timer.C:
+		}
+		after, err := d.logonState()
+		if err != nil || after.session != before.session {
+			return nil, errDesktopUnavailable
+		}
+		if !after.locked {
+			return map[string]bool{"written": true}, nil
+		}
 	}
 	if login {
 		d.mu.Lock()
 		d.loginSent = true
 		d.mu.Unlock()
 	}
+	if err := d.sendPacket(safe); err != nil {
+		return nil, err
+	}
+	return map[string]bool{"written": true}, nil
+}
+
+func (d *desktopSession) sendPacket(raw []byte) error {
 	width := 1
-	for len(safe) > (1<<(8*width-2))-1 && width < 4 {
+	for len(raw) > (1<<(8*width-2))-1 && width < 4 {
 		width++
 	}
 	header := make([]byte, 4)
-	binary.LittleEndian.PutUint32(header, uint32(len(safe)<<2|width-1))
+	binary.LittleEndian.PutUint32(header, uint32(len(raw)<<2|width-1))
 	d.conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
-	packet := append(header[:width], safe...)
+	packet := append(header[:width], raw...)
+	defer clear(packet)
 	for len(packet) > 0 {
 		n, err := d.conn.Write(packet)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if n == 0 {
-			return nil, io.ErrShortWrite
+			return io.ErrShortWrite
 		}
 		packet = packet[n:]
 	}
-	return map[string]bool{"written": true}, nil
+	return nil
 }

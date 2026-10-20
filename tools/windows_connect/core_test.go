@@ -290,8 +290,8 @@ func TestResetAndPasswordChangeRevokeOldCodesWithoutChangingDeviceIdentity(t *te
 
 func TestInvalidPasswordCannotCreateOrReplacePrivateState(t *testing.T) {
 	s, password := fixture(t)
-	if s.initialize("incorrect") == nil {
-		t.Fatal("invalid password accepted")
+	if err := s.initialize("incorrect"); !errors.Is(err, errCredential) {
+		t.Fatal("invalid password did not identify the credential stage")
 	}
 	entries, _ := os.ReadDir(filepath.Join(s.root, "private"))
 	if len(entries) != 0 {

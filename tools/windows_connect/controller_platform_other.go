@@ -8,6 +8,10 @@ import (
 	"os"
 )
 
+func controllerLogonState() (windowsLogonState, error) {
+	return windowsLogonState{}, errDesktopUnavailable
+}
+
 func runAIDesktop(context.Context, string, json.RawMessage) (any, error) {
 	return nil, aiFailure("DESKTOP_WORKER_UNAVAILABLE")
 }

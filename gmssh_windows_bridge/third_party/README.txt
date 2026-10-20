@@ -1,6 +1,7 @@
-GMSSH Windows includes the unmodified native files from the official RustDesk 1.5.0 portable release as an internal desktop engine.
-Upstream release: https://github.com/rustdesk/rustdesk/releases/tag/1.5.0
-Corresponding upstream source and build instructions: https://github.com/rustdesk/rustdesk/tree/1.5.0 (including the referenced Git submodules).
+GMSSH Windows 0.4.0a34 includes the unmodified native files from the official RustDesk 1.5.1+68 nightly build as an internal desktop engine. This is a pinned prerelease build, not the 1.5.0 stable release.
+Official asset identity: https://api.github.com/repos/rustdesk/rustdesk/releases/assets/657923634 . SHA-256: c274aeed865a5235e24114967e635dbca121d2dc2f96a68080c0f07cd09bece4 . The nightly download URL is mutable; builders must match this exact digest and file manifest, or stop.
+Corresponding upstream source and build instructions: https://github.com/rustdesk/rustdesk/tree/53996e3c404ea5083df0775057e4149e49102084 (including the referenced Git submodules).
+Official successful build: https://github.com/rustdesk/rustdesk/actions/runs/39347293462 . The nightly tag itself points to older source and is not used as the source revision for this build.
 The original RustDesk AGPL-3.0 licence accompanies this package. The upstream payload also retains its Flutter NOTICES.Z and driver licence files.
 GMSSH's installer and tray scripts are separate orchestration code. No RustDesk executable or library is patched or rebranded.
 The optional AI CLI/MCP adapter uses the official MCP Python SDK under its MIT licence: https://github.com/modelcontextprotocol/python-sdk/tree/v1.30.0 . It is installed as an optional Python dependency; no MCP server runtime is embedded in the Windows tray worker.

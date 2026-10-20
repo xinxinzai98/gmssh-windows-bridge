@@ -63,7 +63,7 @@ func runAIDesktop(ctx context.Context, owner string, args json.RawMessage) (any,
 		return nil, aiFailure("INVALID_RESPONSE")
 	}
 	if !result.OK {
-		allowed := map[string]bool{"DESKTOP_LOCKED": true, "AI_PAUSED": true, "STALE_TARGET": true, "TARGET_NOT_FOUND": true, "AMBIGUOUS_TARGET": true, "UNSUPPORTED_PATTERN": true, "FOCUS_DENIED": true, "DESKTOP_BUSY": true, "INVALID_QUERY": true, "QUERY_FAILED": true, "PASSWORD_FIELD": true}
+		allowed := map[string]bool{"DESKTOP_LOCKED": true, "AI_PAUSED": true, "STALE_TARGET": true, "TARGET_NOT_FOUND": true, "AMBIGUOUS_TARGET": true, "UNSUPPORTED_PATTERN": true, "FOCUS_DENIED": true, "DESKTOP_OUTCOME_UNKNOWN": true, "DESKTOP_BUSY": true, "INVALID_QUERY": true, "QUERY_FAILED": true, "PASSWORD_FIELD": true}
 		if allowed[result.Code] {
 			return nil, aiFailure(result.Code)
 		}

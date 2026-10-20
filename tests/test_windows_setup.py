@@ -6,6 +6,27 @@ from pathlib import Path
 
 @unittest.skipUnless(sys.platform == 'win32', 'native Windows argument parser required')
 class WindowsSetupTests(unittest.TestCase):
+    def test_uninstall_and_reinstall_preserve_original_services_and_private_state(self):
+        script = Path(__file__).with_name('windows-uninstall-checks.ps1')
+        result = subprocess.run(['powershell.exe', '-NoProfile', '-File', str(script)],
+                                capture_output=True, text=True, timeout=45)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('PASS:', result.stdout)
+
+    def test_credential_feedback_distinguishes_success_failure_and_cancel(self):
+        script = Path(__file__).with_name('windows-credential-feedback-checks.ps1')
+        result = subprocess.run(['powershell.exe', '-NoProfile', '-File', str(script)],
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('PASS:', result.stdout)
+
+    def test_preserved_services_and_actions_without_service_changes(self):
+        script = Path(__file__).with_name('windows-existing-checks.ps1')
+        result = subprocess.run(['powershell.exe', '-NoProfile', '-File', str(script)],
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('PASS:', result.stdout)
+
     def test_ipv6_source_rules_and_metadata_rollback_without_system_changes(self):
         script = Path(__file__).with_name('windows-ipv6-access-checks.ps1')
         result = subprocess.run(['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(script)],

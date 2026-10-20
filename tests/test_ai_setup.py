@@ -25,7 +25,7 @@ class AISetupTests(unittest.TestCase):
         self.payload={'schema':2,'connection':self.public,'port':22257,'certificate':cert,'controller':{'id':'f'*32,'name':'Synthetic AI','token':self.token,'permissions':self.policy}}
         self.code=self.encode(self.payload)
         self.record=self.registry.enroll(self.code,'Synthetic PC',sorted(PERMISSIONS),env='GMSSH_AI_TEST_SECRET')
-        self.id=self.record['id'];self.connections=0;self.paused=False
+        self.id=self.record['id'];self.connections=0;self.paused=False;self.unlocked=True
         case=self
         class Client:
             controller_protocol=2
@@ -33,7 +33,7 @@ class AISetupTests(unittest.TestCase):
             policy=case.policy
             def call(self,action,**values):
                 case.assertEqual(action,'ai-desktop');case.assertEqual(values,{'args':{'operation':'context'}})
-                return {'unlocked':True,'paused':case.paused}
+                return {'unlocked':case.unlocked,'paused':case.paused}
         self.client=Client()
         @contextmanager
         def connector(registry,device):
@@ -72,6 +72,35 @@ class AISetupTests(unittest.TestCase):
         self.registry.configure(self.id,[]);before=self.connections
         result=self.setup.operations.call('device_access_check',{'device':self.id})
         self.assertEqual(result['error']['code'],'ACCESS_DENIED');self.assertEqual(self.connections,before)
+
+    def test_read_only_file_grant_intersects_the_current_server_file_channel(self):
+        self.registry.configure(self.id,['files_read'])
+        result=self.setup.request({'action':'check','data':{'device':self.id}})
+        self.assertTrue(result['ok']);self.assertEqual(result['result']['code'],'OK')
+        self.assertTrue(result['result']['effective']['files_read']);self.assertFalse(result['result']['effective']['files'])
+        self.assertFalse(result['result']['effective']['terminal']);self.assertFalse(result['result']['effective']['input'])
+        self.assertTrue(self.registry.checks()[self.id]['effective']['files_read'])
+        self.client.policy={**self.policy,'files':False}
+        result=self.setup.request({'action':'check','data':{'device':self.id}})
+        self.assertEqual(result['result']['code'],'PERMISSIONS_REDUCED')
+        self.assertFalse(result['result']['effective']['files_read'])
+        self.client.policy={**self.policy,'files':False,'files_read':True}
+        result=self.setup.request({'action':'check','data':{'device':self.id}})
+        self.assertEqual(result['result']['code'],'OK')
+        self.assertTrue(result['result']['effective']['files_read']);self.assertFalse(result['result']['effective']['files'])
+        self.assertEqual(result['result']['features']['serverFileAccess'],'read-only')
+
+    def test_read_only_view_reports_lock_even_when_input_is_paused(self):
+        self.registry.configure(self.id,['inspect','files_read','view'])
+        self.paused=True
+        result=self.setup.request({'action':'check','data':{'device':self.id}})
+        self.assertEqual(result['result']['code'],'OK')
+        self.assertEqual(result['result']['features']['desktopState'],'paused')
+        self.unlocked=False
+        result=self.setup.request({'action':'check','data':{'device':self.id}})
+        self.assertEqual(result['result']['code'],'DESKTOP_LOCKED')
+        self.assertEqual(result['result']['features']['desktopState'],'locked')
+        self.assertEqual(result['result']['state'],'partial')
 
     def test_credential_update_rejects_wrong_identity_and_preserves_config(self):
         changed=json.loads(json.dumps(self.payload));changed['controller']['id']='a'*32

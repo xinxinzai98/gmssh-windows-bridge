@@ -186,7 +186,7 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
     };
     void open();
   }
-  const allowed=(record,type)=>record.binding?.permissions?.[type==='desktop'?'view':type]!==false;
+  const allowed=(record,type)=>type==='files'?(record.binding?.permissions?.files!==false||record.binding?.permissions?.files_read===true):record.binding?.permissions?.[type==='desktop'?'view':type]!==false;
   function invoke(record, type) {
     const current=currentRecords.get(record.id);if(!current){notify('设备列表已变化，请重新选择这台设备。');return;}record=current;if(!allowed(record,type)){notify('当前独立授权未允许此操作，请联系服务端调整权限。');return;}
     if(['desktop','terminal'].includes(type)&&window.gmsshWorkspaceController){window.gmsshWorkspaceController.open(record.id,type);return;}

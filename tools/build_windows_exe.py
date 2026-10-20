@@ -33,7 +33,12 @@ def build(bundle, output, go):
         environment.pop('GOOS', None)
         environment.pop('GOARCH', None)
         # MIT-licensed build-only tool, pinned and cached outside the repository.
-        subprocess.run([str(go), 'run', 'github.com/akavel/rsrc@v0.10.2', '-arch', 'amd64',
+        # A fixed module graph avoids the unrelated version-list/deprecation
+        # request that `go run tool@version` makes even with a warm module cache.
+        (stage / 'go.mod').write_text('module local.gmssh/installer-build\n\ngo 1.18\n\nrequire github.com/akavel/rsrc v0.10.2\n')
+        (stage / 'go.sum').write_text('github.com/akavel/rsrc v0.10.2 h1:Zxm8V5eI1hW4gGaYsJQUhxpjkENuG91ki8B4zCrvEsw=\n'
+                                    'github.com/akavel/rsrc v0.10.2/go.mod h1:uLoCtb9J+EyAqh+26kdrTgmzRBFPGOolLWKpdxkKq+c=\n')
+        subprocess.run([str(go), 'run', '-mod=readonly', 'github.com/akavel/rsrc', '-arch', 'amd64',
                         '-ico', str(icon), '-o', 'rsrc_windows_amd64.syso'], cwd=stage, env=environment, check=True)
         environment.update({'GOOS':'windows', 'GOARCH':'amd64', 'GO111MODULE':'off'})
         output.parent.mkdir(parents=True, exist_ok=True)

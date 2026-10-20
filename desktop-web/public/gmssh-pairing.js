@@ -161,7 +161,7 @@ window.installGMSSHPairing = function () {
         else if(Date.now()<deadline)setTimeout(select,200);
       };
       select();
-      const permissions=reply.data.permissions||preview.authorization?.controller.permissions;lock(false);close();const controller=window.gmsshWindowsControllers?.get(id);if(reply.data.credentialsUpdated)controller?.close?.();if(permissions?.view===false){if(permissions.files)window.gmsshFilesController?.open(id);else window.gmsshWorkspaceController?.open(id,permissions.terminal?'terminal':'overview');}else controller?.open();
+      const permissions=reply.data.permissions||preview.authorization?.controller.permissions;lock(false);close();const controller=window.gmsshWindowsControllers?.get(id);if(reply.data.credentialsUpdated)controller?.close?.();if(permissions?.view===false){if(permissions.files||permissions.files_read)window.gmsshFilesController?.open(id);else window.gmsshWorkspaceController?.open(id,permissions.terminal?'terminal':'overview');}else controller?.open();
     }catch(error){field('password').value='';status(error.message||'接入未完成，请重试。');}
     finally{lock(false);}
   }

@@ -125,7 +125,7 @@ func TestTerminalPreservesVTBytesAndRevocationClosesOnlyItsPTY(t *testing.T) {
 	}
 	select {
 	case <-pty.done:
-	default:
+	case <-time.After(time.Second):
 		t.Fatal("revoked PTY kept running")
 	}
 }
@@ -168,9 +168,18 @@ func brokerFixture(t *testing.T) (*controllerBroker, string) {
 	b := newControllerBroker(s)
 	t.Cleanup(func() {
 		b.mu.Lock()
-		defer b.mu.Unlock()
+		closing := []*controllerSession{}
 		for _, s := range b.sessions {
 			s.close()
+			closing = append(closing, s)
+		}
+		b.mu.Unlock()
+		for _, s := range closing {
+			select {
+			case <-s.finished:
+			case <-time.After(2 * time.Second):
+				t.Error("session cleanup did not finish")
+			}
 		}
 	})
 	return b, m.Token

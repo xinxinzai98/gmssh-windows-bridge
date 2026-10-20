@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 # Local owner UI; the helper authenticates the loopback management request.
 function Show-GMSSHControllers {
     $helper = Get-GMSSHConnectHelper $root
@@ -28,15 +28,26 @@ function Show-GMSSHControllers {
     $name = New-Object Windows.Forms.TextBox
     $name.SetBounds(386,362,494,30); $name.MaxLength = 80; $form.Controls.Add($name)
     [void](New-AgentLabel $form '新授权名称（例如：值班电脑）' 386 330 494 28)
-    $checks = @{}; $labels = [ordered]@{view='查看桌面';input='键盘与鼠标';clipboard='文本剪贴板';files='文件读写';terminal='命令执行';power='电源操作'}
+    $checks = @{}; $labels = [ordered]@{view='查看桌面';input='键盘与鼠标';files_read='文件仅读取';files='文件读写';clipboard='文本剪贴板';terminal='命令执行';power='电源操作'}
     $index = 0
     foreach ($key in $labels.Keys) {
         $check = New-Object Windows.Forms.CheckBox
-        $check.Text = $labels[$key]; $check.SetBounds((20 + ($index % 3)*286),(410 + [Math]::Floor($index/3)*36),260,30)
+        $check.Text = $labels[$key]; $check.SetBounds((20 + ($index % 4)*215),(410 + [Math]::Floor($index/4)*36),205,30)
         $check.BackColor = $background; $check.ForeColor = [Drawing.Color]::WhiteSmoke; $check.Checked = ($key -eq 'view')
         $checks[$key] = $check; $form.Controls.Add($check); $index++
     }
-    $warningText = '所有授权均可读取设备监控和只读工具。这些开关约束 GMSSH 的对应通道，并非 Windows 系统沙箱。键鼠、文件写入或命令执行可通过 Windows 本身完成其他操作。只看连接请仅勾选“查看桌面”。'
+    $supportsReadOnly = $manifest.PSObject.Properties['fileReadOnlyProtocol'] -and $manifest.fileReadOnlyProtocol -eq 1
+    $checks.files_read.Enabled = [bool]$supportsReadOnly
+    $checks.files_read.Add_CheckedChanged({ if ($checks.files_read.Checked) { $checks.files.Checked=$false } })
+    $checks.files.Add_CheckedChanged({ if ($checks.files.Checked) { $checks.files_read.Checked=$false } })
+    $readonlyPreset = New-AgentButton $form 'AI 只读预设' 670 274 210 34
+    $readonlyPreset.Enabled = [bool]$supportsReadOnly
+    $readonlyPreset.Add_Click({
+        foreach ($key in $labels.Keys) { $checks[$key].Checked=($key -in @('view','files_read')) }
+        $message.Text='只读预设已填写；创建或更新授权后生效。文件只读需要 0.4a32 或更新管理端。'
+    })
+    $warningText = '所有授权可读取监控和只读工具。文件仅读取由服务端限制，需要 0.4a32 管理端；命令或键鼠仍可修改系统。这些通道并非 Windows 系统沙箱。只看桌面可仅选“查看桌面”。'
+    if($preserved){$warningText='保留模式要求既有管理员账号。独立文件通道以 SYSTEM 服务身份工作，命令使用账号令牌；这些权限不是原 SSH 的文件沙箱。请按需选择文件读取/读写、桌面和命令权限。'}
     $warningLabel = New-AgentLabel $form $warningText 20 492 860 48; $warningLabel.ForeColor = $warning
     $create = New-AgentButton $form '创建并复制长期授权码' 20 554 270 38 $true
     $update = New-AgentButton $form '更新所选授权权限' 304 554 230 38
@@ -51,30 +62,37 @@ function Show-GMSSHControllers {
         if (-not $reply.ok) { throw '会话服务拒绝操作。' }
         $reply.result
     }
+    function Set-ControllerSelection {
+        $item=$selector.SelectedItem;if (-not $item) { return }
+        foreach ($key in $labels.Keys) {
+            $property=$item.permissions.PSObject.Properties[$key]
+            $checks[$key].Checked=($null -ne $property -and [bool]$property.Value)
+        }
+        $update.Enabled=$revoke.Enabled=([bool]$item.id)
+    }
     function Refresh-Controllers {
         try {
             $value = Invoke-ControllerRequest @{action='list'}
             $selectedId = if ($selector.SelectedItem) { $selector.SelectedItem.id } else { '' }
             $loading = $true; $sessions.Items.Clear(); $selector.Items.Clear()
-            [void]$selector.Items.Add([pscustomobject]@{id='';name='创建新授权';permissions=@{view=$true}})
+            [void]$selector.Items.Add([pscustomobject]@{id='';name='创建新授权';permissions=[pscustomobject]@{view=$true}})
             foreach ($item in @($value.controllers)) { [void]$selector.Items.Add($item) }
             $selector.SelectedIndex = 0
             for ($i=1;$i -lt $selector.Items.Count;$i++) { if ($selector.Items[$i].id -ceq $selectedId) { $selector.SelectedIndex=$i;break } }
             $channels = @{desktop='桌面';files='文件';terminal='终端';power='电源'}
-            $states = @{handshaking='握手中';authenticating='认证中';connected='已连接';auth_failed='认证失败';ready='通道就绪';disconnected='已断开'}
+            $states = @{handshaking='握手中';authenticating='认证中';connected='已连接';auth_failed='认证失败';ready='通道就绪';disconnected='已断开';closing='正在结束'}
             foreach ($session in @($value.sessions)) {
                 $row = New-Object Windows.Forms.ListViewItem([string]$session.name)
                 [void]$row.SubItems.Add([string]$channels[$session.kind]); [void]$row.SubItems.Add([string]$states[$session.state]); [void]$row.SubItems.Add([string]$session.address)
                 [void]$row.SubItems.Add(([DateTime]::Parse($session.started).ToLocalTime().ToString('yyyy-MM-dd HH:mm:ss')))
                 $row.Tag = $session.id; [void]$sessions.Items.Add($row)
             }
-            $loading = $false; $message.Text = '会话：'+$sessions.Items.Count+' · 独立授权：'+@($value.controllers).Count+'。关闭本窗口不影响连接。'
+            $loading = $false; Set-ControllerSelection; $message.Text = '会话：'+$sessions.Items.Count+' · 独立授权：'+@($value.controllers).Count+'。关闭本窗口不影响连接。'
         } catch { $loading=$false; $message.Text='读取未完成，请确认连接码服务已启用，并尝试刷新。' }
     }
     $selector.Add_SelectedIndexChanged({
         if ($loading -or -not $selector.SelectedItem) { return }
-        $item=$selector.SelectedItem;foreach ($key in $labels.Keys) { $checks[$key].Checked=[bool]$item.permissions.$key }
-        $update.Enabled=$revoke.Enabled=([bool]$item.id)
+        Set-ControllerSelection
     })
     $refresh.Add_Click({ Refresh-Controllers })
     $disconnect.Add_Click({
@@ -109,7 +127,7 @@ function Show-GMSSHControllers {
     })
     $update.Add_Click({
         $item=$selector.SelectedItem;if (-not $item.id) { return };$policy=@{};foreach ($key in $labels.Keys) { $policy[$key]=$checks[$key].Checked }
-        try { [void](Invoke-ControllerRequest @{action='permissions';id=$item.id;permissions=$policy});Refresh-Controllers;$message.Text='权限已更新，该授权的现有会话已断开，重连后生效。' } catch { $message.Text='权限未更新，请核对选择和权限组合。' }
+        try { [void](Invoke-ControllerRequest @{action='permissions';id=$item.id;permissions=$policy});Refresh-Controllers;$message.Text='权限已生效，旧会话正在结束；后续请求按新权限校验。' } catch { $message.Text='权限未更新，请核对选择和权限组合。' }
     })
     $revoke.Add_Click({
         $item=$selector.SelectedItem;if (-not $item.id) { return }

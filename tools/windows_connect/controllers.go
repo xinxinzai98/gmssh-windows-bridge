@@ -18,6 +18,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 )
@@ -29,6 +30,7 @@ type permissions struct {
 	Input     bool `json:"input"`
 	Clipboard bool `json:"clipboard"`
 	Files     bool `json:"files"`
+	FilesRead bool `json:"files_read,omitempty"`
 	Terminal  bool `json:"terminal"`
 	Power     bool `json:"power"`
 }
@@ -55,33 +57,42 @@ type controllerSession struct {
 	desktop                               *desktopSession
 	terminal                              *terminalSession
 	cancel                                context.CancelFunc
-	closed                                bool
+	closed                                atomic.Bool
+	closeOnce                             sync.Once
+	finished                              chan struct{}
+	onClosed                              func()
 	expiry                                *time.Timer
 }
 
 func (s *controllerSession) close() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		return
-	}
-	s.closed = true
-	if s.expiry != nil {
-		s.expiry.Stop()
-	}
-	if s.desktop != nil {
-		s.desktop.close()
-	}
-	if s.terminal != nil {
-		s.terminal.close()
-	}
-	if s.cancel != nil {
-		s.cancel()
-	}
-	for _, file := range s.files {
-		file.Close()
-	}
-	s.files = nil
+	// Block new and queued requests before waiting for a possibly blocked I/O.
+	s.closed.Store(true)
+	s.closeOnce.Do(func() {
+		go func() {
+			s.mu.Lock()
+			if s.expiry != nil {
+				s.expiry.Stop()
+			}
+			if s.desktop != nil {
+				s.desktop.close()
+			}
+			if s.terminal != nil {
+				s.terminal.close()
+			}
+			if s.cancel != nil {
+				s.cancel()
+			}
+			for _, file := range s.files {
+				file.Close()
+			}
+			s.files = nil
+			s.mu.Unlock()
+			if s.onClosed != nil {
+				s.onClosed()
+			}
+			close(s.finished)
+		}()
+	})
 }
 
 type controllerBroker struct {
@@ -134,12 +145,14 @@ func (b *controllerBroker) expire(s *controllerSession) {
 		return
 	}
 	remaining := b.lease - time.Since(s.Updated)
+	if s.closed.Load() {
+		return
+	}
 	if remaining > 0 {
 		s.expiry.Reset(remaining)
 		return
 	}
 	s.close()
-	delete(b.sessions, s.ID)
 }
 
 func randomID() string {
@@ -158,6 +171,12 @@ func validControllerID(id string) bool {
 	return err == nil && len(raw) == 16 && strings.ToLower(id) == id
 }
 func validPolicy(p permissions) bool { return p.View || !p.Input && !p.Clipboard }
+func normalizedPolicy(p permissions) permissions {
+	if p.Files {
+		p.FilesRead = false
+	} // Preserve the six-field legacy read/write policy.
+	return p
+}
 
 func (b *controllerBroker) registry() (controllerRegistry, error) {
 	m, err := b.store.meta()
@@ -181,11 +200,12 @@ func (b *controllerBroker) registry() (controllerRegistry, error) {
 		return registry, errUnavailable
 	}
 	seen := map[string]bool{}
-	for _, c := range registry.Items {
+	for index, c := range registry.Items {
 		if !validControllerID(c.ID) || seen[c.ID] || len(c.Hash) != 64 || len(c.Name) < 1 || len(c.Name) > 240 || !utf8.ValidString(c.Name) || !validPolicy(c.Policy) {
 			return registry, errUnavailable
 		}
 		seen[c.ID] = true
+		registry.Items[index].Policy = normalizedPolicy(c.Policy)
 	}
 	return registry, nil
 }
@@ -231,6 +251,7 @@ type controllerRequest struct {
 }
 
 func (b *controllerBroker) manage(r controllerRequest) (any, error) {
+	r.Policy = normalizedPolicy(r.Policy)
 	registry, err := b.registry()
 	if err != nil {
 		return nil, err
@@ -241,14 +262,14 @@ func (b *controllerBroker) manage(r controllerRequest) (any, error) {
 			items = append(items, map[string]any{"id": c.ID, "name": c.Name, "permissions": c.Policy, "created": c.Created})
 		}
 		sessions := []map[string]any{}
-		for id, s := range b.sessions {
+		for _, s := range b.sessions {
 			if time.Since(s.Updated) > 30*time.Minute || s.desktop != nil && s.desktop.snapshot() == "disconnected" {
 				s.close()
-				delete(b.sessions, id)
-				continue
 			}
 			state := "ready"
-			if s.desktop != nil {
+			if s.closed.Load() {
+				state = "closing"
+			} else if s.desktop != nil {
 				state = s.desktop.snapshot()
 			}
 			sessions = append(sessions, map[string]any{"id": s.ID, "controllerId": s.ControllerID, "name": s.Name, "kind": s.Kind, "state": state, "address": s.Address, "started": s.Started.UTC().Format(time.RFC3339), "updated": s.Updated.UTC().Format(time.RFC3339)})
@@ -261,7 +282,6 @@ func (b *controllerBroker) manage(r controllerRequest) (any, error) {
 			return nil, errUnavailable
 		}
 		s.close()
-		delete(b.sessions, r.ID)
 		return map[string]bool{"disconnected": true}, nil
 	}
 	if r.Action == "grant" {
@@ -331,10 +351,9 @@ func (b *controllerBroker) manage(r controllerRequest) (any, error) {
 	}
 	b.cancelAIJobs(r.ID)
 	// Changes close this controller's sessions. Other controllers and legacy SSH stay intact.
-	for id, s := range b.sessions {
+	for _, s := range b.sessions {
 		if s.ControllerID == r.ID {
 			s.close()
-			delete(b.sessions, id)
 		}
 	}
 	return map[string]bool{"updated": true}, nil
@@ -345,7 +364,7 @@ func permissionFor(p permissions, kind string) bool {
 	case "desktop":
 		return p.View
 	case "files":
-		return p.Files
+		return p.Files || p.FilesRead
 	case "terminal":
 		return p.Terminal
 	case "power":
@@ -382,22 +401,26 @@ func (b *controllerBroker) request(c controller, r controllerRequest, address st
 		defer cancel()
 		body, err := b.readInfo(ctx, file, prefix)
 		if err != nil {
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return nil, aiFailure("OPERATION_TIMEOUT")
+			}
 			return nil, err
 		}
 		return map[string]any{"data": body}, nil
 	}
 	if r.Action == "capabilities" {
-		return map[string]any{"protocol": 2, "aiProtocol": 1, "permissions": c.Policy, "name": c.Name, "controllerId": c.ID}, nil
+		return map[string]any{"protocol": 2, "aiProtocol": 1, "fileReadOnly": 1, "windowsUnlock": 1, "permissions": c.Policy, "name": c.Name, "controllerId": c.ID}, nil
 	}
 	if r.Action == "open" {
 		if !permissionFor(c.Policy, r.Kind) {
 			return nil, errDenied
 		}
 		count, desktops := 0, 0
-		for id, s := range b.sessions {
+		for _, s := range b.sessions {
 			if time.Since(s.Updated) > 30*time.Minute || s.desktop != nil && s.desktop.snapshot() == "disconnected" {
 				s.close()
-				delete(b.sessions, id)
+			}
+			if s.closed.Load() {
 				continue
 			}
 			if s.Kind == "desktop" {
@@ -411,7 +434,14 @@ func (b *controllerBroker) request(c controller, r controllerRequest, address st
 			return nil, errors.New("SESSION_LIMIT")
 		}
 		now := time.Now()
-		s := &controllerSession{ID: randomID(), ControllerID: c.ID, Name: c.Name, Kind: r.Kind, Address: address, Started: now, Updated: now, files: map[string]*os.File{}}
+		s := &controllerSession{ID: randomID(), ControllerID: c.ID, Name: c.Name, Kind: r.Kind, Address: address, Started: now, Updated: now, files: map[string]*os.File{}, finished: make(chan struct{})}
+		s.onClosed = func() {
+			b.mu.Lock()
+			defer b.mu.Unlock()
+			if b.sessions[s.ID] == s {
+				delete(b.sessions, s.ID)
+			}
+		}
 		if r.Kind == "desktop" {
 			conn, err := b.openDesktop()
 			if err != nil {
@@ -427,9 +457,11 @@ func (b *controllerBroker) request(c controller, r controllerRequest, address st
 	if s == nil || s.ControllerID != c.ID {
 		return nil, errDenied
 	}
+	if s.closed.Load() {
+		return nil, aiFailure("SESSION_CLOSED")
+	}
 	if !permissionFor(c.Policy, s.Kind) {
 		s.close()
-		delete(b.sessions, s.ID)
 		return nil, errDenied
 	}
 	s.Updated = time.Now()
@@ -438,14 +470,13 @@ func (b *controllerBroker) request(c controller, r controllerRequest, address st
 	}
 	if r.Action == "close" {
 		s.close()
-		delete(b.sessions, s.ID)
 		return map[string]bool{"closed": true}, nil
 	}
 	// Potentially blocking I/O runs outside the registry lock. Revocation can close it immediately.
 	b.mu.Unlock()
 	defer b.mu.Lock()
 	s.mu.Lock()
-	if s.closed {
+	if s.closed.Load() {
 		s.mu.Unlock()
 		return nil, errDenied
 	}
@@ -469,8 +500,12 @@ func (b *controllerBroker) request(c controller, r controllerRequest, address st
 			if err != nil {
 				return nil, err
 			}
-			defer func() { secret.Password = "" }()
-			return s.desktop.write(value.Data, c.Policy, secret.Password, c.Name)
+			defer func() { secret.Password = ""; secret.DesktopPassword = "" }()
+			desktopPassword := secret.DesktopPassword
+			if desktopPassword == "" {
+				desktopPassword = secret.Password
+			}
+			return s.desktop.write(value.Data, c.Policy, desktopPassword, c.Name)
 		}
 		return nil, errDenied
 	}
@@ -541,7 +576,11 @@ func (b *controllerBroker) request(c controller, r controllerRequest, address st
 	}
 	defer s.mu.Unlock()
 	if s.Kind == "files" {
-		return b.fileRequest(s, r)
+		result, err := b.fileRequest(s, r, c.Policy)
+		if s.closed.Load() {
+			return nil, aiFailure("SESSION_CLOSED")
+		}
+		return result, err
 	}
 	var value struct {
 		Command string `json:"command"`
@@ -579,7 +618,13 @@ func (b *controllerBroker) request(c controller, r controllerRequest, address st
 	b.accountFailure(m, err)
 	s.mu.Lock()
 	s.cancel = nil
+	if s.closed.Load() {
+		return nil, aiFailure("OPERATION_INTERRUPTED")
+	}
 	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return nil, aiFailure("OPERATION_TIMEOUT")
+		}
 		return nil, err
 	}
 	return map[string]any{"output": string(output), "exit": exit}, nil

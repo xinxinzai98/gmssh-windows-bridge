@@ -8,6 +8,46 @@ from pathlib import Path
 import zipfile
 
 
+def windows_source_files(root, monitor_only=False, public_release=False):
+    source = root / 'gmssh_windows_bridge'
+    names = ['setup-windows.cmd', 'setup-windows.ps1', 'setup-checks.ps1', 'setup-existing.ps1', 'setup-progress.ps1', 'setup-monitor.ps1', 'install-vc-runtime.ps1', 'windows-installers.json', 'credential-dialog.ps1']
+    if not monitor_only:
+        names += ['setup-desktop.ps1', 'install-desktop-engine.ps1', 'gmssh-agent.ps1', 'controller-panel.ps1', 'collector.ps1', 'login.ps1', 'system-info.ps1', 'readonly-tools.ps1', 'ai-context.ps1', 'ai-desktop.ps1', 'setup-maintenance.ps1', 'setup-connect.ps1', 'setup-network.ps1', 'setup-uninstall.ps1', 'uninstall-windows.ps1']
+    files = {}
+    for name in names:
+        content = (source / name).read_bytes()
+        if name.endswith('.ps1'):
+            content = content.decode('utf-8-sig').encode('utf-8-sig')
+        if name.endswith('.cmd'):
+            content = content.replace(b'\r\n', b'\n').replace(b'\n', b'\r\n')
+        files[name] = content
+    for file in sorted((source / 'brand').glob('*')):
+        if file.is_file():
+            files['brand/' + file.name] = file.read_bytes()
+    guide = 'getting-started.md' if public_release else 'windows-first-run.md'
+    files['README.txt'] = (root / 'docs' / guide).read_text().encode('utf-8-sig')
+    for file in (source / 'third_party').iterdir():
+        if not monitor_only or file.name == 'Go-LICENSE.txt':
+            files['third-party-licenses/' + file.name] = file.read_bytes()
+            if file.name == 'go-qrcode-MIT.txt':
+                files['go-qrcode-LICENSE.txt'] = file.read_bytes()
+    return files
+
+
+def check_engine_files(files, expected_digest):
+    if (not isinstance(files, dict) or not files or 'rustdesk.exe' not in files
+            or not isinstance(expected_digest, str)
+            or hashlib.sha256(json.dumps(files, sort_keys=True, separators=(',', ':')).encode()).hexdigest() != expected_digest):
+        raise ValueError('desktop engine file manifest differs from the pinned official payload')
+    for name, digest in files.items():
+        if not isinstance(name, str) or not isinstance(digest, str):
+            raise ValueError('unsafe engine file manifest')
+        relative = Path(name)
+        if (relative.is_absolute() or '..' in relative.parts
+                or ':' in name or '\\' in name or not re.fullmatch('[a-f0-9]{64}', digest)):
+            raise ValueError('unsafe engine file manifest')
+
+
 def build(output, installer=None, controller="LocalSubnet", openssh=None, engine=None, monitor_only=False,
           vcredist=None, preserve_desktop=False, expected_computer=None, runtime_source='bundled', public_release=False,
           connect_helper=None):
@@ -49,6 +89,7 @@ def build(output, installer=None, controller="LocalSubnet", openssh=None, engine
         engine_manifest = json.loads((engine / 'engine-files.json').read_text())
         if engine_manifest['source']['sha256'] != manifest['rustdesk']['sha256']:
             raise ValueError('desktop engine source differs from the pinned release')
+        check_engine_files(engine_manifest['files'], manifest['rustdesk']['filesSha256'])
         import io
         buffer = io.BytesIO()
         with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as archive:
@@ -64,27 +105,14 @@ def build(output, installer=None, controller="LocalSubnet", openssh=None, engine
         payload = buffer.getvalue()
     output.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as bundle:
-        names = ['setup-windows.cmd', 'setup-windows.ps1', 'setup-checks.ps1', 'setup-progress.ps1', 'setup-monitor.ps1', 'install-vc-runtime.ps1', 'windows-installers.json', 'credential-dialog.ps1']
-        if not monitor_only:
-            names += ['setup-desktop.ps1', 'install-desktop-engine.ps1', 'gmssh-agent.ps1', 'controller-panel.ps1', 'collector.ps1', 'login.ps1', 'system-info.ps1', 'readonly-tools.ps1', 'ai-context.ps1', 'ai-desktop.ps1', 'setup-maintenance.ps1', 'setup-connect.ps1', 'setup-network.ps1']
-        for name in names:
-            content = (source / name).read_bytes()
-            if name.endswith(".ps1"):
-                content = content.decode("utf-8-sig").encode("utf-8-sig")
-            if name.endswith(".cmd"):
-                content = content.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+        for name, content in windows_source_files(root, monitor_only, public_release).items():
             bundle.writestr(name, content)
-        for file in sorted((source / 'brand').glob('*')):
-            if file.is_file():
-                bundle.write(file, 'brand/' + file.name)
         for name, content in connect_files.items():
             bundle.writestr(name, content)
         version = re.search(r'__version__\s*=\s*[\'"]([^\'"]+)', (source / '__init__.py').read_text()).group(1)
         bundle.writestr("setup-config.json", json.dumps({"version": version, "controllerAddress": controller, "monitorOnly": monitor_only,
                                                       "preserveDesktop": preserve_desktop,
                                                       "expectedComputer": expected_computer, "runtimeSource": runtime_source}, indent=2))
-        guide = 'getting-started.md' if public_release else 'windows-first-run.md'
-        bundle.writestr("README.txt", (root / 'docs' / guide).read_text().encode("utf-8-sig"))
         bundle.write(openssh, 'installers/' + manifest['openssh']['filename'])
         if runtime_source == 'bundled':
             bundle.write(vcredist, 'installers/' + manifest['vcredist']['filename'])
@@ -92,11 +120,6 @@ def build(output, installer=None, controller="LocalSubnet", openssh=None, engine
             bundle.writestr('desktop-engine.zip', payload, compress_type=zipfile.ZIP_STORED)
             bundle.writestr('desktop-payload.json', json.dumps({'filename':'desktop-engine.zip',
                 'sha256':hashlib.sha256(payload).hexdigest(), 'sourceSha256':manifest['rustdesk']['sha256']}, indent=2))
-        for file in (source / 'third_party').iterdir():
-            if not monitor_only or file.name == 'Go-LICENSE.txt':
-                bundle.write(file, 'third-party-licenses/' + file.name)
-                if file.name == 'go-qrcode-MIT.txt':
-                    bundle.write(file, 'go-qrcode-LICENSE.txt')
     with zipfile.ZipFile(output) as bundle:
         if bundle.testzip() is not None:
             raise ValueError("bundle integrity check failed")

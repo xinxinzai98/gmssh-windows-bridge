@@ -1,4 +1,4 @@
-param([string]$StatusFile)
+﻿param([string]$StatusFile)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing

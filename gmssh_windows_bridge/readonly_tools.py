@@ -166,7 +166,7 @@ def diagnostics(session, config, run, system_command):
         except Exception:
             stages.append({'id': 'monitor', 'state': 'failed', 'code': 'MONITOR_QUERY_FAILED', 'sampledAt': now()})
         try:
-            if controller and session.client.policy.get('files') is not True:
+            if controller and not (session.client.policy.get('files') is True or session.client.policy.get('files_read') is True):
                 raise PermissionError()
             session.files()
             stages.append({'id': 'files', 'state': 'passed', 'code': 'CONTROLLER_FILES_READY' if controller else 'SFTP_READY', 'sampledAt': now()})

@@ -5,7 +5,7 @@ window.installGMSSHAI=function({viewerUrl}){
   const make=(tag,cls,text)=>{const node=document.createElement(tag);node.className=cls||'';if(text!==undefined)node.textContent=text;return node;};
   const icon=name=>{const node=make('img','gm-ui-icon');node.src=new URL('ui-icons/'+name+'.svg',base).href;node.alt='';return node;};
   const button=(text,fn,name)=>{const node=make('button','gm-ui-button',text);node.type='button';node.onclick=fn;if(name)node.prepend(icon(name));return node;};
-  const labels={inspect:'设备信息',terminal:'执行命令',files:'文件读写',view:'查看桌面',input:'操作桌面'};
+  const labels={inspect:'设备信息',files_read:'文件读取',files:'文件读写',terminal:'执行命令',view:'查看桌面',input:'操作桌面'};
   const messages={AI_SETUP_BUSY:'有一项操作正在进行，请稍候。',AI_PREVIEW_REQUIRED:'请重新粘贴授权码并核对设备。',AI_RUNTIME_UNAVAILABLE:'本机运行环境不可用，请重新安装或修复 GMSSH。',AI_PREPARE_FAILED:'组件准备未完成，请检查网络后重试。',AI_SETUP_TIMEOUT:'操作等待超时，请检查结果后重试。',AI_CANCELLED:'已取消。',AI_DEPENDENCY_REQUIRED:'尚未准备 MCP 组件。',MCP_VERSION_MISMATCH:'运行环境与应用组件版本不一致，请重新准备组件。',MCP_CHECK_FAILED:'MCP 启动检查未通过，请重新准备组件。',DEVICE_EXISTS:'这个授权已经添加，请更新已有授权。',ACCESS_DENIED:'当前授权不允许此操作。',AUTH_FAILED:'连接凭据未通过验证，独立授权可能已撤销。',CONNECTION_FAILED:'未能连通设备，请检查网络和服务状态。',PEER_CHANGED:'设备身份与原记录不一致，已停止连接。',PERMISSIONS_REDUCED:'连接已验证，部分所选操作尚未获得服务端授权。',SERVER_UPGRADE_REQUIRED:'此能力需要 Windows 服务端 0.4a27 或更新版本。',DESKTOP_LOCKED:'授权已验证，Windows 桌面当前已锁定。',DESKTOP_WORKER_UNAVAILABLE:'授权已验证，Windows 桌面组件未运行。',NO_INTERACTIVE_SESSION:'授权已验证，Windows 当前没有可用桌面会话。',DESKTOP_BUSY:'桌面正被其他操作使用，请稍后重试。',AI_PAUSED:'授权已验证，Windows 用户已暂停 AI 桌面控制。',CREDENTIAL_REQUIRED:'请更新这台电脑的连接凭据。',CREDENTIAL_FROM_ENV:'请在提供凭据的运行环境中更新。',ENV_FORWARDING_REQUIRED:'此设备使用环境变量，请改为复制 Codex TOML 配置。',CONFIG_UNSAFE:'本机 AI 配置无法安全读取，请检查目录权限。'};
   Object.assign(messages,{INVALID_ARGUMENT:'输入内容无效，请重新核对授权信息。',INVALID_RESPONSE:'接入信息返回不完整，请先核对已有任务。',SETUP_FAILED:'本机配置操作未完成，请重试。',AI_SETUP_FAILED:'本机配置操作未完成，请重试。',NOT_FOUND:'这个任务或文件已不存在，请核对编号。',LOCAL_JOURNAL_FAILED:'本机任务记录未能保存，请检查磁盘空间和目录权限。',REMOTE_IO:'远端响应中断，请先查询原任务，不要重新执行命令。'});
   const message=(code,fallback)=>messages[code]||fallback||'操作未完成，请重试。';
@@ -31,8 +31,13 @@ window.installGMSSHAI=function({viewerUrl}){
   function field(text,input){const node=make('label','gm-ai-field');node.append(make('span','',text),input);return node;}
   function permissions(values=[]){
     const group=make('fieldset','gm-ai-permissions');group.append(make('legend','','允许 AI 使用的能力'));
+    const presets=make('div','gm-ai-presets');group.append(presets);
     const boxes={};for(const key of Object.keys(labels)){const box=make('input');box.type='checkbox';box.checked=values.includes(key);box.setAttribute('aria-label','允许'+labels[key]);boxes[key]=box;const label=make('label');label.append(box,make('span','',labels[key]));group.append(label);}
+    if(boxes.files.checked)boxes.files_read.checked=false;
+    boxes.files.onchange=()=>{if(boxes.files.checked)boxes.files_read.checked=false;};boxes.files_read.onchange=()=>{if(boxes.files_read.checked)boxes.files.checked=false;};
     boxes.input.onchange=()=>{if(boxes.input.checked)boxes.view.checked=true;};boxes.view.onchange=()=>{if(!boxes.view.checked)boxes.input.checked=false;};
+    presets.append(button('只读预设',()=>{if(busy)return;for(const [key,box]of Object.entries(boxes))box.checked=['inspect','files_read','view'].includes(key);group.dispatchEvent(new Event('change',{bubbles:true}));}),make('span','gm-muted','设备信息、文件读取、桌面查看；保存后生效。'));
+    const note=make('p','gm-ai-permission-note gm-muted','文件读取允许搜索、查看和修改预览。执行命令或操作桌面还可修改系统，请按需选择。');group.append(note);
     return {node:group,value:()=>Object.keys(boxes).filter(key=>boxes[key].checked)};
   }
   async function work(fn,{write=false}={}){
@@ -57,9 +62,16 @@ window.installGMSSHAI=function({viewerUrl}){
       const row=make('section','gm-ai-device'),identity=make('div','gm-ai-identity'),detail=make('div'),name=make('strong','',device.name);detail.append(name,make('small','gm-muted',device.addresses.join(' · ')));identity.append(icon('windows'),detail);row.append(identity);list.append(row);
       const enabled=device.allow.length>0,check=device.lastCheck,stamp=check?.checkedAt?new Date(check.checkedAt).toLocaleString():'';
       const state=make('p','gm-ai-state '+(check?.state||''),!enabled?'本机入口已停用':!check?'尚未检查远端授权':check.state==='passed'?'上次授权检查通过 · '+stamp:'上次检查：'+message(check.code)+' · '+stamp);row.append(state);
-      row.append(make('p','gm-muted',device.allow.map(key=>labels[key]).join(' · ')||'不接受新的 AI 操作'));
+      row.append(make('p','gm-muted',device.allow.filter(key=>key!=='files_read'||!device.allow.includes('files')).map(key=>labels[key]).join(' · ')||'不接受新的 AI 操作'));
+      if(enabled)row.append(make('p','gm-ai-mode gm-muted','本机权限：'+(device.allow.some(key=>['files','terminal','input'].includes(key))?'自定义操作':'只读')));
       if(device.accessStored===false)row.append(make('p','gm-ai-state failed','本机未找到连接凭据，请更新授权或密码。'));
       if(check?.effective){const denied=device.allow.filter(key=>check.effective[key]===false);if(denied.length)row.append(make('p','gm-muted','服务端尚未允许：'+denied.map(key=>labels[key]).join('、')));}
+      if(device.allow.includes('files_read')&&!device.allow.includes('files')){
+        const access=check?.features?.serverFileAccess;
+        if(access==='read-only')row.append(make('p','gm-muted','上次核对：服务端文件只读。'));
+        if(access==='read-write')row.append(make('p','gm-muted','当前只读由本机限制；服务端仍允许文件读写，可在 Windows 托盘调整该授权。'));
+        if(access==='ssh-account')row.append(make('p','gm-muted','当前只读由本机限制，SSH 文件权限仍由 Windows 账号决定。'));
+      }
       const actions=make('div','gm-ai-actions');row.append(actions);
       const checkButton=button('检查接入',()=>work(async run=>{say('正在核对 '+device.name+' 的授权与桌面状态…');const result=await invoke('check',{device:device.id});if(run!==epoch)return;await load();if(run!==epoch)return;renderDevices();say(result.ok?(result.result.state==='passed'?'授权检查通过；未运行命令或截图。':message(result.result.code)):message(result.error.code,result.error.message));}),'arrow-clockwise');checkButton.disabled=!enabled;actions.append(checkButton,button(enabled?'调整权限':'启用入口',()=>edit(device),'gear'));
       if(enabled)actions.append(button('停用',()=>work(async run=>{await invoke('configure',{device:device.id,allow:[]});if(run!==epoch)return;await load();if(run!==epoch)return;renderDevices();say('已停止接受新的 AI 操作；正在执行的远端任务需单独取消。');},{write:true})));

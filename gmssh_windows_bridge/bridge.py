@@ -491,9 +491,14 @@ def main():
                     desktop_config.monitor_channel = config.desktop_sessions.connect
                     desktop_config.monitor_pool = config.desktop_sessions
                     desktop_config.access_token = secrets.token_urlsafe(32)
-                    if config.desktop_keychain:
-                        from .keychain import monitor_keychain
-                        desktop_config.keychain_store = monitor_keychain(config)
+                    if sys.platform == 'darwin':
+                        from .keychain import monitor_keychain, windows_login_keychain
+                        identity_store = monitor_keychain(config)
+                        # Grant-based viewers do not store a RustDesk password,
+                        # but can separately opt in to a Windows login password.
+                        desktop_config.windows_login_store = windows_login_keychain(identity_store, getattr(config, 'controller_configuration', None))
+                        if config.desktop_keychain:
+                            desktop_config.keychain_store = identity_store
                 if wake is not None and not getattr(desktop_config, 'access_token', ''):
                     import secrets
                     desktop_config.access_token = secrets.token_urlsafe(32)

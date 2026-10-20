@@ -67,6 +67,38 @@ class BackgroundTests(unittest.TestCase):
     def test_desktop_and_ssh_both_listen_after_launcher_exits(self):
         self.detached_roundtrip(desktop=True)
 
+    @unittest.skipUnless(sys.platform == 'darwin' and importlib.util.find_spec('websockets'), 'macOS shared viewer startup check')
+    def test_windows_unlock_store_is_independent_of_connection_password_storage(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            with socket.socket() as available:
+                available.bind(('127.0.0.1', 0)); port = available.getsockname()[1]
+            with socket.socket() as available:
+                available.bind(('127.0.0.1', 0)); desktop_port = available.getsockname()[1]
+            command = self.command(root, port)
+            command.remove('--background')
+            command.extend(['--desktop-port', str(desktop_port), '--desktop-shared-auth'])
+            # Shared viewers intentionally stay foreground: do not persist their
+            # private browser token to a detached log just to run this check.
+            child = subprocess.Popen(command, cwd=self.package_dir, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            try:
+                http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                deadline = time.monotonic() + 15
+                while True:
+                    try:
+                        with http.open(f'http://127.0.0.1:{desktop_port}/config.json', timeout=1) as response:
+                            info = json.load(response)
+                        break
+                    except OSError:
+                        if child.poll() is not None or time.monotonic() > deadline:
+                            self.fail('shared viewer did not start')
+                        time.sleep(0.05)
+                self.assertFalse(info['keychain'])
+                self.assertTrue(info['capabilities']['windows_login'])
+                self.assertTrue(info['requires_token'])
+            finally:
+                child.terminate(); child.wait(timeout=5); child.stderr.close()
+
     def test_occupied_port_reports_startup_failure(self):
         with tempfile.TemporaryDirectory() as folder, socket.socket() as occupied:
             occupied.bind(('127.0.0.1', 0))

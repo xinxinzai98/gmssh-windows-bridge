@@ -227,6 +227,23 @@ class OperationsSession:
                 raise
             return False
 
+    def windows_login_state(self):
+        """Read the existing desktop worker; never load a Windows password."""
+        try:
+            client = self.ssh_nowait()
+            if getattr(client, 'controller_protocol', None) != 2:
+                return {'state': 'unknown'}
+            value = client.call('ai-desktop', args={'operation': 'context'})
+            return {'state': 'unlocked' if value.get('unlocked') is True else 'unknown'}
+        except StreamError as error:
+            if error.code == 'DESKTOP_LOCKED':
+                return {'state': 'locked-or-secure'}
+            if error.code in {'AUTH_FAILED', 'ACCESS_DENIED', 'PEER_CHANGED'}:
+                return {'state': 'unauthorized'}
+            return {'state': 'unknown'}
+        except (SSHPoolUnavailable, OSError):
+            return {'state': 'unknown'}
+
     def send_download(self, request_id, source, name, size, deadline):
         send_reply(self.websocket, request_id, ok=True, name=name, size=size)
         received = 0
@@ -350,13 +367,38 @@ class OperationsSession:
                   "upload-start": {"id", "op", "path", "name", "size"}, "upload-finish": {"id", "op"},
                   "upload-cancel": {"id", "op"}, "power": {"id", "op", "action"}, "wake": {"id", "op"},
                   "system-info": {"id", "op"}, "readonly": {"id", "op", "tool", "options"},
-                  "diagnostics": {"id", "op"}, "transfer": {"id", "op", "action", "options"}}
+                  "diagnostics": {"id", "op"}, "transfer": {"id", "op", "action", "options"},
+                  "windows-login": {"id", "op", "action", "settings"}}
         if not isinstance(op, str) or op not in fields or set(data) != fields[op]:
             raise OperationError("操作类型或请求字段无效。")
         if self.upload is not None and (op not in {"upload-finish", "upload-cancel"} or request_id != self.upload["id"]):
             raise OperationError("请先使用当前上传 id 完成或取消传输。")
         if self.stream.mode and op!='transfer':raise OperationError("请先完成当前文件传输。")
-        if op == "transfer":
+        if op == 'windows-login':
+            policy = self.config.controller_policy() if callable(getattr(self.config, 'controller_policy', None)) else None
+            action, settings = data['action'], data['settings']
+            if action not in ('status', 'load', 'save', 'clear', 'check') or not isinstance(settings, dict) or action != 'save' and settings:
+                raise OperationError('Windows 解锁设置无效。')
+            store = getattr(self.config, 'windows_login_store', None)
+            if action == 'check':
+                if policy is not None and not policy.get('view', False):
+                    raise OperationError('此授权未允许查看 Windows 桌面状态。')
+                result = self.windows_login_state()
+            elif store is None or policy is not None and not policy['input']:
+                raise OperationError('当前管理端未允许保存 Windows 登录凭据。')
+            elif action == 'clear':
+                store.clear()
+                result = {'configured': False, 'autoUnlock': False}
+            elif action == 'save':
+                store.save(settings)
+                result = {'configured': True, 'autoUnlock': settings['autoUnlock']}
+            else:
+                saved = store.get()
+                result = {'configured': saved is not None, 'autoUnlock': bool(saved and saved['autoUnlock'])}
+                if action == 'load' and saved is not None:
+                    result['password'] = saved['password']
+            send_reply(self.websocket, request_id, ok=True, **result)
+        elif op == "transfer":
             progress=lambda **value:send_reply(self.websocket,request_id,ok=True,progress=value)
             result=self.stream.request(data['action'],data['options'],progress)
             self.stream_request_id=request_id
@@ -494,7 +536,8 @@ def handle_operations(config, websocket, slots):
                 except Exception:
                     pass
                 if isinstance(error, StreamError):
-                    send_reply(websocket,request_id,ok=False,code=error.code,message="文件传输校验未通过。")
+                    message = {'OPERATION_TIMEOUT':'等待远端响应超时，请核对原文件任务后继续。','OPERATION_INTERRUPTED':'文件操作已中断，请先核对原任务。','SESSION_CLOSED':'文件会话已结束或权限已变更，请重新检查授权。','AUTH_FAILED':'独立授权未通过验证，请检查是否已撤销。','SERVER_UPGRADE_REQUIRED':'此授权需要更新管理端或服务端。'}.get(error.code,'文件传输校验未通过。')
+                    send_reply(websocket,request_id,ok=False,code=error.code,message=message)
                 elif isinstance(error,OSError) and error.errno in {errno.EACCES,errno.EPERM,errno.ENOSPC}:
                     send_reply(websocket,request_id,ok=False,code="DISK_FULL" if error.errno==errno.ENOSPC else "ACCESS_DENIED",message="文件权限或存储空间不足。")
                 elif isinstance(error, SSHPoolUnavailable):

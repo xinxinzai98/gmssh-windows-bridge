@@ -340,7 +340,13 @@ class DesktopOperationsTests(unittest.TestCase):
             http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
             try:
                 with http.open(origin + "/config.json", timeout=3) as response:
-                    self.assertEqual(json.load(response)["capabilities"], {"files": True, "power": True, "wake": False})
+                    self.assertEqual(json.load(response)["capabilities"], {"files": True, "files_write": True, "power": True, "wake": False})
+                config.controller_policy=lambda:{'view':True,'input':False,'clipboard':False,'files':False,'files_read':True,'terminal':False,'power':False}
+                with http.open(origin + '/config.json',timeout=3) as response:
+                    value=json.load(response)
+                    self.assertTrue(value['capabilities']['files']);self.assertFalse(value['capabilities']['files_write'])
+                    self.assertTrue(value['authorization']['files_read'])
+                del config.controller_policy
                 with self.assertRaises(InvalidStatus):
                     connect(f"ws://127.0.0.1:{port}/operations", origin="https://attacker.example.invalid", proxy=None)
                 with connect(f"ws://127.0.0.1:{port}/operations", origin=origin, proxy=None) as ws:
@@ -386,7 +392,7 @@ class DesktopOperationsTests(unittest.TestCase):
                     peer.close()
                 config.monitor_pool = None
                 with http.open(origin + "/config.json", timeout=3) as response:
-                    self.assertEqual(json.load(response)["capabilities"], {"files": False, "power": False, "wake": False})
+                    self.assertEqual(json.load(response)["capabilities"], {"files": False, "files_write": False, "power": False, "wake": False})
                 self.assertEqual(MAX_INPUT, 16 * 1024)
             finally:
                 server.shutdown()
@@ -447,7 +453,7 @@ class DesktopOperationsTests(unittest.TestCase):
             http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
             try:
                 with http.open(origin + "/config.json", timeout=3) as response:
-                    self.assertEqual(json.load(response)["capabilities"], {"files": False, "power": False, "wake": True})
+                    self.assertEqual(json.load(response)["capabilities"], {"files": False, "files_write": False, "power": False, "wake": True})
                 with patch("gmssh_windows_bridge.desktop_operations.send_wake") as wake:
                     with connect(f"ws://127.0.0.1:{port}/operations", origin=origin, proxy=None) as ws:
                         ws.send(json.dumps({"token": config.access_token}))

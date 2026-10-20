@@ -127,6 +127,51 @@ class AITests(unittest.TestCase):
             with self.assertRaisesRegex(StreamError, 'CONFIG_UNSAFE'):
                 self.registry.devices()
 
+    def test_local_tool_catalog_is_read_only_offline_and_matches_wait_permissions(self):
+        self.registry.configure(self.device_id, ['inspect', 'files_read', 'view'])
+        with patch.object(self.registry, 'credential', side_effect=AssertionError('must not read a credential')):
+            report = self.call('device_tools')['result']
+        self.assertEqual(self.connects, 0); self.assertTrue(report['readOnly'])
+        self.assertEqual(report['scope'], 'local-policy'); self.assertFalse(report['remoteStateChecked'])
+        tools = {row['name']: row for row in report['tools']}
+        self.assertTrue({'device_context', 'system_query', 'desktop_screenshot', 'files_read', 'files_preview', 'files_replace_preview'} <= tools.keys())
+        self.assertFalse({'powershell_run', 'desktop_act', 'files_apply', 'files_replace', 'files_create', 'files_restore'} & tools.keys())
+        self.assertEqual(set(tools['wait_for']['conditions']), set(ai.WAIT_PERMISSIONS))
+        self.registry.configure(self.device_id, ['files'])
+        legacy = self.call('device_tools')['result']; self.assertFalse(legacy['readOnly'])
+        tools = {row['name']: row for row in legacy['tools']}
+        self.assertTrue({'files_read', 'files_create', 'files_apply', 'files_find_text'} <= tools.keys())
+        self.assertEqual(tools['wait_for']['conditions'], ['file_sha256'])
+        self.registry.configure(self.device_id, [])
+        self.assertEqual(self.call('device_tools')['error']['code'], 'ACCESS_DENIED'); self.assertEqual(self.connects, 0)
+
+    def test_read_only_files_allow_queries_previews_and_wait_but_no_mutations(self):
+        original = b'name=one\r\n'
+        (self.remote/'config.txt').write_bytes(original); sha = ai_files.digest(original)
+        self.registry.configure(self.device_id, ['files_read'])
+        reads = [('files_search', dict(path='C:/', query='config')),
+                 ('files_read', dict(path='C:/config.txt')),
+                 ('files_find_text', dict(path='C:/config.txt', query='one')),
+                 ('files_preview', dict(path='C:/config.txt', content='name=two\r\n', expectedSha256=sha)),
+                 ('files_replace_preview', dict(path='C:/config.txt', oldText='one', newText='two', expectedSha256=sha)),
+                 ('wait_for', dict(condition='file_sha256', path='C:/config.txt', sha256=sha))]
+        for name, args in reads:
+            with self.subTest(tool=name):
+                self.assertTrue(self.call(name, **args)['ok'])
+        before = self.connects
+        writes = [('files_apply', dict(path='C:/config.txt', content='changed', expectedSha256=sha)),
+                  ('files_replace', dict(path='C:/config.txt', oldText='one', newText='two', expectedSha256=sha)),
+                  ('files_create', dict(path='C:/new.txt', content='new')),
+                  ('files_restore', dict(path='C:/config.txt', backup='C:/.gmssh-ai-'+('a'*32)+'.bak', backupSha256=sha, expectedSha256=sha)),
+                  ('powershell_run', dict(script='must not execute')),
+                  ('desktop_act', dict(snapshot='a'*32, target='b'*32, action='invoke')),
+                  ('wait_for', dict(condition='ui_exists', window='123', name='Save'))]
+        for name, args in writes:
+            with self.subTest(tool=name):
+                self.assertEqual(self.call(name, **args)['error']['code'], 'ACCESS_DENIED')
+        self.assertEqual(self.connects, before); self.assertEqual((self.remote/'config.txt').read_bytes(), original)
+        self.assertEqual([file.name for file in self.remote.iterdir()], ['config.txt'])
+
     def test_closed_schemas_reject_unknown_fields_before_connecting(self):
         result = self.call('desktop_act', action='invoke', snapshot='a'*32, target='b'*32, script='untrusted')
         self.assertEqual(result['error']['code'], 'INVALID_ARGUMENT')
@@ -458,11 +503,16 @@ class AITests(unittest.TestCase):
         config = json.loads(result.stdout)['mcpServers']['gmssh']
         self.assertNotIn('env', config)
         self.assertEqual(config['args'][-1], 'mcp')
+        result = subprocess.run(command+['tools', self.device_id], capture_output=True, text=True, check=True)
+        catalog = json.loads(result.stdout)
+        self.assertTrue(catalog['ok']); self.assertFalse(catalog['result']['remoteStateChecked'])
+        self.assertTrue(any(row['name'] == 'files_apply' for row in catalog['result']['tools']))
 
     @unittest.skipUnless(importlib.util.find_spec('mcp'), 'optional official MCP SDK')
     def test_official_mcp_stdio_initialize_list_and_call(self):
         from mcp import ClientSession
         from mcp.client.stdio import StdioServerParameters, stdio_client
+        self.registry.configure(self.device_id, ['files_read'])
 
         async def check():
             parameters = StdioServerParameters(command=sys.executable, args=['-m', 'gmssh_windows_bridge.ai', '--root', str(self.registry.root), 'mcp'])
@@ -471,6 +521,12 @@ class AITests(unittest.TestCase):
                     await session.initialize()
                     tools = await session.list_tools()
                     self.assertEqual({v.name for v in tools.tools}, set(ai.TOOL_MAP))
+                    catalog_tool = next(v for v in tools.tools if v.name == 'device_tools')
+                    self.assertTrue(catalog_tool.annotations.readOnlyHint); self.assertFalse(catalog_tool.annotations.openWorldHint)
+                    catalog = await session.call_tool('device_tools', {'device': self.device_id})
+                    self.assertFalse(catalog.isError); self.assertTrue(catalog.structuredContent['result']['readOnly'])
+                    self.assertFalse(catalog.structuredContent['result']['remoteStateChecked'])
+                    self.assertNotIn('files_create', {v['name'] for v in catalog.structuredContent['result']['tools']})
                     devices = await session.call_tool('devices_list', {})
                     self.assertFalse(devices.isError)
                     self.assertEqual(devices.structuredContent['result']['devices'][0]['id'], self.device_id)
@@ -487,6 +543,12 @@ class AITests(unittest.TestCase):
             script = "$t=$null;$e=$null;[void][Management.Automation.Language.Parser]::ParseFile('"+str(file).replace("'", "''")+"',[ref]$t,[ref]$e);if($e.Count){$e|ForEach-Object{Write-Error $_.Message};exit 1}"
             result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-EncodedCommand', base64.b64encode(script.encode('utf-16le')).decode()], capture_output=True)
             self.assertEqual(result.returncode, 0, (file.name, result.stderr))
+
+    @unittest.skipUnless(os.name == 'nt', 'Native desktop expressions require Windows PowerShell')
+    def test_windows_desktop_expressions_without_accessing_the_desktop(self):
+        script = Path(__file__).with_name('windows-ai-screenshot-checks.ps1')
+        result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-File', str(script)], capture_output=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == '__main__':

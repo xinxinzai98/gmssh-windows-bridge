@@ -1,4 +1,4 @@
-# Shared, user-controlled password dialog. Returns a SecureString; no file/log output.
+﻿# Shared, user-controlled password dialog. Returns a SecureString; no file/log output.
 function Set-GMSSHDarkTitleBar($Form) {
     try {
         if (-not ('GMSSHNativeWindow' -as [type])) {
@@ -22,7 +22,39 @@ public static class GMSSHNativeWindow {
         })
     } catch { }
 }
-function Read-GMSSHPassword([string]$Title, [string]$Description, [bool]$Confirm=$true) {
+function Test-GMSSHPasswordInput([string]$Value,[bool]$Confirm,[string]$Repeated,[bool]$ExistingCredential=$false) {
+    $minimum=if(-not $Confirm -and $ExistingCredential){1}else{8}
+    return $Value.Length -ge $minimum -and (-not $Confirm -or $Value -ceq $Repeated) -and
+        [Text.Encoding]::UTF8.GetByteCount($Value) -le 1024 -and $Value -notmatch '[\x00-\x1f]'
+}
+
+function Show-GMSSHNotice([string]$Title,[string]$Message,[ValidateSet('Information','Warning','Error')][string]$Icon='Information',$Owner=$null) {
+    Add-Type -AssemblyName System.Windows.Forms
+    $temporaryOwner=$null
+    try {
+        if(-not $Owner){$temporaryOwner=New-Object Windows.Forms.Form;$temporaryOwner.TopMost=$true;$temporaryOwner.ShowInTaskbar=$false;$Owner=$temporaryOwner}
+        [void][Windows.Forms.MessageBox]::Show($Owner,$Message,$Title,[Windows.Forms.MessageBoxButtons]::OK,[Windows.Forms.MessageBoxIcon]([Enum]::Parse([Windows.Forms.MessageBoxIcon],$Icon)))
+    } finally {if($temporaryOwner){$temporaryOwner.Dispose()}}
+}
+
+function Show-GMSSHCredentialProgress([string]$Title='GMSSH Windows · 正在更新接入凭据',[string]$Message="正在验证 Windows 账号和桌面密码，并安全保存。`r`n完成后会显示明确结果，请稍候。") {
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+    $form=New-Object Windows.Forms.Form
+    $form.Text=$Title;$form.ClientSize=New-Object Drawing.Size(480,150)
+    $form.StartPosition='CenterScreen';$form.FormBorderStyle='FixedDialog';$form.ControlBox=$false;$form.TopMost=$true
+    $form.BackColor=[Drawing.ColorTranslator]::FromHtml('#141414');$form.ForeColor=[Drawing.Color]::WhiteSmoke
+    $form.Font=New-Object Drawing.Font('Segoe UI',10);$form.UseWaitCursor=$true
+    Set-GMSSHDarkTitleBar $form
+    $label=New-Object Windows.Forms.Label
+    $label.Text=$Message;$label.SetBounds(24,24,432,56)
+    $bar=New-Object Windows.Forms.ProgressBar
+    $bar.Style='Marquee';$bar.MarqueeAnimationSpeed=25;$bar.SetBounds(24,100,432,12)
+    $form.Controls.AddRange(@($label,$bar));$form.Show();$form.Refresh();[Windows.Forms.Application]::DoEvents()
+    return $form
+}
+
+function Read-GMSSHPassword([string]$Title, [string]$Description, [bool]$Confirm=$true,[bool]$ExistingCredential=$false) {
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
     [Windows.Forms.Application]::EnableVisualStyles()
@@ -50,7 +82,7 @@ function Read-GMSSHPassword([string]$Title, [string]$Description, [bool]$Confirm
     $boxes = @()
     for ($i = 0; $i -lt $(if ($Confirm) { 2 } else { 1 }); $i++) {
         $label = New-Object Windows.Forms.Label
-        $label.Text = if ($i -eq 0) { '连接密码（至少 8 个字符）' } else { '再次输入密码' }
+        $label.Text = if ($i -eq 0) { if(-not $Confirm -and $ExistingCredential){'既有密码（不会修改）'}else{'连接密码（至少 8 个字符）'} } else { '再次输入密码' }
         $label.SetBounds(24, (119 + 69 * $i), 452, 24); $form.Controls.Add($label)
         $box = New-Object Windows.Forms.TextBox
         $box.UseSystemPasswordChar = $true; $box.SetBounds(24, (147 + 69 * $i), 452, 28)
@@ -76,10 +108,10 @@ function Read-GMSSHPassword([string]$Title, [string]$Description, [bool]$Confirm
     }
     try {
         do {
-            if ($form.ShowDialog() -ne 'OK') { throw '已取消密码设置。' }
-            $valid = $boxes[0].Text.Length -ge 8 -and (-not $Confirm -or $boxes[0].Text -ceq $boxes[1].Text) -and
-                [Text.Encoding]::UTF8.GetByteCount($boxes[0].Text) -le 1024 -and $boxes[0].Text -notmatch '[\x00-\x1f]'
-            if (-not $valid) { [void][Windows.Forms.MessageBox]::Show($(if ($Confirm) { '密码至少 8 个字符，两次输入须一致，且不超过 1024 字节。' } else { '请输入当前连接密码，至少 8 个字符，且不超过 1024 字节。' }), 'GMSSH Windows') }
+            if ($form.ShowDialog() -ne 'OK') { throw [OperationCanceledException]::new('已取消密码设置。') }
+            $repeated=if($Confirm){$boxes[1].Text}else{''}
+            $valid = Test-GMSSHPasswordInput $boxes[0].Text $Confirm $repeated $ExistingCredential
+            if (-not $valid) { [void][Windows.Forms.MessageBox]::Show($(if ($Confirm) { '密码至少 8 个字符，两次输入须一致，且不超过 1024 字节。' } elseif($ExistingCredential){'请输入现有密码，不能为空、包含控制字符或超过 1024 字节；本次不重设密码。'}else { '请输入当前连接密码，至少 8 个字符，且不超过 1024 字节。' }), 'GMSSH Windows') }
         } while (-not $valid)
         $secret = New-Object Security.SecureString
         foreach ($character in $boxes[0].Text.ToCharArray()) { $secret.AppendChar($character) }

@@ -51,19 +51,30 @@ func run() error {
 	if err != nil {
 		return errUnavailable
 	}
-	s := store{root: absolute, protect: protectLocal, unprotect: unprotectLocal, validatePassword: validateLocalPassword, validateBinding: validatePlatformBinding}
+	s := store{root: absolute, protect: protectLocal, unprotect: unprotectLocal, validatePassword: validateLocalPassword, validateDesktop: validateLocalDesktopPassword, validateBinding: validatePlatformBinding}
 	b, _, err := s.managed()
 	if err != nil {
-		return err
+		return errInstallBinding
 	}
 	host, err := os.Hostname()
 	if err != nil || !strings.EqualFold(host, b.Computer) {
-		return errUnavailable
+		return errMachineBinding
 	}
 	if err = validatePlatformBinding(b); err != nil {
-		return errUnavailable
+		return err
 	}
 	switch command {
+	case "diagnose":
+		// Check public installation metadata and the live account binding only.
+		// Do not read credentials, authenticate, create state or open a listener.
+		fmt.Println("ready-for-credentials")
+	case "logon-status":
+		state, err := controllerLogonState()
+		if err != nil {
+			return err
+		}
+		body, _ := json.Marshal(map[string]any{"session": state.session, "locked": state.locked})
+		fmt.Println(string(body))
 	case "manage":
 		body, err := io.ReadAll(io.LimitReader(os.Stdin, 16385))
 		if err != nil || len(body) > 16384 {
@@ -81,18 +92,19 @@ func run() error {
 		}
 		fmt.Println("ready")
 	case "init":
-		body, err := io.ReadAll(io.LimitReader(os.Stdin, 4097))
-		if err != nil || len(body) > 4096 {
+		body, err := io.ReadAll(io.LimitReader(os.Stdin, 8193))
+		if err != nil || len(body) > 8192 {
 			return errUnavailable
 		}
 		defer clear(body)
 		var request struct {
-			Password string `json:"password"`
+			Password        string `json:"password"`
+			DesktopPassword string `json:"desktopPassword"`
 		}
 		if decodeJSON(body, &request) != nil {
 			return errUnavailable
 		}
-		if err = s.initialize(request.Password); err != nil {
+		if err = s.initializeCredentials(request.Password, request.DesktopPassword); err != nil {
 			return err
 		}
 		fmt.Println("ok")
@@ -140,7 +152,7 @@ func run() error {
 
 func main() {
 	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, "GMSSH 一键接入操作未完成，请检查受管理安装、连接密码或本机授权。")
+		fmt.Fprintln(os.Stderr, helperErrorCode(err))
 		os.Exit(1)
 	}
 }

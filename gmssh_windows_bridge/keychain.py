@@ -2,6 +2,7 @@
 
 import ctypes as c
 import hashlib
+import json
 
 import paramiko
 
@@ -50,6 +51,42 @@ class DeviceKeychain:
         self.primary.save(password)
 
 
+class WindowsLoginKeychain:
+    """A separate opt-in item; never alias the remote-connection password."""
+    def __init__(self, store):
+        self.store = store
+
+    @staticmethod
+    def validate(value):
+        if (not isinstance(value, dict) or set(value) != {'password', 'autoUnlock'} or
+                type(value['autoUnlock']) is not bool or not isinstance(value['password'], str) or
+                not 1 <= len(value['password'].encode('utf-8')) <= 1024 or
+                any(ord(c) < 32 or ord(c) == 127 for c in value['password'])):
+            raise ValueError('Invalid Windows login settings')
+        return value
+
+    def get(self):
+        raw = self.store.get()
+        return self.validate(json.loads(raw)) if raw is not None else None
+
+    def save(self, value):
+        self.store.save(json.dumps(self.validate(value), ensure_ascii=False, separators=(',', ':')))
+
+    def clear(self):
+        self.store.delete()
+
+
+def windows_login_keychain(desktop_store, authorization=None):
+    primary = desktop_store.primary if isinstance(desktop_store, DeviceKeychain) else desktop_store
+    identity = primary.account.decode('utf-8')
+    if authorization is not None:
+        # Grant transport verifies TLS, not possession of the advertised SSH
+        # private key. Include that actual authority and grant identity too.
+        authority = json.dumps({'certificate': authorization['certificate'], 'id': authorization['id']}, sort_keys=True)
+        identity += ':' + hashlib.sha256(authority.encode('utf-8')).hexdigest()
+    return WindowsLoginKeychain(DesktopKeychain('windows-login:' + identity))
+
+
 class DesktopKeychain:
     def __init__(self, account):
         self.account = account.encode("utf-8")
@@ -62,6 +99,7 @@ class DesktopKeychain:
         self.security.SecKeychainAddGenericPassword.argtypes = [c.c_void_p, c.c_uint32, c.c_char_p,
             c.c_uint32, c.c_char_p, c.c_uint32, c.c_void_p, c.c_void_p]
         self.security.SecKeychainItemModifyAttributesAndData.argtypes = [c.c_void_p, c.c_void_p, c.c_uint32, c.c_void_p]
+        self.security.SecKeychainItemDelete.argtypes = [c.c_void_p]
         self.security.SecKeychainItemFreeContent.argtypes = [c.c_void_p, c.c_void_p]
 
     def _find(self, length=None, data=None, item=None):
@@ -113,5 +151,17 @@ class DesktopKeychain:
                 raise OSError("macOS Keychain save failed")
         finally:
             c.memset(buffer, 0, len(buffer))
+            if item.value:
+                self.cf.CFRelease(item)
+
+    def delete(self):
+        item = c.c_void_p()
+        try:
+            result = self._find(item=c.byref(item))
+            if result == -25300:
+                return
+            if result or self.security.SecKeychainItemDelete(item):
+                raise OSError('macOS Keychain delete failed')
+        finally:
             if item.value:
                 self.cf.CFRelease(item)

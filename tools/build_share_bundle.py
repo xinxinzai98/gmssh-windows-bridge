@@ -1,5 +1,6 @@
 """Export public release packages from source, never from a running GMSSH profile."""
 import argparse
+from email.parser import BytesParser
 import hashlib
 import io
 import json
@@ -13,7 +14,7 @@ ROOT_FILES = {'README.md', 'CHANGELOG.md', 'CONTRIBUTING.md', 'LICENSE', 'SECURI
 SOURCE_DIRS = ('gmssh_windows_bridge', 'desktop-web', 'tools', 'tests', 'docs', 'examples', 'install', '.github')
 SKIP_DIRS = {'.git', 'node_modules', '__pycache__', '.venv', 'venv', 'build', 'dist', 'work', 'outputs', '.pytest_cache'}
 PRIVATE_NAMES = {'.ds_store', 'catalog.json', 'connection.json', 'agent.json', 'readiness.json', 'launcher-config.json', 'installation-status.txt', 'startup-status.json',
-                 'connect-meta.dat', 'connect-password.dat', 'connect-identity.dat', 'transfer-journal.json', 'file-places.json', 'linux-host-pins.json', 'workspace-history.json', 'controllers.dat', 'controller-connection.json', 'ai-devices.json', 'ai-status.json', 'ai-tasks.json', 'registry.lock', 'ai-paused'}
+                 'connect-meta.dat', 'connect-password.dat', 'connect-identity.dat', 'uninstall.json', 'transfer-journal.json', 'file-places.json', 'linux-host-pins.json', 'workspace-history.json', 'controllers.dat', 'controller-connection.json', 'ai-devices.json', 'ai-status.json', 'ai-tasks.json', 'registry.lock', 'ai-paused'}
 PRIVATE_SUFFIXES = {'.key', '.pem', '.db', '.sqlite', '.sqlite3', '.log', '.pyc', '.exe', '.msi', '.dmg', '.whl', '.zip', '.gmsshbackup', '.part'}
 
 
@@ -76,6 +77,14 @@ def checksums(files):
     return ''.join(hashlib.sha256(body).hexdigest() + '  ' + name + '\n' for name, body in sorted(files.items())).encode()
 
 
+def release_version(files):
+    version = re.search(rb'__version__\s*=\s*"([^"]+)"', files['gmssh_windows_bridge/__init__.py'])[1].decode()
+    project = re.search(rb'^version\s*=\s*"([^"]+)"', files['pyproject.toml'], re.MULTILINE)
+    if project is None or project[1].decode() != version:
+        raise ValueError('Project version differs from package source')
+    return version
+
+
 def check_windows(bundle, executable, version, deny_values=()):
     content = bundle.read_bytes()
     body = executable.read_bytes()
@@ -90,6 +99,45 @@ def check_windows(bundle, executable, version, deny_values=()):
                     'preserveDesktop': False, 'expectedComputer': None, 'runtimeSource': 'microsoft'}
         if config != expected:
             raise ValueError('Windows package has device-specific or unsupported settings')
+        if tuple(map(int, re.match(r'(\d+)\.(\d+)\.(\d+)a?(\d*)', version).groups(default='0'))) >= (0, 4, 0, 34):
+            if __package__:
+                from .build_windows_setup import check_engine_files, windows_source_files
+            else:
+                from build_windows_setup import check_engine_files, windows_source_files
+            root = Path(__file__).resolve().parents[1]
+            pinned = json.loads((root / 'gmssh_windows_bridge/windows-installers.json').read_text())
+            sources = windows_source_files(root, public_release=True)
+            # Dependency pins are compared as parsed JSON below; all own files
+            # must match exactly, including the Windows 5.1 BOM normalization.
+            sources.pop('windows-installers.json')
+            openssh = 'installers/' + pinned['openssh']['filename']
+            expected_names = set(sources) | {'setup-config.json', 'windows-installers.json',
+                'gmssh-connect.exe', 'connect-payload.json', 'desktop-engine.zip', 'desktop-payload.json', openssh}
+            if len(archive.namelist()) != len(expected_names) or set(archive.namelist()) != expected_names:
+                raise ValueError('Windows bundle is incomplete or contains duplicate or extra files')
+            for name, expected_body in sources.items():
+                if archive.read(name) != expected_body:
+                    raise ValueError(f'{name}: Windows bundle differs from current public source')
+            if json.loads(archive.read('windows-installers.json')) != pinned:
+                raise ValueError('Windows dependency pins differ from current source')
+            if hashlib.sha256(archive.read(openssh)).hexdigest() != pinned['openssh']['sha256']:
+                raise ValueError('Windows OpenSSH installer differs from the pinned source')
+            payload = archive.read('desktop-engine.zip')
+            metadata = json.loads(archive.read('desktop-payload.json'))
+            if (metadata.get('filename') != 'desktop-engine.zip'
+                    or metadata.get('sourceSha256') != pinned['rustdesk']['sha256']
+                    or metadata.get('sha256') != hashlib.sha256(payload).hexdigest()):
+                raise ValueError('Windows desktop payload differs from the pinned source')
+            with zipfile.ZipFile(io.BytesIO(payload)) as engine:
+                engine_files = json.loads(engine.read('engine-files.json'))
+                if engine_files['source']['sha256'] != pinned['rustdesk']['sha256']:
+                    raise ValueError('Windows desktop source identity differs from current source')
+                check_engine_files(engine_files['files'], pinned['rustdesk']['filesSha256'])
+                if set(engine.namelist()) != set(engine_files['files']) | {'engine-files.json'}:
+                    raise ValueError('Windows desktop engine is incomplete or contains extra files')
+                for name, digest in engine_files['files'].items():
+                    if hashlib.sha256(engine.read(name)).hexdigest() != digest:
+                        raise ValueError('Windows desktop engine file mismatch')
         if 'installers/VC_redist.x64.exe' in archive.namelist():
             raise ValueError('Public package must obtain Microsoft runtime from Microsoft')
         if tuple(map(int, re.match(r'(\d+)\.(\d+)\.(\d+)a?(\d*)', version).groups(default='0'))) >= (0, 4, 0, 10):
@@ -115,7 +163,7 @@ def check_windows(bundle, executable, version, deny_values=()):
 
 def build(root, output, wheel, windows_bundle=None, windows_setup=None, deny_values=()):
     files = public_files(root, deny_values)
-    version = re.search(rb'__version__\s*=\s*"([^"]+)"', files['gmssh_windows_bridge/__init__.py'])[1].decode()
+    version = release_version(files)
     if not wheel.name.startswith('gmssh_windows_bridge-' + version + '-'):
         raise ValueError('Wheel version does not match public source')
     if output.exists():
@@ -123,6 +171,13 @@ def build(root, output, wheel, windows_bundle=None, windows_setup=None, deny_val
     with zipfile.ZipFile(wheel) as package:
         if package.testzip():
             raise ValueError('Damaged wheel')
+        metadata = [name for name in package.namelist() if name.endswith('.dist-info/METADATA')]
+        if len(metadata) != 1 or BytesParser().parsebytes(package.read(metadata[0]))['Version'] != version:
+            raise ValueError('Wheel metadata version differs from public source')
+        packaged = {name: package.read(name) for name in package.namelist() if name.startswith('gmssh_windows_bridge/') and not name.endswith('/')}
+        expected = {name: body for name, body in files.items() if name.startswith('gmssh_windows_bridge/')}
+        if packaged != expected:
+            raise ValueError('Wheel package contents differ from complete public source')
         for name in package.namelist():
             if name.endswith('/'):
                 continue
@@ -169,7 +224,8 @@ def main():
         parser.error('private deny values must be a JSON string list')
     try:
         if args.check_only:
-            print(json.dumps({'publicFiles': len(public_files(root, deny)), 'check': 'passed'}))
+            files = public_files(root, deny)
+            print(json.dumps({'publicFiles': len(files), 'version': release_version(files), 'check': 'passed'}))
         else:
             if not args.output or not args.wheel:
                 parser.error('supply --output and --wheel, or --check-only')

@@ -143,6 +143,10 @@ func TestControllerLoopbackFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 	view, err := b.manage(controllerRequest{Action: "grant", Name: "Synthetic view-only", Policy: permissions{View: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readonly, err := b.manage(controllerRequest{Action: "grant", Name: "Synthetic server read-only", Policy: permissions{FilesRead: true}})
 	b.mu.Unlock()
 	if err != nil {
 		t.Fatal(err)
@@ -156,7 +160,7 @@ func TestControllerLoopbackFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := &http.Server{Handler: http.HandlerFunc(b.serve)}
-	value := map[string]any{"port": listener.Addr().(*net.TCPAddr).Port, "owner": owner, "full": full, "view": view, "remote": remote, "pid": os.Getpid()}
+	value := map[string]any{"port": listener.Addr().(*net.TCPAddr).Port, "owner": owner, "full": full, "view": view, "readonly": readonly, "remote": remote, "pid": os.Getpid()}
 	raw, _ := json.Marshal(value)
 	if err = os.WriteFile(filepath.Join(folder, "gateway.json"), raw, 0600); err != nil {
 		t.Fatal(err)

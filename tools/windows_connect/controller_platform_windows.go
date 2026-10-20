@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +17,36 @@ import (
 	"unicode/utf16"
 	"unsafe"
 )
+
+func controllerLogonState() (windowsLogonState, error) {
+	session, _, _ := syscall.NewLazyDLL("kernel32.dll").NewProc("WTSGetActiveConsoleSessionId").Call()
+	if uint32(session) == 0xffffffff {
+		return windowsLogonState{}, errDesktopUnavailable
+	}
+	wts := syscall.NewLazyDLL("wtsapi32.dll")
+	query := wts.NewProc("WTSQuerySessionInformationW")
+	free := wts.NewProc("WTSFreeMemory")
+	var info, user uintptr
+	var infoBytes, userBytes uint32
+	ok, _, _ := query.Call(0, session, 25, uintptr(unsafe.Pointer(&info)), uintptr(unsafe.Pointer(&infoBytes)))
+	if ok == 0 || info == 0 {
+		return windowsLogonState{}, errDesktopUnavailable
+	}
+	defer free.Call(info)
+	ok, _, _ = query.Call(0, session, 5, uintptr(unsafe.Pointer(&user)), uintptr(unsafe.Pointer(&userBytes)))
+	if ok == 0 || user == 0 || userBytes < 2 || userBytes%2 != 0 {
+		if user != 0 {
+			free.Call(user)
+		}
+		return windowsLogonState{}, errDesktopUnavailable
+	}
+	defer free.Call(user)
+	if infoBytes < 20 {
+		return windowsLogonState{}, errDesktopUnavailable
+	}
+	hasUser := *(*uint16)(unsafe.Pointer(user)) != 0
+	return decodeWindowsLogonState(uint32(session), unsafe.Slice((*byte)(unsafe.Pointer(info)), 20), hasUser)
+}
 
 func isReparsePoint(name string) bool {
 	p, err := syscall.UTF16PtrFromString(name)
@@ -161,7 +192,9 @@ func runControllerInfo(ctx context.Context, file, prefix string) ([]byte, error)
 	cmd.Stdin = strings.NewReader(script)
 	output := &limitedOutput{cancel: cancel}
 	cmd.Stdout = output
-	cmd.Stderr = output
+	// PowerShell may emit first-use module progress as CLIXML on stderr.
+	// Fixed information endpoints must return only their JSON stdout.
+	cmd.Stderr = io.Discard
 	if err := cmd.Run(); err != nil {
 		return nil, err
 	}

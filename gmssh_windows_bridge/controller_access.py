@@ -21,6 +21,17 @@ PREFIX = 'GMSSH-AUTH2.'
 PERMISSIONS = {'view', 'input', 'clipboard', 'files', 'terminal', 'power'}
 
 
+def checked_policy(value):
+    if (not isinstance(value, dict) or not PERMISSIONS <= value.keys() <= PERMISSIONS | {'files_read'}
+            or any(type(flag) is not bool for flag in value.values())
+            or not value['view'] and (value['input'] or value['clipboard'])):
+        raise ValueError('Invalid controller permissions')
+    policy = dict(value)
+    if policy['files'] or not policy.get('files_read'):
+        policy.pop('files_read', None)
+    return policy
+
+
 def inspect_authorization(text):
     if not isinstance(text, str) or len(text.encode('utf-8')) > 32768 or not text.strip().startswith(PREFIX):
         raise ValueError('请粘贴服务端创建的独立授权码。')
@@ -40,9 +51,8 @@ def inspect_authorization(text):
                 or not isinstance(controller['name'], str) or not 1 <= len(controller['name']) <= 80
                 or any(ord(c) < 32 for c in controller['name'])):
             raise ValueError()
-        policy = controller['permissions']
-        if not isinstance(policy, dict) or set(policy) != PERMISSIONS or any(type(v) is not bool for v in policy.values()) or not policy['view'] and (policy['input'] or policy['clipboard']):
-            raise ValueError()
+        policy = checked_policy(controller['permissions'])
+        controller = {**controller, 'permissions': policy}
         # Reuse the existing canonical certificate/SAN/device identity checks.
         legacy = {key: value[key] for key in ('connection', 'port', 'certificate')}
         legacy.update(schema=1, token=controller['token'])
@@ -110,13 +120,25 @@ class ControllerClient:
         self.lock = threading.Lock()
         self.closed = False
         self.authenticated = False
+        self.file_read_only = False
+        self.windows_unlock = False
         self.policy = dict(code['controller']['permissions'])
 
     def authorize(self):
         value = self.call('capabilities')
-        policy = value.get('permissions')
-        if value.get('protocol') != 2 or value.get('controllerId') != self.code['controller']['id'] or not isinstance(policy, dict) or set(policy) != PERMISSIONS or any(type(v) is not bool for v in policy.values()):
+        try:
+            policy = checked_policy(value.get('permissions'))
+        except ValueError:
+            self.authenticated = False
+            raise StreamError('INVALID_RESPONSE') from None
+        if value.get('protocol') != 2 or value.get('controllerId') != self.code['controller']['id']:
+            self.authenticated = False
             raise StreamError('INVALID_RESPONSE')
+        self.file_read_only = type(value.get('fileReadOnly')) is int and value['fileReadOnly'] == 1
+        self.windows_unlock = type(value.get('windowsUnlock')) is int and value['windowsUnlock'] == 1
+        if policy.get('files_read') and not self.file_read_only:
+            self.authenticated = False
+            raise StreamError('SERVER_UPGRADE_REQUIRED')
         self.policy = policy
         self.authenticated = True
         return value
@@ -162,16 +184,18 @@ class ControllerClient:
                 allowed = {'ACCESS_DENIED', 'DISK_FULL', 'CONFLICT', 'IDEMPOTENCY_CONFLICT', 'TASK_LIMIT', 'TASK_RUNNING',
                            'NO_INTERACTIVE_SESSION', 'DESKTOP_WORKER_UNAVAILABLE', 'DESKTOP_OUTCOME_UNKNOWN', 'INVALID_RESPONSE',
                            'DESKTOP_LOCKED', 'AI_PAUSED', 'STALE_TARGET', 'TARGET_NOT_FOUND', 'AMBIGUOUS_TARGET',
-                           'UNSUPPORTED_PATTERN', 'FOCUS_DENIED', 'DESKTOP_BUSY', 'INVALID_QUERY', 'QUERY_FAILED', 'PASSWORD_FIELD', 'DESKTOP_QUERY_FAILED'}
+                           'UNSUPPORTED_PATTERN', 'FOCUS_DENIED', 'DESKTOP_BUSY', 'INVALID_QUERY', 'QUERY_FAILED', 'PASSWORD_FIELD', 'DESKTOP_QUERY_FAILED',
+                           'SESSION_CLOSED', 'OPERATION_TIMEOUT', 'OPERATION_INTERRUPTED', 'OUTCOME_UNKNOWN'}
                 raise StreamError('AUTH_FAILED' if action == 'capabilities' and response.status in (401, 403) else error if error in allowed else 'REMOTE_IO')
             result = reply.get('result')
             if not isinstance(result, dict):
                 raise StreamError('INVALID_RESPONSE')
             policy = reply.get('permissions', result.get('permissions'))
             if policy is not None:
-                if not isinstance(policy, dict) or set(policy) != PERMISSIONS or any(type(v) is not bool for v in policy.values()):
-                    raise StreamError('INVALID_RESPONSE')
-                self.policy = dict(policy)
+                try:
+                    self.policy = checked_policy(policy)
+                except ValueError:
+                    raise StreamError('INVALID_RESPONSE') from None
             return result
         except (StreamError, FileNotFoundError, FileExistsError):
             raise
@@ -181,6 +205,12 @@ class ControllerClient:
             if 'connection' in locals() and connection:
                 connection.close()
             raise StreamError('PEER_CHANGED') from None
+        except (TimeoutError, socket.timeout):
+            self.authenticated = False
+            self.local.connection = None
+            if 'connection' in locals() and connection:
+                connection.close()
+            raise StreamError('OPERATION_TIMEOUT') from None
         except Exception:
             self.local.connection = None
             if 'connection' in locals() and connection:

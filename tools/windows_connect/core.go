@@ -32,12 +32,13 @@ const connectPort = 22257
 var errUnavailable = errors.New("一键接入尚未启用或需要重新配置")
 
 type binding struct {
-	Computer    string `json:"computer"`
-	Username    string `json:"username"`
-	Fingerprint string `json:"fingerprint"`
-	ID          string `json:"id"`
-	OwnerSID    string `json:"ownerSid"`
-	ManagedSID  string `json:"managedSid"`
+	Computer             string `json:"computer"`
+	Username             string `json:"username"`
+	Fingerprint          string `json:"fingerprint"`
+	ID                   string `json:"id"`
+	OwnerSID             string `json:"ownerSid"`
+	ManagedSID           string `json:"managedSid"`
+	RequireAdministrator bool   `json:"requireAdministrator,omitempty"`
 }
 
 type metadata struct {
@@ -50,10 +51,11 @@ type metadata struct {
 }
 
 type credential struct {
-	Schema      int    `json:"schema"`
-	Username    string `json:"username"`
-	Fingerprint string `json:"fingerprint"`
-	Password    string `json:"password"`
+	Schema          int    `json:"schema"`
+	Username        string `json:"username"`
+	Fingerprint     string `json:"fingerprint"`
+	Password        string `json:"password"`
+	DesktopPassword string `json:"desktopPassword,omitempty"`
 }
 
 type store struct {
@@ -61,6 +63,7 @@ type store struct {
 	protect           func([]byte) ([]byte, error)
 	unprotect         func([]byte) ([]byte, error)
 	validatePassword  func(string, string) error
+	validateDesktop   func(string, string) error
 	validateBinding   func(binding) error
 	ipv6LocalNetworks func() ([]*net.IPNet, error)
 }
@@ -158,12 +161,23 @@ func (s store) managed() (binding, map[string]any, error) {
 		ManagedSID string `json:"managedAccountSid"`
 		OwnerSID   string `json:"trayUserSid"`
 		Unified    bool   `json:"unifiedPassword"`
+		Mode       string `json:"installationMode"`
+		AccountSID string `json:"accountSid"`
 	}
 	body, err := readBounded(filepath.Join(s.root, "agent.json"), 65536)
 	if err != nil {
 		return binding{}, nil, errUnavailable
 	}
-	if json.Unmarshal(bytes.TrimPrefix(body, []byte{239, 187, 191}), &agent) != nil || !agent.Unified || agent.Username != "gmssh" || !strings.HasPrefix(agent.ManagedSID, "S-1-") || !strings.HasPrefix(agent.OwnerSID, "S-1-") {
+	if json.Unmarshal(bytes.TrimPrefix(body, []byte{239, 187, 191}), &agent) != nil {
+		return binding{}, nil, errUnavailable
+	}
+	preserved := agent.Mode == "preserve-existing" && !agent.Unified && agent.ManagedSID == "" && agent.Username != ""
+	if preserved {
+		agent.ManagedSID = agent.AccountSID
+	} else if !agent.Unified || agent.Username != "gmssh" || (agent.Mode != "" && agent.Mode != "managed") {
+		return binding{}, nil, errUnavailable
+	}
+	if !strings.HasPrefix(agent.ManagedSID, "S-1-") || !strings.HasPrefix(agent.OwnerSID, "S-1-") {
 		return binding{}, nil, errUnavailable
 	}
 	body, err = readBounded(filepath.Join(s.root, "connection.json"), 65536)
@@ -180,7 +194,11 @@ func (s store) managed() (binding, map[string]any, error) {
 	}
 	b.OwnerSID = agent.OwnerSID
 	b.ManagedSID = agent.ManagedSID
+	b.RequireAdministrator = preserved
 	public["desktopAuth"] = "shared-ssh"
+	if preserved {
+		public["desktopAuth"] = "manual"
+	}
 	return b, public, nil
 }
 
@@ -216,7 +234,7 @@ func publicBinding(public map[string]any) (binding, error) {
 }
 
 func sameBinding(a, b binding) bool {
-	return a.Computer == b.Computer && a.Username == b.Username && a.Fingerprint == b.Fingerprint && a.ID == b.ID && a.OwnerSID == b.OwnerSID && a.ManagedSID == b.ManagedSID
+	return a.Computer == b.Computer && a.Username == b.Username && a.Fingerprint == b.Fingerprint && a.ID == b.ID && a.OwnerSID == b.OwnerSID && a.ManagedSID == b.ManagedSID && a.RequireAdministrator == b.RequireAdministrator
 }
 
 func (s store) meta() (metadata, error) {
@@ -272,12 +290,27 @@ func randomToken() (string, error) {
 }
 
 func (s store) initialize(password string) error {
-	b, _, err := s.managed()
-	if err != nil || password == "" || len(password) > 1024 {
+	return s.initializeCredentials(password, "")
+}
+
+func (s store) initializeCredentials(password, desktopPassword string) error {
+	b, public, err := s.managed()
+	if err != nil || password == "" || len(password) > 1024 || len(desktopPassword) > 1024 || (public["desktopAuth"] == "manual" && desktopPassword == "") {
+		return errUnavailable
+	}
+	if public["desktopAuth"] != "manual" && desktopPassword != "" {
 		return errUnavailable
 	}
 	if err = s.validatePassword(b.Username, password); err != nil {
-		return errors.New("连接密码未通过验证")
+		return errCredential
+	}
+	if public["desktopAuth"] == "manual" {
+		if s.validateDesktop == nil {
+			return errDesktopUnavailable
+		}
+		if err = s.validateDesktop(desktopPassword, b.Computer); err != nil {
+			return err
+		}
 	}
 	m, previous := s.meta()
 	if previous != nil {
@@ -301,7 +334,7 @@ func (s store) initialize(password string) error {
 			return err
 		}
 	}
-	plain, err := json.Marshal(credential{Schema: 1, Username: b.Username, Fingerprint: b.Fingerprint, Password: password})
+	plain, err := json.Marshal(credential{Schema: 1, Username: b.Username, Fingerprint: b.Fingerprint, Password: password, DesktopPassword: desktopPassword})
 	if err != nil {
 		return errUnavailable
 	}
@@ -344,15 +377,12 @@ func (s store) code(public map[string]any) (string, error) {
 	if err != nil || !m.Enabled {
 		return "", errUnavailable
 	}
-	b, _, err := s.managed()
+	b, boundPublic, err := s.managed()
 	if err != nil {
 		return "", err
 	}
 	if public == nil {
-		_, public, err = s.managed()
-		if err != nil {
-			return "", err
-		}
+		public = boundPublic
 	}
 	actual, err := publicBinding(public)
 	if err != nil || actual.Username != b.Username || actual.Computer != b.Computer || actual.ID != b.ID || actual.Fingerprint != b.Fingerprint {
@@ -362,6 +392,7 @@ func (s store) code(public map[string]any) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	filtered["desktopAuth"] = boundPublic["desktopAuth"]
 	body, err := json.Marshal(map[string]any{"schema": 1, "connection": filtered, "port": connectPort, "certificate": m.Certificate, "token": m.Token})
 	if err != nil {
 		return "", errUnavailable
@@ -399,6 +430,9 @@ func publicConnection(public map[string]any) (map[string]any, error) {
 	}
 	filtered["addresses"] = lan
 	filtered["desktopAuth"] = "shared-ssh"
+	if public["desktopAuth"] == "manual" {
+		filtered["desktopAuth"] = "manual"
+	}
 	return filtered, nil
 }
 
@@ -507,7 +541,7 @@ func (s store) storedCredential(m metadata) (credential, error) {
 	}
 	defer clear(plain)
 	var secret credential
-	if decodeJSON(plain, &secret) != nil || secret.Schema != 1 || secret.Username != m.Binding.Username || secret.Fingerprint != m.Binding.Fingerprint || secret.Password == "" || len(secret.Password) > 1024 {
+	if decodeJSON(plain, &secret) != nil || secret.Schema != 1 || secret.Username != m.Binding.Username || secret.Fingerprint != m.Binding.Fingerprint || secret.Password == "" || len(secret.Password) > 1024 || len(secret.DesktopPassword) > 1024 {
 		return credential{}, errUnavailable
 	}
 	return secret, nil
@@ -662,6 +696,9 @@ func (s store) handler() http.Handler {
 			return
 		}
 		// Fixed response fields only; never echo caller input, code, or token.
+		// Legacy enrollment returns only the SSH credential. The desktop secret
+		// remains in the server's encrypted store and is used by its desktop proxy.
+		secret.DesktopPassword = ""
 		result, err := json.Marshal(secret)
 		if err != nil {
 			fail(503)

@@ -74,6 +74,59 @@ class ControllerAccessTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             inspect_connection(json.dumps(bad))
 
+    def test_preserved_account_authorization_keeps_pinned_identity_without_exporting_passwords(self):
+        from gmssh_windows_bridge.pairing import inspect_connection
+        self.payload['connection'].update(username='Existing User', sshPort=2222, desktopAuth='manual')
+        cert, _ = certificate(self.payload['connection'])
+        self.payload['certificate'] = cert
+        code = inspect_authorization(encode(self.payload))
+        self.assertEqual(code['public']['username'], 'Existing User')
+        self.assertEqual(code['public']['desktopAuth'], 'manual')
+        text = metadata_connection(code)
+        self.assertNotIn(self.token, text)
+        restored = inspect_connection(text)
+        self.assertEqual(restored['desktopAuth'], 'controller')
+        self.assertEqual(restored['sshPort'], 2222)
+        self.assertEqual(configuration(restored)['public']['username'], 'Existing User')
+
+    def test_optional_server_read_only_policy_preserves_legacy_full_grants(self):
+        payload=json.loads(json.dumps(self.payload));payload['controller']['permissions']['files_read']=True
+        code=inspect_authorization(encode(payload))
+        self.assertTrue(code['controller']['permissions']['files_read'])
+        from gmssh_windows_bridge.pairing import inspect_connection
+        restored=configuration(inspect_connection(metadata_connection(code)))
+        self.assertTrue(restored['controller']['permissions']['files_read'])
+        payload['controller']['permissions']['files']=True
+        full=inspect_authorization(encode(payload))
+        self.assertEqual(len(full['controller']['permissions']),6)
+        self.assertNotIn('files_read',full['controller']['permissions'])
+        payload['controller']['permissions']['files_read']=1
+        with self.assertRaises(ValueError):inspect_authorization(encode(payload))
+
+    def test_server_read_only_grant_requires_capability_and_timeouts_never_replay(self):
+        code=inspect_authorization(encode(self.payload));client=ControllerClient('192.168.250.2',code)
+        policy={**self.policy,'files_read':True}
+        with patch.object(client,'call',return_value={'protocol':2,'controllerId':'f'*32,'permissions':policy}) as call:
+            with self.assertRaisesRegex(StreamError,'SERVER_UPGRADE_REQUIRED'):client.authorize()
+            self.assertFalse(client.authenticated);self.assertEqual(call.call_count,1)
+        with patch.object(client,'call',return_value={'protocol':2,'controllerId':'f'*32,'permissions':policy,'fileReadOnly':1}):
+            client.authorize();self.assertTrue(client.authenticated);self.assertTrue(client.file_read_only)
+        with patch('gmssh_windows_bridge.controller_access._PinnedConnection') as connection:
+            connection.return_value.request.side_effect=TimeoutError('synthetic timeout')
+            with self.assertRaisesRegex(StreamError,'OPERATION_TIMEOUT'):client.call('ai-task-start',args={'key':'a'*32,'command':'synthetic','timeout':1})
+            self.assertEqual(connection.return_value.request.call_count,1)
+            self.assertFalse(client.authenticated);self.assertIsNone(client.local.connection)
+            connection.return_value.close.assert_called_once()
+        client.close()
+
+    def test_windows_unlock_capability_requires_explicit_new_server_support(self):
+        code=inspect_authorization(encode(self.payload));client=ControllerClient('192.168.250.2',code)
+        base={'protocol':2,'controllerId':'f'*32,'permissions':self.policy}
+        for value,expected in [(None,False),(True,False),(0,False),('1',False),(1,True)]:
+            with patch.object(client,'call',return_value={**base,'windowsUnlock':value}):
+                client.authorize();self.assertEqual(client.windows_unlock,expected)
+        client.close()
+
     def test_native_bridge_accepts_only_its_grant_and_enforces_terminal_policy(self):
         from gmssh_windows_bridge.controller_session import ControllerSession
         attached = []

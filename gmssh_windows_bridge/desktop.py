@@ -277,7 +277,8 @@ def handle_connection(config, websocket, slots):
         del password, credentials, raw
         controller = getattr(channel, 'client', None)
         if getattr(controller, 'controller_protocol', None) == 2:
-            websocket.send(json.dumps({'type': 'controller_permissions', 'permissions': controller.policy}))
+            websocket.send(json.dumps({'type': 'controller_permissions', 'permissions': controller.policy,
+                                       'windows_unlock': getattr(controller, 'windows_unlock', False) is True}))
         # A channel-open acknowledgement isn't proof that RustDesk is listening.
         websocket.send(json.dumps({"type": "tailscale_ready" if direct else "ssh_ready"}))
         forward(websocket, channel, keychain.save if keychain is not None else None)
@@ -325,7 +326,7 @@ def create_server(config):
     from websockets.sync.server import serve
 
     wake = wake_settings(config)
-    if (wake is not None or getattr(config, "keychain_store", None) is not None or getattr(config, "monitor_channel", None) or
+    if (wake is not None or getattr(config, "keychain_store", None) is not None or getattr(config, 'windows_login_store', None) is not None or getattr(config, "monitor_channel", None) or
             getattr(config, "monitor_pool", None) is not None) and not valid_access_token(getattr(config, "access_token", "")):
         raise ValueError("Saved credentials, shared monitoring and Wake-on-LAN require a private desktop session token")
 
@@ -361,7 +362,9 @@ def create_server(config):
                                                 "tailscale" if getattr(config, "direct_tailscale", False) else "ssh",
                                    "keychain": keychain is not None, "has_saved_password": saved,
                                    "requires_token": bool(getattr(config, "access_token", "")),
-                                   "capabilities": {"files": operations and (policy is None or policy['files']), "power": operations and (policy is None or policy['power']),
+                                   "capabilities": {**({'windows_login': True} if getattr(config, 'windows_login_store', None) is not None and (policy is None or policy['input']) else {}),
+                                                    "files": operations and (policy is None or policy['files'] or policy.get('files_read', False)),
+                                                    "files_write": operations and (policy is None or policy['files']), "power": operations and (policy is None or policy['power']),
                                                     "wake": wake is not None and valid_access_token(getattr(config, "access_token", "")) and (policy is None or policy['power'])},
                                    **({'authorization': policy} if policy is not None else {})}).encode()
                 content_type = "application/json; charset=utf-8"
@@ -441,8 +444,9 @@ def main():
     if config.keychain:
         if sys.platform != "darwin" or not config.direct_tailscale:
             parser.error("Keychain preview requires macOS and direct Tailscale mode")
-        from .keychain import DesktopKeychain
+        from .keychain import DesktopKeychain, windows_login_keychain
         config.keychain_store = DesktopKeychain(f"tailscale:{config.tailscale_name.casefold()}@{config.target}:{config.rustdesk_port}")
+        config.windows_login_store = windows_login_keychain(config.keychain_store)
         config.access_token = secrets.token_urlsafe(32)
     if wake is not None and not config.access_token:
         config.access_token = secrets.token_urlsafe(32)
