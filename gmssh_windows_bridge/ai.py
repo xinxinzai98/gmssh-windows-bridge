@@ -478,8 +478,8 @@ TOOLS = [
     specification('desktop_find', 'Find UIA controls by exact name, automationId or controlType within one observed window. Multiple matches remain explicit.',
                   SELECTOR, ('window',), 'view'),
     specification('desktop_screenshot', 'Capture the unlocked interactive desktop, resized to <=1600x1000. Image may contain visible private content.', permission='view'),
-    specification('desktop_act', 'Act on one fresh observed target. Invoke/set-value use UIA; click/type-text/key require foreground focus. Observe again to verify.',
-                  {'snapshot': ID, 'target': ID, 'action': {'enum': ['invoke', 'set-value', 'click', 'type-text', 'key']},
+    specification('desktop_act', 'Act on one fresh observed target. Focus activates an observed native window (restoring it if minimized); invoke/set-value use UIA; click/type-text/key require foreground focus. Observe again to verify.',
+                  {'snapshot': ID, 'target': ID, 'action': {'enum': ['focus', 'invoke', 'set-value', 'click', 'type-text', 'key']},
                    'text': {'type': 'string', 'maxLength': 4096}, 'key': {'type': 'string', 'maxLength': 16}}, ('snapshot', 'target', 'action'), 'input', True),
     specification('wait_for', 'Wait for a UI selector, service state, or file hash. A query failure is never treated as disappearance.',
                   {'condition': {'enum': ['ui_exists', 'ui_absent', 'service_state', 'file_sha256']}, 'timeout': {'type': 'integer', 'minimum': 1, 'maximum': 60},
@@ -714,6 +714,8 @@ class Operations:
             self.require_controller(client)
             request = {key: value for key, value in args.items() if key != 'device'}
             request['operation'] = request.pop('action') if name == 'desktop_act' else name.removeprefix('desktop_')
+            if request['operation'] == 'focus' and 'focus' not in client.call('ai-desktop', args={'operation': 'context'}).get('capabilities', []):
+                raise StreamError('SERVER_UPGRADE_REQUIRED')
             return client.call('ai-desktop', args=request)
         if name == 'wait_for':
             return self.wait_for(client, device, args)
@@ -814,7 +816,7 @@ def error_message(code):
             'DESKTOP_WORKER_UNAVAILABLE': '桌面组件未运行，请在 Windows 登录后打开 GMSSH 托盘。',
             'NO_INTERACTIVE_SESSION': 'Windows 当前没有可用的交互桌面会话。',
             'DESKTOP_BUSY': '桌面正被另一个操作使用，请稍后重试。',
-            'FOCUS_DENIED': 'Windows 尚未确认目标窗口或控件的焦点，未发送点击或按键；请重新观察目标后再操作。',
+            'FOCUS_DENIED': 'Windows 未允许激活目标或未确认控件焦点，未发送点击或按键；请重新观察窗口，先对窗口根节点执行 focus，再重新查找控件。',
             'MCP_VERSION_MISMATCH': '本机 Python 与应用组件版本不一致，请更新运行环境。',
             'MCP_CHECK_FAILED': 'MCP 启动检查未通过，请先准备 AI 组件再重试。',
             'CREDENTIAL_REQUIRED': '请由用户在 CLI 接入流程设置凭据；无需向 AI 提供密码。',

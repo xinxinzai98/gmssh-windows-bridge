@@ -68,6 +68,8 @@ public static class GMSSHAIDesktop {
  [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
  [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
+ [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
+ [DllImport("user32.dll")] static extern bool ShowWindowAsync(IntPtr h,int command);
  [DllImport("user32.dll")] static extern bool SetCursorPos(int x,int y);
  [DllImport("user32.dll")] static extern uint SendInput(uint n,INPUT[] a,int s);
  [StructLayout(LayoutKind.Sequential)] struct SECURITY {public int size;public IntPtr descriptor;[MarshalAs(UnmanagedType.Bool)]public bool inherit;}
@@ -89,11 +91,12 @@ public static class GMSSHAIDesktop {
  public static bool Unlocked(){if(!sessionWatching||!SessionUnlocked())return false;IntPtr h=OpenInputDesktop(0,false,1);if(h==IntPtr.Zero)return false;try{var s=new StringBuilder(128);int r;return GetUserObjectInformation(h,2,s,256,out r)&&s.ToString()=="Default";}finally{CloseDesktop(h);}}
  public static bool Focus(long h){
   if(!Unlocked()||!IsWindow(new IntPtr(h)))return false;
-  if(GetForegroundWindow().ToInt64()==h)return true;
-  if(!SetForegroundWindow(new IntPtr(h)))return GetForegroundWindow().ToInt64()==h;
+  if(GetForegroundWindow().ToInt64()==h&&!IsIconic(new IntPtr(h)))return true;
+  if(IsIconic(new IntPtr(h)))ShowWindowAsync(new IntPtr(h),9);
+  SetForegroundWindow(new IntPtr(h));
   // Activation across input queues completes asynchronously; never force it.
   var deadline=DateTime.UtcNow.AddMilliseconds(500);
-  do{if(!Unlocked()||!IsWindow(new IntPtr(h)))return false;if(GetForegroundWindow().ToInt64()==h)return true;Thread.Sleep(10);}while(DateTime.UtcNow<deadline);
+  do{if(!Unlocked()||!IsWindow(new IntPtr(h)))return false;if(GetForegroundWindow().ToInt64()==h&&!IsIconic(new IntPtr(h)))return true;Thread.Sleep(10);}while(DateTime.UtcNow<deadline);
   return false;
  }
  static void Send(INPUT[] input,long window){
@@ -223,7 +226,7 @@ function Invoke-AIDesktop($request,[string]$owner) {
     if($request.operation -eq 'context'){
         return @{schema=1;user=[Security.Principal.WindowsIdentity]::GetCurrent().Name;sessionId=[Diagnostics.Process]::GetCurrentProcess().SessionId;
             unlocked=$true;paused=(Test-Path -LiteralPath $pauseFile);foregroundWindow=[GMSSHAIDesktop]::GetForegroundWindow().ToInt64().ToString();sessionEpoch=$epoch;
-            capabilities=@('observe','find','screenshot','invoke','set-value','click','type-text','key')}
+            capabilities=@('observe','find','screenshot','focus','invoke','set-value','click','type-text','key')}
     }
     if($request.operation -in @('observe','find')){return Get-AIObservation $request $owner}
     if($request.operation -eq 'screenshot'){
@@ -243,7 +246,7 @@ function Invoke-AIDesktop($request,[string]$owner) {
             }finally{$stream.Dispose();$small.Dispose()}
         }finally{$capture.Dispose()}
     }
-    if($request.operation -notin @('invoke','set-value','click','type-text','key')){throw 'INVALID_QUERY'}
+    if($request.operation -notin @('focus','invoke','set-value','click','type-text','key')){throw 'INVALID_QUERY'}
     if(Test-Path -LiteralPath $pauseFile){throw 'AI_PAUSED'}
     $now=[DateTime]::UtcNow
     if($script:inputOwner -and $script:inputOwner -ne $owner -and $script:inputUntil -gt $now){throw 'DESKTOP_BUSY'}
@@ -267,6 +270,12 @@ function Invoke-AIDesktop($request,[string]$owner) {
     if($observation.epoch -ne [GMSSHAIDesktop]::SessionEpoch){throw 'STALE_TARGET'}
     $pattern=$null
     switch($request.operation){
+        focus {
+            # Only activate the observed native root; never click a taskbar proxy.
+            $handle=[long]$element.Current.NativeWindowHandle
+            if($handle -le 0 -or $handle -ne [long]$observation.window){throw 'INVALID_QUERY'}
+            if(-not [GMSSHAIDesktop]::Focus($handle)){throw 'FOCUS_DENIED'}
+        }
         invoke {
             if(-not $element.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern,[ref]$pattern)){throw 'UNSUPPORTED_PATTERN'}
             $pattern.Invoke()

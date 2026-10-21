@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock,patch
-from gmssh_windows_bridge.file_stream import FileStream,StreamError,EMPTY_HASH,CHUNK
+from gmssh_windows_bridge.file_stream import FileStream,StreamError,EMPTY_HASH,CHUNK,read_ahead,MAX_SIZE
 from tests.stream_fixture import LocalSFTP,client_for
 
 
@@ -32,6 +32,34 @@ class FileStreamTests(unittest.TestCase):
         self.assertEqual((self.root/'uploaded.bin').read_bytes(),self.body)
         self.assertTrue(self.call('upload-status',**self.opts)['completed'])
         self.call('discard',**self.opts);self.assertEqual(list(self.root.iterdir()),[self.root/'uploaded.bin'])
+
+    def test_prefetch_is_bounded_and_a_delayed_write_failure_never_commits(self):
+        reads=[]
+        fake=SimpleNamespace(prefetch=lambda **values:reads.append(values))
+        self.assertEqual(read_ahead(fake,0,MAX_SIZE),CHUNK*4)
+        self.assertEqual(read_ahead(fake,MAX_SIZE-3,MAX_SIZE),MAX_SIZE)
+        self.assertEqual(reads,[{'file_size':CHUNK*4,'max_concurrent_requests':8},
+                                {'file_size':MAX_SIZE,'max_concurrent_requests':8}])
+        self.assertEqual(read_ahead(SimpleNamespace(),0,0),0)
+        opened=self.store.open;enabled=[];fail=[True]
+        class DelayedFile:
+            def __init__(self,file):self.file=file
+            def __getattr__(self,key):return getattr(self.file,key)
+            def set_pipelined(self,value):enabled.append(value)
+            def close(self):
+                self.file.close()
+                if fail[0]:fail[0]=False;raise OSError('synthetic delayed SFTP write failure')
+        def open_file(name,mode,bufsize=-1):
+            file=opened(name,mode,bufsize)
+            return DelayedFile(file) if name.endswith('.part') and mode=='wx' else file
+        with patch.object(self.store,'open',side_effect=open_file):
+            self.start();self.chunk(self.body[:CHUNK]);self.chunk(self.body[CHUNK:])
+            with self.assertRaises(OSError):self.call('finish-upload')
+        self.assertEqual(enabled,[True]);self.assertFalse((self.root/'uploaded.bin').exists())
+        self.stream.close()
+        self.assertEqual(self.call('upload-status',**self.opts)['offset'],len(self.body))
+        self.call('prepare-upload',**self.opts,offset=len(self.body),prefixSha256=self.opts['sha256'])
+        self.call('finish-upload');self.assertEqual((self.root/'uploaded.bin').read_bytes(),self.body)
     def test_download_resume_and_change_detection(self):
         (self.root/'source.bin').write_bytes(self.body)
         values={'path':'C:/source.bin','peer':self.peer,'expected':None,'offset':CHUNK,'prefixSha256':hashlib.sha256(self.body[:CHUNK]).hexdigest()}

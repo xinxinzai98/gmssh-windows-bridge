@@ -143,6 +143,10 @@ func TestAIDesktopPolicyBoundaryAndExplicitCapabilities(t *testing.T) {
 	if status != 403 || called != 1 {
 		t.Fatal("view grant reached input worker")
 	}
+	status, _ = aiFixtureCall(t, b, view, viewToken, "ai-desktop", map[string]any{"operation": "focus"})
+	if status != 403 || called != 1 {
+		t.Fatal("view grant activated a window")
+	}
 	status, _ = aiFixtureCall(t, b, input, inputToken, "ai-desktop", map[string]any{"operation": "invoke", "script": "untrusted"})
 	if status != 403 || called != 1 {
 		t.Fatal("unknown field reached worker")
@@ -150,6 +154,10 @@ func TestAIDesktopPolicyBoundaryAndExplicitCapabilities(t *testing.T) {
 	status, _ = aiFixtureCall(t, b, input, inputToken, "ai-desktop", map[string]any{"operation": "set-value", "text": "中文"})
 	if status != 200 || called != 2 {
 		t.Fatal(status, called)
+	}
+	status, _ = aiFixtureCall(t, b, input, inputToken, "ai-desktop", map[string]any{"operation": "focus"})
+	if status != 200 || called != 3 {
+		t.Fatal("window focus did not retain the authenticated input policy", status, called)
 	}
 	b.aiDesktop = func(context.Context, string, json.RawMessage) (any, error) { return nil, aiFailure("STALE_TARGET") }
 	status, body = aiFixtureCall(t, b, input, inputToken, "ai-desktop", map[string]any{"operation": "invoke"})

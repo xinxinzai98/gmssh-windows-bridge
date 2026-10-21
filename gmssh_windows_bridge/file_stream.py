@@ -13,6 +13,16 @@ MAX_SIZE = 1024 ** 4
 EMPTY_HASH = hashlib.sha256(b'').hexdigest()
 
 
+def read_ahead(file, offset, size):
+    # Paramiko otherwise constructs a request list for the entire file. Keep
+    # each window at 256 KiB (eight native requests), including for a 1 TiB
+    # file. The producer can finish queuing this window even if it is cancelled.
+    end = min(size, offset + CHUNK * 4)
+    if end > offset and callable(getattr(file, 'prefetch', None)):
+        file.prefetch(file_size=end, max_concurrent_requests=8)
+    return end
+
+
 class StreamError(ValueError):
     def __init__(self, code):
         self.code = code
@@ -52,6 +62,7 @@ class FileStream:
         self.mode = None
         self.pending = None
         self.offset = 0
+        self.read_ahead_until = 0
 
     def peer(self, expected=None):
         client = self.owner.ssh_nowait()
@@ -71,9 +82,10 @@ class FileStream:
 
     def hashes(self, file, size, prefix, progress):
         full, head = hashlib.sha256(), hashlib.sha256()
-        copied = 0; last = time.monotonic()
+        copied = 0; last = time.monotonic(); prefetched = 0
         file.seek(0)
         while copied < size:
+            if copied >= prefetched: prefetched = read_ahead(file, copied, size)
             chunk = file.read(min(CHUNK, size-copied))
             if not chunk: raise StreamError('SOURCE_CHANGED')
             full.update(chunk)
@@ -181,7 +193,9 @@ class FileStream:
                 except Exception:
                     self.sftp.remove(sidecar);raise
             else:self.file=self.sftp.open(part,'r+b',bufsize=0)
-            self.file.seek(offset);self.mode='upload';self.offset=offset;self.details=wanted;self.destination=self.path(options['path']);self.part=part;self.sidecar=sidecar
+            self.file.seek(offset)
+            if callable(getattr(self.file,'set_pipelined',None)):self.file.set_pipelined(True)
+            self.mode='upload';self.offset=offset;self.details=wanted;self.destination=self.path(options['path']);self.part=part;self.sidecar=sidecar
             return state
         if action=='prepare-download':
             self.peer(options['peer']);name=self.path(options['path']);info=metadata(self.sftp.lstat(name));expected=options['expected']
@@ -195,11 +209,12 @@ class FileStream:
                 if expected is not None and digest(expected['sha256'])!=sha:raise StreamError('SOURCE_CHANGED')
                 if head.hexdigest()!=prefix:raise StreamError('PARTIAL_CHANGED')
                 if metadata(self.sftp.lstat(name))!=info:raise StreamError('SOURCE_CHANGED')
-                source.seek(offset);self.file=source;self.mode='download';self.offset=offset;self.details={**info,'sha256':sha};self.source_path=name;self.hasher=head
+                source.seek(offset);self.file=source;self.mode='download';self.offset=offset;self.read_ahead_until=offset;self.details={**info,'sha256':sha};self.source_path=name;self.hasher=head
                 return {'peer':self.peer(),'offset':offset,**self.details}
             except Exception:source.close();raise
         if action=='read':
             if self.mode!='download' or self.file is None or integer(options['offset'])!=self.offset:raise StreamError('INVALID_TRANSFER')
+            if self.offset >= self.read_ahead_until:self.read_ahead_until=read_ahead(self.file,self.offset,self.details['size'])
             data=self.file.read(min(CHUNK,self.details['size']-self.offset))
             if not data and self.offset!=self.details['size']:raise StreamError('SOURCE_CHANGED')
             self.offset+=len(data);self.hasher.update(data)
@@ -240,3 +255,4 @@ class FileStream:
     def close(self):
         if self.file is not None:self.file.close()
         self.file=None;self.mode=None;self.pending=None
+        self.read_ahead_until=0

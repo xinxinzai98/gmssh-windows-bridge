@@ -9,6 +9,14 @@ test('favorite connection errors do not claim that file bytes or a partial trans
   try{await assert.rejects(queue.places('open',{path:'C:/资料'}),error=>/无法核对设备连接/.test(error.message)&&!error.message.includes('已传部分'));}finally{queue.dispose();}
 });
 
+test('native verification reaches the view separately from transfer progress',async()=>{
+  const {NativeTransfers}=await api;let receive;
+  const updated=new Promise(resolve=>receive=resolve);
+  const queue=new NativeTransfers(async()=>({jobs:[{id:1,kind:'upload',name:'data.bin',status:'running',phase:'verifying',bytes:256,size:1024,verifyBytes:128,verifyTotal:512}]}),receive);
+  try{const [task]=await updated;assert.equal(task.bytes,256);assert.equal(task.verifyBytes,128);assert.equal(task.verifyTotal,512);assert.equal(task.status,'running');}
+  finally{queue.dispose();}
+});
+
 test('current-directory search is Unicode aware, sorts naturally, keeps folders first and never mutates its snapshot',async()=>{
   const {browseEntries}=await api,values=[entry('报告10.txt',20,200),entry('报告2.txt',10,300),entry('资料',0,100,true),entry('NOTES.TXT',0,0)];const before=JSON.stringify(values);
   assert.deepEqual([...browseEntries(values,'报告','name')].map(e=>e.name),['报告2.txt','报告10.txt']);

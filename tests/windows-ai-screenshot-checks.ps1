@@ -61,16 +61,20 @@ using System.Runtime.InteropServices;
 public static class GMSSHFocusCheck {
  struct INPUT { public int type; public INPUT(int value){type=value;} }
  static string mode;
- static int reads,sent,activated;
+ static int reads,sent,activated,restored;
  static bool Unlocked(){return mode!="locked";}
  static bool IsWindow(IntPtr window){return mode!="gone";}
- static IntPtr GetForegroundWindow(){reads++;return new IntPtr(mode=="wrong"||mode=="denied"||mode=="timeout"||(mode=="delayed"&&reads<4)?999:123);}
- static bool SetForegroundWindow(IntPtr window){activated++;return mode!="denied";}
+ static IntPtr GetForegroundWindow(){reads++;return new IntPtr(mode=="wrong"||mode=="denied"||mode=="timeout"||((mode=="delayed"||mode=="false-delayed")&&reads<4)?999:123);}
+ static bool SetForegroundWindow(IntPtr window){activated++;return mode!="denied"&&mode!="false-delayed";}
+ static bool IsIconic(IntPtr window){return mode=="minimized"&&restored==0;}
+ static bool ShowWindowAsync(IntPtr window,int command){if(command!=9)throw new Exception("Unexpected restore command");restored++;return true;}
  static uint SendInput(uint count,INPUT[] values,int size){sent++;return mode=="partial"?count-1:count;}
- static void Reset(string value){mode=value;reads=sent=activated=0;}
+ static void Reset(string value){mode=value;reads=sent=activated=restored=0;}
  static void Refused(string value,string code){Reset(value);try{Send(new INPUT[1],123);}catch(InvalidOperationException error){if(error.Message!=code)throw;if(value!="partial"&&sent!=0)throw new Exception("Input dispatched after guard refusal");return;}throw new Exception("Dispatch unexpectedly succeeded");}
  public static void Check(){
   Reset("delayed");if(!Focus(123)||reads<4||activated!=1)throw new Exception("Asynchronous activation was rejected");
+  Reset("false-delayed");if(!Focus(123)||reads<4||activated!=1)throw new Exception("Foreground observation was replaced by an unreliable return flag");
+  Reset("minimized");if(!Focus(123)||restored!=1||sent!=0)throw new Exception("Minimized window not restored without input");
   Reset("ready");if(!Focus(123)||activated!=0)throw new Exception("Existing foreground was needlessly reactivated");
   foreach(string value in new[]{"denied","locked","gone","timeout"}){Reset(value);if(Focus(123))throw new Exception("Focus restriction ignored: "+value);}
   Refused("wrong","FOCUS_DENIED");Refused("locked","DESKTOP_LOCKED");Refused("partial","DESKTOP_OUTCOME_UNKNOWN");

@@ -21,7 +21,7 @@ function Register-GMSSHUninstaller([string]$ProgramRoot,[string]$Version,[switch
     if(-not(Test-Path -LiteralPath $entry -PathType Leaf)){throw '卸载程序缺失。'}
     $key='HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\GMSSHWindowsBridge'
     $shell=Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
-    $command='"'+$shell+'" -NoProfile -STA -ExecutionPolicy Bypass -File "'+$entry+'"'
+    $command='"'+$shell+'" -NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "'+$entry+'"'
     New-Item -Path $key -Force|Out-Null
     foreach($value in @{DisplayName='GMSSH Windows';DisplayVersion=$Version;Publisher='GMSSH Windows Bridge';InstallLocation=$ProgramRoot;DisplayIcon=(Join-Path $ProgramRoot 'brand\gmssh.ico');UninstallString=$command}.GetEnumerator()){
         New-ItemProperty -LiteralPath $key -Name $value.Key -Value $value.Value -PropertyType String -Force|Out-Null

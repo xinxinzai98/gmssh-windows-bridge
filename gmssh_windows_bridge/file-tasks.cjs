@@ -31,6 +31,8 @@ function validPlaces(value){
   return value.devices;
 }
 function validJob(j){
+  for(const key of ['verifyBytes','verifyTotal'])if(j?.[key]!==undefined)size(j[key]);
+  if((j?.verifyBytes||0)>(j?.verifyTotal||0))throw fail('JOURNAL_INVALID');
   if(!j||!Number.isSafeInteger(j.id)||j.id<1||!ID.test(j.machineId)||!ID.test(j.partToken)||!['upload','download','directory'].includes(j.kind)||!['queued','running','committing','paused','done','failed','cancelled'].includes(j.status)||typeof j.name!=='string'||j.name.length>1024||!j.local||typeof j.local!=='object'||j.peer!==null&&!PEER.test(j.peer)||j.sha256!==null&&!HEX.test(j.sha256))throw fail('JOURNAL_INVALID');
   remote(j.remote);size(j.size);size(j.bytes);if(j.bytes>j.size)throw fail('JOURNAL_INVALID');
   for(const key of ['source','target','part','root'])if(j.local[key]!==undefined&&(typeof j.local[key]!=='string'||!path.isAbsolute(j.local[key])||j.local[key].length>4096))throw fail('JOURNAL_INVALID');
@@ -93,7 +95,7 @@ class FileTasks {
     this.writePlaces({...records,[machineId]:{peer:result.peer,items}});return {items:items.map(item=>({...item})),maximum:MAX_PLACES};
   }
   activeCount(){return this.jobs.filter(j=>ACTIVE.has(j.status)).length;}
-  list(machineId){return {version:this.version,jobs:this.jobs.filter(j=>!machineId||j.machineId===machineId).map(j=>({id:j.id,machineId:j.machineId,device:j.device,name:j.name,kind:j.kind,status:j.status,bytes:j.bytes,size:j.size,phase:j.phase||'',copyBytes:j.copyBytes||0,code:j.code||'',sha256:j.status==='done'?j.sha256:null,started:j.started||0,createdAt:j.createdAt,source:j.kind==='download'?j.remote:j.local.source||j.local.root||'',target:j.kind==='download'?j.local.target:j.remote,needsGrant:!this.grants.has(j.id)&&j.status!=='done',cleanupPending:!!j.cleanupPending}))};}
+  list(machineId){return {version:this.version,jobs:this.jobs.filter(j=>!machineId||j.machineId===machineId).map(j=>({id:j.id,machineId:j.machineId,device:j.device,name:j.name,kind:j.kind,status:j.status,bytes:j.bytes,size:j.size,phase:j.phase||'',verifyBytes:j.verifyBytes||0,verifyTotal:j.verifyTotal||0,copyBytes:j.copyBytes||0,code:j.code||'',sha256:j.status==='done'?j.sha256:null,started:j.started||0,createdAt:j.createdAt,source:j.kind==='download'?j.remote:j.local.source||j.local.root||'',target:j.kind==='download'?j.local.target:j.remote,needsGrant:!this.grants.has(j.id)&&j.status!=='done',cleanupPending:!!j.cleanupPending}))};}
   job(machineId,id){const j=this.jobs.find(j=>j.id===id&&j.machineId===machineId);if(!j)throw fail('TASK_NOT_FOUND');return j;}
   async binding(machineId){if(!ID.test(machineId))throw fail('INVALID_DEVICE');const value=await this.resolveBinding(machineId);if(!value)throw fail('DEVICE_CONFIG_UNAVAILABLE');return value;}
   async picker(run){if(this.dialogBusy)throw fail('PICKER_BUSY');this.dialogBusy=true;try{return await run();}finally{this.dialogBusy=false;}}
@@ -221,7 +223,7 @@ class FileTasks {
   async execute(run){
     const j=run.job;let fd=-1,directoryFd=-1;
     try{
-      if(!this.grants.has(j.id))throw fail('REAUTHORIZE');const b=j.kind==='download'&&j.recoverCommit?null:await this.binding(j.machineId);if(run.reason)throw fail('PAUSED');j.status='running';j.started=Date.now();j.phase='verifying';j.code='';this.save();
+      if(!this.grants.has(j.id))throw fail('REAUTHORIZE');const b=j.kind==='download'&&j.recoverCommit?null:await this.binding(j.machineId);if(run.reason)throw fail('PAUSED');j.status='running';j.started=Date.now();j.phase='verifying';j.verifyBytes=0;j.verifyTotal=0;j.code='';this.save();
       this.session(j,'connecting');
       if(b&&j.remote.startsWith('/')!==!!b.ssh)throw fail('DEVICE_CONFIG_CHANGED');
       if(j.kind==='directory'){const command={...connection(b),kind:'mkdir',remote:j.remote,peer:j.peer};run.worker=this.run(command);const result=await run.worker.promise;j.peer=result.peer;if(run.reason)throw fail('PAUSED');j.status='done';j.phase='';this.save();return;}
@@ -246,7 +248,7 @@ class FileTasks {
           if(run.rebind){j.local.partProof=proof(fd);j.local.directoryProof=directoryProof(directoryFd);}
           this.save();
         }else if(event.event==='checkpoint'){j.bytes=size(event.offset);if(j.bytes>j.size||!HEX.test(event.sha256))throw fail('INVALID_RESPONSE');j.prefixSha256=event.sha256;if(j.phase!=='receiving')j.started=Date.now();j.phase='receiving';this.version++;if(Date.now()-lastSave>500){this.save();lastSave=Date.now();}}
-        else if(event.event==='progress'){j.phase='verifying';this.version++;}
+        else if(event.event==='progress'){j.verifyBytes=size(event.bytes);j.verifyTotal=size(event.total);if(j.verifyBytes>j.verifyTotal)throw fail('INVALID_RESPONSE');j.phase='verifying';this.version++;}
         else if(event.event==='done')j.peakRssBytes=event.peakRssBytes;
       });
       const result=await run.worker.promise;if(run.reason)throw fail('PAUSED');if(result.sha256!==j.sha256||result.offset!==j.size||result.peer!==j.peer)throw fail('HASH_MISMATCH');

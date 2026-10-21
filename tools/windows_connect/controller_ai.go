@@ -133,7 +133,7 @@ func (b *controllerBroker) aiRequest(c controller, r controllerRequest) (any, er
 		}
 		switch v.Operation {
 		case "context", "observe", "find", "screenshot":
-		case "invoke", "set-value", "click", "type-text", "key":
+		case "focus", "invoke", "set-value", "click", "type-text", "key":
 			if !c.Policy.Input {
 				return nil, errDenied
 			}

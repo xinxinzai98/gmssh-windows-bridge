@@ -182,6 +182,26 @@ class AITests(unittest.TestCase):
         self.assertEqual(result['error']['code'], 'INVALID_ARGUMENT')
         self.assertEqual(self.calls, [])
 
+    def test_window_focus_requires_server_capability_and_never_replays_or_types(self):
+        arguments = dict(snapshot='a'*32, target='b'*32, action='focus')
+        result = self.call('desktop_act', **arguments)
+        self.assertEqual(result['error']['code'], 'SERVER_UPGRADE_REQUIRED')
+        self.assertEqual(self.calls, [('ai-desktop', {'args': {'operation': 'context'}})])
+        self.calls.clear()
+        def dispatch(operation, **values):
+            self.calls.append((operation, values))
+            if values['args']['operation'] == 'context':
+                return {'capabilities': ['focus']}
+            raise StreamError('FOCUS_DENIED')
+        with patch.object(self.client, 'call', side_effect=dispatch):
+            result = self.call('desktop_act', **arguments)
+        self.assertEqual(result['error']['code'], 'FOCUS_DENIED')
+        self.assertEqual([values['args']['operation'] for _, values in self.calls], ['context', 'focus'])
+        self.registry.configure(self.device_id, ['view'])
+        self.calls.clear()
+        self.assertEqual(self.call('desktop_act', **arguments)['error']['code'], 'ACCESS_DENIED')
+        self.assertEqual(self.calls, [])
+
     def test_task_key_is_returned_even_when_start_response_is_lost(self):
         def lost(*_, **__):
             raise StreamError('REMOTE_IO')

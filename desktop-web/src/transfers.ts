@@ -4,7 +4,7 @@ export type UploadEntry = { file?:File; relative:string; directory?:boolean };
 export type PlacesCall=(op:'list'|'add'|'remove'|'open',values?:{path:string;label?:string})=>Promise<{items?:{path:string;label:string}[];path?:string;maximum?:number}>;
 export type TransferTask = {
   id:number; kind:'upload'|'download'|'directory'; name:string; path:string; relative?:string; file?:File; directory?:boolean;
-  status:'queued'|'running'|'committing'|'paused'|'done'|'failed'|'cancelled'; bytes:number; size:number; started:number; phase:string; message:string; cleanupPending?:boolean;copyBytes?:number;source?:string;target?:string;code?:string;createdAt?:string;sha256?:string|null;
+  status:'queued'|'running'|'committing'|'paused'|'done'|'failed'|'cancelled'; bytes:number; size:number; started:number; phase:string; message:string; cleanupPending?:boolean;copyBytes?:number;verifyBytes?:number;verifyTotal?:number;source?:string;target?:string;code?:string;createdAt?:string;sha256?:string|null;
 };
 export type TransferCollection = {items:TransferTask[];addUploads:(entries:UploadEntry[],base:string)=>void|Promise<void>;addDownloads:(entries:{path:string;name:string;directory:boolean;size:number}[])=>void|Promise<void>;retry:(id:number,name?:string)=>void|Promise<void>;cancel:(id:number)=>void|Promise<void>;cancelAll:()=>void|Promise<void>;clearFinished:()=>void|Promise<void>} & {native?:boolean;places?:PlacesCall;pause?:(id:number)=>void|Promise<void>;dispose?:()=>void;chooseUploads?:(remote:string,directory:boolean)=>void|Promise<void>};
 type Worker = Pick<Operations,'mkdir'|'upload'|'download'|'close'>;

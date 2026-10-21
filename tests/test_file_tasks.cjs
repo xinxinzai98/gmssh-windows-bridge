@@ -85,6 +85,18 @@ test('a corrupt journal fails closed and never falls back to an empty or browser
   const folder=path.join(dir,'bad');fs.mkdirSync(folder);fs.writeFileSync(path.join(folder,'transfer-journal.json'),'broken');const m=manager('bad');assert.equal(m.readyError,'JOURNAL_INVALID');await assert.rejects(m.invoke('hello',null),/JOURNAL_INVALID/);assert.equal(fs.readFileSync(m.journal,'utf8'),'broken');await m.shutdown();assert.equal(fs.readFileSync(m.journal,'utf8'),'broken');
 });
 
+test('verification reports its own bounded progress without changing transferred bytes',async()=>{
+  const m=manager('verification-progress');
+  const j=m.newJob(machine,'Synthetic','directory','C:/folder','folder',{},
+    {status:'running',phase:'verifying',size:1024,bytes:256,verifyBytes:128,verifyTotal:512});
+  m.save();const listed=m.list().jobs[0];
+  assert.equal(listed.bytes,256);assert.equal(listed.verifyBytes,128);assert.equal(listed.verifyTotal,512);
+  await m.shutdown();
+  const data=JSON.parse(fs.readFileSync(m.journal,'utf8'));data.jobs[0].verifyBytes=513;
+  fs.writeFileSync(m.journal,JSON.stringify(data));const invalid=manager('verification-progress');
+  assert.equal(invalid.readyError,'JOURNAL_INVALID');await invalid.shutdown();
+});
+
 test('a crash during final download commit recovers the original inode after a fresh grant',async()=>{
   const target=path.join(dir,'commit.bin'),m=manager('commit',{save:target}),part=path.join(dir,'.gmssh-transfer-'+'b'.repeat(32)+'.part');fs.writeFileSync(part,'verified commit bytes');
   const fd=fs.openSync(part,'r');const p=proof(fd);fs.closeSync(fd);const peer=(await m.probe(machine)).peer;

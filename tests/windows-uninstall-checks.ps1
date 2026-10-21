@@ -5,6 +5,7 @@ $ErrorActionPreference='Stop'
 [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);$OutputEncoding=[Console]::OutputEncoding
 if($env:OS -ne 'Windows_NT'){'SKIP: Windows native removal fixtures required.';return}
 foreach($name in @('setup-checks.ps1','setup-connect.ps1','setup-network.ps1','setup-maintenance.ps1','setup-uninstall.ps1')){. (Join-Path $SourceRoot $name)}
+$registerUninstaller=${function:Register-GMSSHUninstaller}
 $fixture=Join-Path ([IO.Path]::GetTempPath()) ('gmssh-uninstall-'+[guid]::NewGuid().ToString('N'))
 $script:program=Join-Path $fixture 'program';$script:data=Join-Path $fixture 'data';$package=Join-Path $fixture 'package'
 $script:sid='S-1-5-21-1-2-3-1004';$script:traySid='S-1-5-21-1-2-3-1001';$script:username='Existing User'
@@ -69,6 +70,15 @@ function Reset-Fixture([switch]$Managed,[switch]$OwnedEngine){
 function Assert-Private{Assert ((Get-FileHash (Join-Path $script:data 'private/connect-password.dat')).Hash -ceq $script:privateBefore) 'Private credential changed';Assert ($script:rules.ContainsKey('External-SSH')) 'External firewall changed'}
 function Expect-Blocked($Action,[string]$Message){$blocked=$false;try{&$Action|Out-Null}catch{$blocked=$true};Assert $blocked $Message}
 try{
+    $script:uninstallValues=@{}
+    function New-Item{param($Path,[switch]$Force)}
+    function New-ItemProperty{param($LiteralPath,$Name,$Value,$PropertyType,[switch]$Force);$script:uninstallValues[$Name]=$Value}
+    try{
+        & $registerUninstaller -ProgramRoot $SourceRoot -Version '0.4.0a35'
+        Assert ($script:uninstallValues.UninstallString -match ' -STA -WindowStyle Hidden ' -and
+            $script:uninstallValues.UninstallString.EndsWith(' -File "'+(Join-Path $SourceRoot 'uninstall-windows.ps1')+'"')) 'Uninstall UI did not hide the host or preserve its quoted entry path'
+        Assert (-not $script:uninstallValues.ContainsKey('QuietUninstallString')) 'Uninstaller bypassed its normal confirmation'
+    }finally{Remove-Item Function:\New-Item;Remove-Item Function:\New-ItemProperty}
     Reset-Fixture
     $plan=Get-GMSSHRemovalPlan $script:program $script:data
     Assert ($plan.files.Count -eq 3 -and $plan.tasks.Count -eq 2 -and $plan.rules.Count -eq 1 -and -not $plan.managedAccount -and -not $plan.engine) 'Preview did not scope the original installation'

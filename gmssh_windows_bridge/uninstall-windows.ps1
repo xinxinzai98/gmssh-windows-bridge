@@ -8,7 +8,7 @@ $dataRoot=Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'GMS
 $admin=([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if(-not $admin){
     $arguments='-NoProfile -STA -ExecutionPolicy Bypass -File "'+$PSCommandPath+'"'
-    if($Preview){$arguments+=' -Preview'}
+    if($Preview){$arguments+=' -Preview'}else{$arguments='-WindowStyle Hidden '+$arguments}
     $child=Start-Process (Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe') -ArgumentList $arguments -Verb RunAs -PassThru -Wait
     exit $child.ExitCode
 }
