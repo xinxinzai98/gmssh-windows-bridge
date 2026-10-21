@@ -17,7 +17,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
-from gmssh_windows_bridge.connection_code import PREFIX, PORT, inspect_code, redeem_code
+from gmssh_windows_bridge.connection_code import PREFIX, PORT, _PinnedConnection, inspect_code, redeem_code
 from gmssh_windows_bridge.pairing import inspect_connection
 
 
@@ -114,6 +114,15 @@ class CodeTests(unittest.TestCase):
         self.assertEqual(len(self.calls), 2)
         self.assertEqual(self.calls[0][0], '/v1/connect')
         self.assertTrue(inspect_code(code)['public']['desktopAuth'] == 'shared-ssh')
+
+    def test_pinned_control_socket_sends_small_requests_without_nagle_delay(self):
+        connection = _PinnedConnection(self.public['addresses'][0], inspect_code(encode(self.payload)))
+        try:
+            connection.connect()
+            self.assertNotEqual(connection.sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY), 0)
+            self.assertEqual(connection.sock.getpeercert(binary_form=True), ssl.PEM_cert_to_DER_cert(self.cert))
+        finally:
+            connection.close()
 
     def test_preserved_desktop_code_redeems_only_ssh_and_keeps_manual_desktop_auth(self):
         self.payload['connection']['desktopAuth'] = 'manual'

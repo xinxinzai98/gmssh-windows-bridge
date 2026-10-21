@@ -78,6 +78,7 @@ class _PinnedConnection(http.client.HTTPSConnection):
     def connect(self):
         raw = socket.create_connection((self.host, self.port), timeout=self.timeout)
         try:
+            raw.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             self.sock = self._context.wrap_socket(raw, server_hostname=self.server_name)
             if not hmac.compare_digest(self.sock.getpeercert(binary_form=True), self.expected_certificate):
                 raise ssl.SSLCertVerificationError('unexpected device certificate')
