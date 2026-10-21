@@ -127,6 +127,48 @@ class ControllerAccessTests(unittest.TestCase):
                 client.authorize();self.assertEqual(client.windows_unlock,expected)
         client.close()
 
+    def test_idle_connection_is_replaced_before_sending_without_replaying_writes(self):
+        clock=[100.0];opened=[]
+        class Connection:
+            sock=None
+            def __init__(self,*_args):self.requests=[];self.closed=False;opened.append(self)
+            def request(self,*args,**kwargs):self.requests.append((args,kwargs))
+            def getresponse(self):return SimpleNamespace(status=200,read=lambda _limit:b'{"ok":true,"result":{}}')
+            def close(self):self.closed=True
+        client=ControllerClient('192.168.250.2',inspect_authorization(encode(self.payload)))
+        with patch('gmssh_windows_bridge.controller_access._PinnedConnection',Connection),patch('gmssh_windows_bridge.controller_access.time.monotonic',lambda:clock[0]):
+            try:
+                client.call('capabilities');clock[0]+=3;client.call('capabilities')
+                self.assertEqual(len(opened),1);self.assertEqual(len(opened[0].requests),2)
+                clock[0]+=4;client.call('file-write',session='a'*32,args={'data':'c3ludGhldGlj'})
+                self.assertTrue(opened[0].closed);self.assertEqual(len(opened),2)
+                self.assertEqual(len(opened[0].requests),2);self.assertEqual(len(opened[1].requests),1)
+                body=json.loads(opened[1].requests[0][1]['body']);self.assertEqual(body['action'],'file-write')
+                clock[0]+=4
+                with patch.object(Connection,'request',side_effect=ConnectionResetError('synthetic connection reset')) as request:
+                    with self.assertRaisesRegex(StreamError,'REMOTE_IO'):client.call('file-write',session='a'*32,args={'data':'c3ludGhldGlj'})
+                    self.assertEqual(request.call_count,1);self.assertEqual(len(opened),3)
+            finally:client.close()
+
+    def test_long_response_does_not_hide_the_connections_server_idle_age(self):
+        clock=[100.0];opened=[]
+        class Connection:
+            sock=None
+            def __init__(self,*_args):opened.append(self);self.first=len(opened)==1;self.closed=False
+            def request(self,*_args,**_kwargs):pass
+            def getresponse(self):
+                def read(_limit):
+                    if self.first:clock[0]+=6
+                    return b'{"ok":true,"result":{}}'
+                return SimpleNamespace(status=200,read=read)
+            def close(self):self.closed=True
+        client=ControllerClient('192.168.250.2',inspect_authorization(encode(self.payload)))
+        with patch('gmssh_windows_bridge.controller_access._PinnedConnection',Connection),patch('gmssh_windows_bridge.controller_access.time.monotonic',lambda:clock[0]):
+            try:
+                client.call('info');client.call('info')
+                self.assertEqual(len(opened),2);self.assertTrue(opened[0].closed)
+            finally:client.close()
+
     def test_native_bridge_accepts_only_its_grant_and_enforces_terminal_policy(self):
         from gmssh_windows_bridge.controller_session import ControllerSession
         attached = []

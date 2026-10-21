@@ -8,6 +8,7 @@ import stat
 import socket
 import ssl
 import threading
+import time
 import weakref
 
 import paramiko
@@ -151,7 +152,15 @@ class ControllerClient:
             body['session'] = session
         body.update(values)
         try:
+            request_started = time.monotonic()
             connection = getattr(self.local, 'connection', None)
+            # The helper closes idle HTTP connections after five seconds. Use
+            # the last request's start (not response end) as a conservative age,
+            # and reconnect before sending anything; never replay an operation.
+            if connection is not None and request_started - getattr(self.local, 'request_started', 0) >= 4:
+                connection.close()
+                self.local.connection = None
+                connection = None
             if connection is None:
                 connection = _PinnedConnection(self.target, self.code)
                 self.local.connection = connection
@@ -163,6 +172,7 @@ class ControllerClient:
             connection.timeout = 65 if action == 'execute' else 8
             if connection.sock:
                 connection.sock.settimeout(connection.timeout)
+            self.local.request_started = request_started
             connection.request('POST', '/v2/controller', body=raw, headers={
                 'Content-Type': 'application/json', 'Authorization': 'Bearer '+self.token,
                 'X-GMSSH-Controller': self.code['controller']['id']})
