@@ -4,12 +4,70 @@ from pathlib import Path
 import struct
 import tempfile
 import unittest
+from unittest import mock
 from types import SimpleNamespace
+import plistlib
+import shutil
+import subprocess
+import sys
 
-from gmssh_windows_bridge.macos_launcher import monitor_options, native_profile, refresh_executable_uuid, write_asar
+from gmssh_windows_bridge import __version__
+from gmssh_windows_bridge.macos_launcher import _build_launcher, monitor_options, native_profile, refresh_executable_uuid, write_asar
 
 
 class LauncherArchiveTest(unittest.TestCase):
+    def test_bundles_vendor_resources_and_protocol_without_external_app_dependency(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            vendor = root / 'Official.app/Contents'
+            (vendor / 'MacOS').mkdir(parents=True)
+            (vendor / 'Frameworks').mkdir()
+            (vendor / 'Resources/app.asar.unpacked').mkdir(parents=True)
+            (vendor / 'Resources/app.asar').write_bytes(b'synthetic unmodified vendor archive')
+            (vendor / 'Resources/app.asar.unpacked/native.node').write_bytes(b'synthetic native dependency')
+            (vendor / 'MacOS/GMSSH').write_bytes(struct.pack('<8I', 0xFEEDFACF, 0x0100000C, 0, 2, 1, 24, 0, 0)
+                                               + struct.pack('<II', 0x1B, 24) + b's' * 16)
+            urls = [{'CFBundleURLSchemes': ['gmssh']}]
+            (vendor / 'Info.plist').write_bytes(plistlib.dumps({
+                'CFBundleIdentifier': 'com.gmssh.com', 'CFBundleShortVersionString': '2.0.4',
+                'CFBundleURLTypes': urls, 'ElectronAsarIntegrity': {
+                    'Resources/app.asar': {'algorithm': 'SHA256', 'hash': 'synthetic-vendor-header'}}}))
+            profile = root / 'profile'
+            for relative in ('serve/app/gs/bin/gs_main_mac_arm64', 'serve/multi/gmb_multi_server_mac_arm64'):
+                file = profile / relative
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_bytes(b'synthetic-server')
+            config = SimpleNamespace(gmssh_app=vendor.parent, profile=profile, python=Path(sys.executable),
+                                     port=22243, target=None, label='Synthetic', machine_id=None,
+                                     monitor_port=None, monitor_username=None, monitor_known_hosts=None,
+                                     monitor_host_key=None, keychain=True, pairing_only=True)
+            def run(args, **kwargs):
+                if args[0] == 'cp':
+                    source, destination = map(Path, args[-2:])
+                    shutil.copytree(source, destination) if source.is_dir() else shutil.copyfile(source, destination)
+                return subprocess.CompletedProcess(args, 0, b'', b'')
+            output = root / 'Enhanced.app'
+            with mock.patch('gmssh_windows_bridge.macos_launcher.subprocess.run', side_effect=run), \
+                    mock.patch('gmssh_windows_bridge.macos_launcher.ctypes.CDLL'):
+                _build_launcher(config, output)
+            resources = output / 'Contents/Resources'
+            self.assertEqual((resources / 'vendor.asar').read_bytes(), (vendor / 'Resources/app.asar').read_bytes())
+            self.assertTrue((resources / 'vendor.asar.unpacked/native.node').is_file())
+            self.assertFalse((resources / 'app.asar.unpacked').exists())
+            raw = (resources / 'app.asar').read_bytes()
+            _, length, _, text_size = struct.unpack('<4I', raw[:16])
+            entry = json.loads(raw[16:16 + text_size])['files']['launcher-config.json']
+            start = 8 + length + int(entry['offset'])
+            payload = json.loads(raw[start:start + entry['size']])
+            self.assertEqual(payload['vendorAsar'], 'vendor.asar')
+            self.assertEqual(payload['profile'], str(profile))
+            info = plistlib.loads((output / 'Contents/Info.plist').read_bytes())
+            self.assertEqual(info['CFBundleURLTypes'], urls)
+            self.assertEqual(info['ElectronAsarIntegrity']['Resources/vendor.asar']['hash'], 'synthetic-vendor-header')
+            self.assertEqual(info['GMSSHBridgeVersion'], __version__)
+            vendor.parent.rename(root / 'Official-offline.app')
+            self.assertTrue((resources / payload['vendorAsar']).is_file())
+
     def test_profile_requires_initialized_servers_for_the_vendor_architecture(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

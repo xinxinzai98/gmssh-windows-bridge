@@ -58,3 +58,5 @@ ai-job-*.dat
 .ai-devices-*
 ai-paused
 uninstall.json
+# Cloud-sync conflict copies are local artifacts, never generated source inputs.
+gmssh_windows_bridge/desktop_web/**/* [0-9]*.*

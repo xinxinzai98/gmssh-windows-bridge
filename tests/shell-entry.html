@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>局域网增强端 · 本机界面检查</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#1c1c1e;color:#050505;font:14px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}.tabs-container{height:48px;display:flex;align-items:center;gap:8px;padding:0 12px 0 88px}.tab-chip{border:0;border-radius:6px;background:#333;color:#eee;padding:7px 12px}.layout{display:flex;height:calc(100vh - 48px)}.multi-computer-navbar{display:flex;flex-direction:column;justify-content:space-between;width:200px;flex:none;background:#141414;color:#ccc}.menu{padding:10px 12px}.n-menu-item{height:44px;margin-bottom:8px}.n-menu-item-content{height:100%;padding:12px 16px;display:flex;gap:14px;border-radius:8px;cursor:pointer}.n-menu-item-content--selected{background:#ffffff14;color:#fff}.menus{list-style:none;padding:10px;margin:0;border-top:1px solid #ffffff12}.menu-item{padding:10px}.login{height:48px;padding:10px 20px}.fixture-main{flex:1;min-width:0}.machine-manage{padding:20px!important}.machine-group{height:34px;color:#eee}.group-list{display:flex}.group-item{white-space:nowrap;padding:8px 10px;border-radius:4px;background:#444}.group-opr{color:#aaa}.machine-head{display:flex;align-items:center;margin:16px 0}.action-btn{display:flex;gap:8px;align-items:center}.action-btn button{width:34px;height:34px;border:1px solid #ffffff12;border-radius:5px;background:#ffffff09;color:#ccc}.action-btn .add{background:#5667ff;color:white}.action-btn input{width:220px;padding:9px;border:1px solid #ffffff12;border-radius:5px;background:#141414;color:#ccc}.machine-body{margin:0 20px}.native-grid{display:grid;gap:10px}.native-card{padding:18px;background:#252526;color:#ddd}.qa-panel{position:fixed;right:20px;bottom:16px;z-index:2147483640;max-width:min(600px,calc(100vw - 24px));padding:12px;border:1px solid #ffffff20;border-radius:9px;background:#17171bf2;color:#bfc3d8;font-size:12px;box-shadow:0 8px 30px #0005}.qa-panel button{margin-right:8px;background:#333;color:#eee;border:1px solid #ffffff20;border-radius:5px;padding:6px 10px}.qa-panel details{max-height:190px;overflow:auto}.qa-panel pre{white-space:pre-wrap}.qa-panel small{display:block;margin:8px 0}.setting-fixture{display:none;color:#ddd;padding:32px}.setting-fixture h2{font-size:20px}.setting-fixture article{padding:20px;background:#252526;border-radius:10px;margin:16px 0;max-width:600px}
+</style>
+<div class="tabs-container"><div class="tabs-home"><button class="tab-chip tab-chip--home">首页</button></div><a id="gmssh-vendor-update">GMSSH 2.0.6 · 待兼容验证</a></div>
+<div class="layout"><aside class="multi-computer-navbar"><div class="menu n-menu">
+<div class="n-menu-item"><div class="n-menu-item-content n-menu-item-content--selected">▣ 我的桌面</div></div>
+<div class="n-menu-item"><div class="n-menu-item-content">ϟ 快捷命令</div></div>
+<div class="n-menu-item"><div class="n-menu-item-content">▱ 批量执行</div></div>
+<div class="n-menu-item"><div class="n-menu-item-content">✧ AI 偏好</div></div>
+<div class="n-menu-item"><div class="n-menu-item-content" id="native-settings"><i class="icon-shezhi2">⚙</i><span>设置</span></div></div>
+</div><div><ul class="menus"><li class="menu-item"><i class="icon-bangzhuwendang">▤</i><span>帮助文档</span></li></ul><div class="login"><span>立即登录</span><span> ⋯</span></div></div></aside>
+<main class="fixture-main"><div class="machine-manage"><div class="machine-group"><div class="group-list"><span class="group-item">全部分组</span></div><span class="group-opr">✎</span></div><div class="machine-content"><div class="machine-head"><div class="head-left action-btn visible"><button class="add" aria-label="添加机器">＋</button><button aria-label="批量添加">▣</button><button aria-label="导入">⇥</button><button aria-label="导出">⇤</button><span><button id="native-cloud-upload" aria-label="同步到云端"><i class="icon-yunshangchuan">☁↑</i></button></span><span><button aria-label="从云端同步"><i class="icon-yunxiazai">☁↓</i></button></span><input placeholder="搜索机器名称、IP或备注"></div></div></div><div class="machine-body"><div class="machine-card-scroll"><div class="n-scrollbar-container"><div class="native-grid"></div></div></div></div></div></main>
+<section class="setting-fixture"><h2>设置</h2><article>本机设置 · 界面、语言、窗口行为与本地仓库保护</article><article>关于与版本信息</article></section></div>
+<div class="qa-panel"><button id="run-checks">运行检查</button><button id="toggle-sidebar">切换收起侧栏</button><small>合成设备与空文件列表；只在本机检查界面，不连接任何实际电脑。</small><strong id="qa-result" role="status">正在加载</strong><details><summary>检查记录</summary><pre id="qa-checks"></pre></details></div>
+<script src="../desktop-web/public/gmssh-home.js"></script><script src="../desktop-web/public/gmssh-files.js"></script><script src="../desktop-web/public/gmssh-workspace.js"></script>
+<script>
+const win='a'.repeat(32),linux='b'.repeat(32),requests=[],assetBase=location.origin+'/desktop-web/public/';let nativeSettingsClicks=0;
+window.electronAPI={invoke:async(_channel,r)=>{
+ requests.push(r.type);
+ if(r.type==='gmssh-workspace')return {status:'ok',data:{tabs:[],selected:null,devices:{},sessions:[],retention:30}};
+ if(r.type==='gmssh-transfer')return {status:'ok',data:r.data.action==='hello'?{protocol:2,linuxFiles:true}:r.data.action==='list'?{jobs:[]}:r.data.action==='browse'?{path:'C:/',entries:[]}: {}};
+ return {};
+}};
+function setRoute(){const settings=location.hash.startsWith('#/home/setting');document.querySelector('.fixture-main').style.display=settings?'none':'';document.querySelector('.setting-fixture').style.display=settings?'block':'';}
+document.getElementById('native-settings').onclick=()=>{nativeSettingsClicks++;location.hash='/home/setting';};window.addEventListener('hashchange',setRoute);
+document.querySelector('.tab-chip--home').onclick=()=>{location.hash='/home/machineManage';};
+document.getElementById('toggle-sidebar').onclick=()=>{const menu=document.querySelector('.n-menu');menu.classList.toggle('n-menu--collapsed');document.querySelector('.multi-computer-navbar').style.width=menu.classList.contains('n-menu--collapsed')?'64px':'';};
+for(const [id,name,ip,cpu,memory,disk] of [[win,'演示工作站','192.0.2.42','9.6%','8.4 / 32GB','124 / 512GB'],[linux,'实验室服务器','192.0.2.43','3.2%','6.1 / 16GB','92 / 256GB']]){
+ const n=document.createElement('article');n.className='native-card';n.dataset.machineId=id;n.innerHTML='<img class="machine-icon-img" src="../desktop-web/public/ui-icons/monitor.svg" alt="Linux"><b class="machine-name"></b><span class="machine-ip"></span><div class="machine-latency-badge">4ms</div><div class="machine-progress"><span class="label-value"></span></div><div class="machine-progress"><span class="label-value"></span></div><div class="machine-progress"><span class="label-value"></span></div><button data-machine-action="desktop">桌面</button><button data-machine-action="terminal">终端</button>';
+ n.querySelector('.machine-name').textContent=name;n.querySelector('.machine-ip').textContent=ip;[...n.querySelectorAll('.label-value')].forEach((e,i)=>e.textContent=[cpu,memory,disk][i]);document.querySelector('.native-grid').append(n);
+}
+let home,files,workspace;
+const tick=()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))),shown=n=>!!n?.getClientRects().length;
+async function initialize(){
+ localStorage.setItem('GmsshMachineView','list');
+ const css=await fetch('../desktop-web/public/gmssh-theme.css').then(r=>r.text());
+ home=installGMSSHHome({viewerUrl:assetBase,devices:[{machineId:win,viewerUrl:assetBase,target:'192.0.2.42'}],css});window.gmsshHomeController=home;
+ files=installGMSSHFileCenter({viewerUrl:assetBase,devices:[]});workspace=installGMSSHWorkspace({viewerUrl:assetBase});
+ document.getElementById('qa-result').textContent='界面已就绪';
+}
+function contrast(color,background){const rgb=s=>s.match(/[\d.]+/g).slice(0,3).map(Number).map(x=>{x/=255;return x<=.04045?x/12.92:((x+.055)/1.055)**2.4;}),l=s=>rgb(s).reduce((v,c,i)=>v+c*[.2126,.7152,.0722][i],0);return (Math.max(l(color),l(background))+.05)/(Math.min(l(color),l(background))+.05);}
+document.getElementById('run-checks').onclick=async()=>{
+ const checks=[],assert=(v,s)=>{if(!v)throw Error(s);checks.push(s);};
+ try{
+  await ready;await tick();
+  assert(!shown(document.querySelector('.login')),'原版账号登录区不可见');assert(!shown(document.querySelector('.menus .menu-item')),'帮助文档入口已让位给设置');
+  assert(!shown(document.querySelector('#native-settings').closest('.n-menu-item')),'主菜单不再重复显示设置');assert(shown(document.querySelector('.menus .gm-shell-settings')),'设置位于侧栏底部');
+  assert(!document.querySelector('#gmssh-vendor-update'),'首页移除旧版本提示');assert(!document.querySelector('.gm-workspace-tab'),'首页不再建立工作区按钮');
+  assert(!shown(document.querySelector('#native-cloud-upload')),'账号专用云同步按钮不可见');
+  const tab=document.querySelector('.gm-files-tab'),style=getComputedStyle(tab),bar=getComputedStyle(document.querySelector('.tabs-container'));
+  assert(contrast(style.color,bar.backgroundColor)>=4.5,'文件中心文字在深色标题栏上对比度达标');assert(style.color!=='rgb(5, 5, 5)','顶部按钮不再继承原版黑色文字');
+  const before=nativeSettingsClicks;document.querySelector('.gm-shell-settings').click();await tick();
+  assert(nativeSettingsClicks===before+1&&location.hash==='#/home/setting','底部设置调用原生设置入口');assert(document.querySelector('.gm-shell-settings').getAttribute('aria-current')==='page','设置选中状态随原生路由更新');
+  document.querySelector('.n-menu').classList.add('n-menu--collapsed');assert(getComputedStyle(document.querySelector('.gm-shell-settings span')).display==='none'&&document.querySelector('.gm-shell-settings').getAttribute('aria-label')==='设置','侧栏收起后保留图标与无障碍名称');document.querySelector('.n-menu').classList.remove('n-menu--collapsed');
+  const footer=document.querySelector('.menus'),replacement=document.createElement('ul');replacement.className='menus';replacement.innerHTML='<li class="menu-item"><i class="icon-bangzhuwendang"></i>帮助文档</li>';footer.replaceWith(replacement);for(let i=0;i<30&&!replacement.querySelector('.gm-shell-settings');i++)await tick();
+  assert(document.querySelectorAll('.gm-shell-settings').length===1&&shown(replacement.querySelector('.gm-shell-settings')),'原版重绘侧栏后仍只有一个底部设置');
+  const fakeVersion=document.createElement('a');fakeVersion.id='gmssh-vendor-update';fakeVersion.textContent='旧版本提示';document.querySelector('.tabs-container').append(fakeVersion);assert(!shown(fakeVersion),'遗留版本节点不会重新显示');fakeVersion.remove();
+  files.open();await tick();assert(shown(document.querySelector('.gm-files-center')),'文件中心仍可独立打开');document.querySelector('.gm-shell-settings').click();await tick();assert(!shown(document.querySelector('.gm-files-center')),'进入设置会收起文件中心');
+  const icons=[...document.querySelectorAll('.gm-ui-icon')].filter(shown);for(let i=0;i<30&&!icons.every(image=>image.complete);i++)await tick();assert(icons.every(image=>image.naturalWidth>0),'可见增强图标全部加载成功');
+  assert(!requests.includes('gmssh-pairing-connect'),'界面检查未调用设备接入');
+  location.hash='/home/machineManage';await tick();home.refresh();
+  document.getElementById('qa-result').textContent=checks.length+' 项检查通过';document.getElementById('qa-checks').textContent=checks.map(s=>'PASS '+s).join('\n');
+ }catch(e){document.getElementById('qa-result').textContent='FAIL '+e.message;document.getElementById('qa-checks').textContent=checks.join('\n');}
+};
+const ready=initialize();
+</script>
+</html>

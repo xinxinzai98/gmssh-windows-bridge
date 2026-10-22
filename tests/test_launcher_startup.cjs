@@ -8,16 +8,16 @@ const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../gmssh_windows_bridge/launcher.cjs'), 'utf8')
   .replace('start().catch(', 'globalThis.testStartDevice = startDevice;globalThis.completion = start().catch(');
 
-async function launch({ monitoring = true, failure, terminal = false, keychain = true, wake = false, pairingOnly = false, clipboardText = '', adopted = false, fileQuitResponse=0, nativeTransfers=false, recordHistory=false } = {}) {
+async function launch({ monitoring = true, failure, terminal = false, keychain = true, wake = false, pairingOnly = false, clipboardText = '', adopted = false, fileQuitResponse=0, nativeTransfers=false, recordHistory=false, bundled=false, earlyUrls=[] } = {}) {
   const children = [], dialogs = [], copies = [], pickers = [], nativeCalls=[],history=[];let nativeActive=0,nativeShutdowns=0;
   const app = new EventEmitter();
   const handlers = new Map();
   const ipcMain = {handle:(channel,listener)=>handlers.set(channel,listener)};
   let nativeInstallCalls = 0;
   const autoUpdater = {checkForUpdates:()=>nativeInstallCalls++,quitAndInstall:()=>nativeInstallCalls++};
-  let imported = false, exitCode, clipboardReads = 0,quits=0;
-  Object.assign(app, { requestSingleInstanceLock: () => true, whenReady: async () => {}, getPath:()=>'/synthetic/user-data', exit: value => { exitCode = value; },quit:()=>quits++ });
-  const config = { python: '/synthetic/python', vendorAsar: '/synthetic/app.asar', target: '100.64.0.7',
+  let imported = false, importedUrl, exitCode, clipboardReads = 0,quits=0;const deliveredUrls=[];
+  Object.assign(app, { requestSingleInstanceLock: () => true, whenReady: async () => {}, getPath:()=>'/synthetic/user-data', setAsDefaultProtocolClient:()=>true, exit: value => { exitCode = value; },quit:()=>quits++ });
+  const config = { python: '/synthetic/python', vendorAsar: bundled?'vendor.asar':'/synthetic/app.asar', target: '100.64.0.7',
     tailscaleName: 'synthetic-peer', tailscaleCli: '/synthetic/tailscale', port: 22256, keychain, pairingOnly,
     wake: wake ? { mac:'02:00:00:00:00:01', broadcast:'192.168.1.255' } : null,
     monitor: monitoring ? { port: 22255, targetPort: 22, username: 'synthetic-user', knownHosts: '/synthetic/known_hosts', hostKey: '/synthetic/host_key', forwardTerminal: terminal } : null };
@@ -26,6 +26,7 @@ async function launch({ monitoring = true, failure, terminal = false, keychain =
     const child = new EventEmitter(); child.stdout = new EventEmitter(); child.stderr = new EventEmitter();
     Object.assign(child, { program, args, options, killed: false, kill: () => { child.killed = true;child.signalCode='SIGTERM';child.emit('exit',null,'SIGTERM'); } }); children.push(child);
     setImmediate(() => {
+      for(const url of earlyUrls)app.emit('open-url',{preventDefault(){}},url);
       const monitor = args[1] === 'gmssh_windows_bridge';
       const desktopLine = 'RustDesk desktop preview: http://127.0.0.1:22256/#token=' + (failure === 'token' ? 'bad' : 's'.repeat(43)) + '\n';
       const monitorLine = 'Monitoring bridge ready: 127.0.0.1:22255\n';
@@ -36,7 +37,7 @@ async function launch({ monitoring = true, failure, terminal = false, keychain =
     });
     return child;
   };
-  const context = { __dirname: '/synthetic', process: { env: { PYTHONPATH: '/must-not-inherit', PYTHONHOME: '/must-not-inherit' } },
+  const context = { __dirname: '/synthetic', process: { resourcesPath:'/synthetic/resources',env: { PYTHONPATH: '/must-not-inherit', PYTHONHOME: '/must-not-inherit' } },
     setTimeout, clearTimeout, setInterval, clearInterval, setImmediate, URL, URLSearchParams, Buffer,
     require: name => {
       if (name === 'electron') return { app, ipcMain, autoUpdater, clipboard:{writeText:value=>copies.push(value),readText:()=>{clipboardReads++;return clipboardText;}}, dialog: { showMessageBox: async value => {dialogs.push(value);return {response:fileQuitResponse};},showOpenDialog:async value=>{pickers.push(value);return {canceled:true,filePaths:[]};} } };
@@ -62,10 +63,32 @@ async function launch({ monitoring = true, failure, terminal = false, keychain =
       }
       return require(name);
     } };
-  vm.runInNewContext(source, context, { importModuleDynamically: async () => { imported = true; return import('node:assert/strict'); } });
+  vm.runInNewContext(source, context, { importModuleDynamically: async url => { imported = true;importedUrl=url;app.on('open-url',(_event,url)=>deliveredUrls.push(url));app.emit('open-url',{preventDefault(){}},'gmssh://launch/during-import');return import('node:assert/strict'); } });
   await context.completion;
-  return { children, app, dialogs, copies, pickers, imported, exitCode, ipcMain, autoUpdater, handlers, testStartDevice:context.testStartDevice,nativeInstallCalls:()=>nativeInstallCalls, clipboardReads:()=>clipboardReads,quits:()=>quits,nativeCalls,history,nativeShutdowns:()=>nativeShutdowns };
+  return { children, app, dialogs, copies, pickers, imported,importedUrl,deliveredUrls, exitCode, ipcMain, autoUpdater, handlers, testStartDevice:context.testStartDevice,nativeInstallCalls:()=>nativeInstallCalls, clipboardReads:()=>clipboardReads,quits:()=>quits,nativeCalls,history,nativeShutdowns:()=>nativeShutdowns };
 }
+test('bundled mode uses only its own resources and delivers cold login callbacks once to the vendor',async()=>{
+ const result=await launch({bundled:true,pairingOnly:true,monitoring:false,earlyUrls:['gmssh://auth?code=synthetic-once','https://untrusted.invalid/']});
+ try{
+  assert.equal(result.app.getAppPath(),'/synthetic/resources/vendor.asar');
+  assert.equal(result.importedUrl,'file:///synthetic/resources/vendor.asar/dist-electron/main.js');
+  assert.equal(result.app.setAsDefaultProtocolClient('gmssh'),true);
+  assert.deepEqual(result.deliveredUrls,['gmssh://launch/during-import','gmssh://auth?code=synthetic-once']);
+  result.app.emit('open-url',{preventDefault(){}},'gmssh://auth?code=synthetic-after');
+  assert.equal(result.deliveredUrls.at(-1),'gmssh://auth?code=synthetic-after');
+  assert.equal(result.app.listenerCount('open-url'),1);
+  assert.equal(result.children.length,1);
+  result.ipcMain.handle('render-to-main',async()=>({status:'vendor'}));
+  const invoke=result.handlers.get('render-to-main');
+  assert.equal((await invoke({sender:{getURL:()=> 'file:///synthetic/app.asar/dist/index.html'}},{type:'gmssh-copy-address',data:'192.0.2.42'})).status,'error');
+  assert.equal((await invoke({sender:{getURL:()=> 'file:///synthetic/resources/vendor.asar/dist/index.html'}},{type:'gmssh-copy-address',data:'192.0.2.42'})).status,'ok');
+ }finally{result.app.emit('will-quit');}
+ const legacy=await launch();try{assert.equal(legacy.app.setAsDefaultProtocolClient('gmssh'),false);}finally{legacy.app.emit('will-quit');}
+ const bounded=await launch({bundled:true,pairingOnly:true,monitoring:false,
+  earlyUrls:['gmssh://auth?code='+'s'.repeat(20000),...Array.from({length:12},(_,i)=>'gmssh://launch/'+i)]});
+ try{assert.deepEqual(bounded.deliveredUrls,['gmssh://launch/during-import',...Array.from({length:8},(_,i)=>'gmssh://launch/'+i)]);}
+ finally{bounded.app.emit('will-quit');}
+});
 test('runtime route metadata updates file bindings only for supplied peers and contains no credential fields',async()=>{
  const result=await launch();const value={target:'2001:db8::42',addresses:['2001:db8::42','192.0.2.42'],autoAddresses:['2001:db8::42','192.0.2.42'],port:22256,monitor:{port:22255,targetPort:22,username:'synthetic-user',knownHosts:'/synthetic/known_hosts',hostKey:'/synthetic/host_key'}};
  const binding=await result.testStartDevice(value),child=result.children.at(-1);assert.equal(child.args.filter(v=>v==='--auto-address').length,2);
@@ -159,7 +182,7 @@ test('ordinary offline retries stay non-modal while a host identity failure is s
   await new Promise(resolve=>setImmediate(resolve));assert.equal(result.dialogs.length,1);assert.match(result.dialogs[0].detail,/主机密钥/);
   assert.equal(child.killed,false);result.app.emit('will-quit');
 });
-test('blocks vendor bundle replacement while preserving ordinary IPC and metadata notices', async () => {
+test('blocks vendor bundle replacement and update banners while preserving ordinary IPC', async () => {
   const result = await launch(); let delegated = 0;
   result.ipcMain.handle('render-to-main', async (_event, request) => {delegated++; return request.type;});
   const handler = result.handlers.get('render-to-main');
@@ -174,7 +197,7 @@ test('blocks vendor bundle replacement while preserving ordinary IPC and metadat
   contents.send('main-to-render',{type:'upgrade-prompt',data:{version:'2.0.5'}});
   contents.send('main-to-render',{type:'ordinary-message',data:'synthetic'});
   assert.equal(sent.length,1); assert.equal(sent[0][1].type,'ordinary-message');
-  assert.ok(scripts.some(code=>code.includes('installWindowsUpdateNotice')&&code.includes('2.0.5')));
+  assert.equal(scripts.length,0);
   result.app.emit('will-quit');
 });
 test('copies only an address requested by the trusted native home page', async () => {

@@ -1,4 +1,4 @@
-/* Local startup wrapper. The installed GMSSH bundle is read-only. */
+/* Local enhancement wrapper; original vendor resources remain unchanged. */
 const { app, dialog, ipcMain, autoUpdater, clipboard } = require('electron');
 const { isIP } = require('node:net');
 const { spawn } = require('node:child_process');
@@ -14,16 +14,27 @@ const { LinuxFiles } = require('./linux-files.cjs');
 const { Workspace } = require('./workspace.cjs');
 const { AIAccess } = require('./ai-manager.cjs');
 const config = require('./launcher-config.json');
+const bundledVendor = config.vendorAsar === 'vendor.asar';
+const vendorAsar = bundledVendor ? path.join(process.resourcesPath, 'vendor.asar') : config.vendorAsar;
 const backends = [];
 const stopBackends = () => backends.forEach(child => child.kill('SIGTERM'));
 
 // This isolates browser state only; the vendor's machine database may be shared.
 if (config.profile) app.setPath('userData', config.profile);
-// Keep the original app as the handler for gmssh:// authentication callbacks.
-app.setAsDefaultProtocolClient = () => false;
-app.getAppPath = () => config.vendorAsar;
+// Older launchers still delegate callbacks to their separate vendor app.
+if (!bundledVendor) app.setAsDefaultProtocolClient = () => false;
+app.getAppPath = () => vendorAsar;
 app.on('will-quit', stopBackends);
 app.on('quit', stopBackends);
+// A cold protocol launch can arrive while the local assets service starts.
+// The vendor continues to validate and process each callback, never our UI.
+const pendingVendorUrls = [];
+const holdVendorUrl = (event, url) => {
+  if (app.listenerCount('open-url') > 1 || typeof url !== 'string' ||
+      url.length > 16384 || !/^gmssh:\/\//i.test(url) || pendingVendorUrls.length >= 8) return;
+  event.preventDefault(); pendingVendorUrls.push(url);
+};
+if (bundledVendor) app.on('open-url', holdVendorUrl);
 
 const entry = fs.readFileSync(path.join(__dirname, 'gmssh-entry.js'), 'utf8');
 const home = fs.readFileSync(path.join(__dirname, 'gmssh-home.js'), 'utf8');
@@ -85,8 +96,7 @@ function protectFileQuit(event,finish){
 }
 app.on('before-quit',event=>protectFileQuit(event,()=>app.quit()));
 let pairing, pairingAvailable = false, nativeApiPort;
-let vendorUpdateNotice;
-const indexUrl = pathToFileURL(path.join(config.vendorAsar, 'dist/index.html')).href;
+const indexUrl = pathToFileURL(path.join(vendorAsar, 'dist/index.html')).href;
 const updateExplanation = '本增强版包含 Windows 桌面、监控和终端适配。官方更新包不包含这些功能，请通过验收后的增强版兼容包更新。';
 // Vendor metadata checks remain active. Its installer must never replace our bundle.
 autoUpdater.checkForUpdates = () => {};
@@ -229,9 +239,6 @@ app.on('browser-window-created', (_event, window) => {
   const send = contents.send.bind(contents);
   contents.send = (channel, payload, ...args) => {
     if (channel === 'main-to-render' && ['upgrade-prompt', 'update-downloaded'].includes(payload?.type)) {
-      const version = payload.data?.version;
-      vendorUpdateNotice = { version: typeof version === 'string' && /^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(version) ? version : '' };
-      contents.executeJavaScript('window.installWindowsUpdateNotice?.(' + JSON.stringify(vendorUpdateNotice) + ');void 0;').catch(() => {});
       return;
     }
     return send(channel, payload, ...args);
@@ -254,7 +261,7 @@ async function inject(contents) {
   const devices=bindings.map(value=>({machineId:value.machineId,viewerUrl:value.viewerUrl,target:value.target,addresses:value.addresses||[value.target],route:value.route,label:value.label,targetPort:value.monitor?.targetPort,accessToken:value.accessToken,...(value.authorization?{permissions:value.authorization.permissions}:{})}));
   const policies=bindings.filter(value=>value.monitor).map(value=>({bridgePort:value.monitor.port,username:value.monitor.username}));
   const first=devices[0]||{viewerUrl};
-  const bootstrap=entry+'\nif(typeof installWindowsDesktopEntries==="function")installWindowsDesktopEntries('+JSON.stringify(entries)+');else if('+entries.length+')installWindowsDesktopEntry('+JSON.stringify(entries[0]||{})+');\n'+home+'\ninstallWindowsMachinePolicy('+JSON.stringify(policies)+');\nglobalThis.gmsshHomeController=installGMSSHHome('+JSON.stringify({...first,viewerUrl,css:theme,devices})+');\n'+pairingPage+'\nif(typeof installGMSSHPairing==="function")installGMSSHPairing();\n'+backupPage+'\nif(typeof installGMSSHBackup==="function")installGMSSHBackup('+JSON.stringify({viewerUrl})+');\n'+(vendorUpdateNotice?'installWindowsUpdateNotice('+JSON.stringify(vendorUpdateNotice)+');\n':'')+'void 0;';
+  const bootstrap=entry+'\nif(typeof installWindowsDesktopEntries==="function")installWindowsDesktopEntries('+JSON.stringify(entries)+');else if('+entries.length+')installWindowsDesktopEntry('+JSON.stringify(entries[0]||{})+');\n'+home+'\ninstallWindowsMachinePolicy('+JSON.stringify(policies)+');\nglobalThis.gmsshHomeController=installGMSSHHome('+JSON.stringify({...first,viewerUrl,css:theme,devices})+');\n'+pairingPage+'\nif(typeof installGMSSHPairing==="function")installGMSSHPairing();\n'+backupPage+'\nif(typeof installGMSSHBackup==="function")installGMSSHBackup('+JSON.stringify({viewerUrl})+');\n'+'void 0;';
   await contents.executeJavaScript('(()=>{const module={exports:{}};const exports=module.exports;'+qrDecoder+'\nwindow.jsQR=module.exports;})();\n'+qrPage+'\n'+bootstrap+'\n'+toolsPage+'\nif(typeof installGMSSHTools==="function")installGMSSHTools('+JSON.stringify({viewerUrl})+');\n'+filesPage+'\nif(typeof installGMSSHFileCenter==="function")installGMSSHFileCenter('+JSON.stringify({viewerUrl,devices:devices.filter(d=>d.machineId)})+');\n'+workspacePage+'\nif(typeof installGMSSHWorkspace==="function")installGMSSHWorkspace('+JSON.stringify({viewerUrl})+');void 0;');
 }
 
@@ -401,7 +408,11 @@ async function start() {
   if(!config.pairingOnly&&!pairing.records.some(record=>record.legacyMachineId===config.machineId)){
     Object.assign(legacyBindings[0],await startDevice(config));
   }
-  await import(pathToFileURL(path.join(config.vendorAsar, 'dist-electron/main.js')).href);
+  await import(pathToFileURL(path.join(vendorAsar, 'dist-electron/main.js')).href);
+  if (bundledVendor) {
+    app.removeListener('open-url', holdVendorUrl);
+    for (const url of pendingVendorUrls.splice(0)) app.emit('open-url', { preventDefault() {} }, url);
+  }
 }
 start().catch(async error => {
   stopBackends();

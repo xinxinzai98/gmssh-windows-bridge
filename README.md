@@ -92,6 +92,7 @@ flowchart LR
 - [CLI 使用与排错](docs/cli.md)：手动运行、终端/SFTP 开关、后台模式与故障排查。
 - [桌面接入](docs/desktop-rustdesk.md) · [协议与架构](docs/protocol.md) · [发布构建](docs/releasing.md)。
 - [贡献指南](CONTRIBUTING.md)：开发环境、验证命令和提交要求。
+- [Codex 云端开发](docs/cloud-development.md)：交接分支、环境准备、检查脚本和待办边界。
 - [问题反馈](https://github.com/xinxinzai98/gmssh-windows-bridge/issues/new/choose)：提交可复现的问题或功能建议；安全问题先阅读[安全说明](SECURITY.md)。
 
 ## 许可证与第三方组件

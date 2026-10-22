@@ -10,7 +10,7 @@ import shutil
 import stat
 import zipfile
 
-ROOT_FILES = {'README.md', 'CHANGELOG.md', 'CONTRIBUTING.md', 'LICENSE', 'SECURITY.md', 'pyproject.toml', '.gitignore'}
+ROOT_FILES = {'README.md', 'CHANGELOG.md', 'CONTRIBUTING.md', 'AGENTS.md', 'LICENSE', 'SECURITY.md', 'pyproject.toml', '.gitignore'}
 SOURCE_DIRS = ('gmssh_windows_bridge', 'desktop-web', 'tools', 'tests', 'docs', 'examples', 'install', '.github')
 SKIP_DIRS = {'.git', 'node_modules', '__pycache__', '.venv', 'venv', 'build', 'dist', 'work', 'outputs', '.pytest_cache'}
 PRIVATE_NAMES = {'.ds_store', 'catalog.json', 'connection.json', 'agent.json', 'readiness.json', 'launcher-config.json', 'installation-status.txt', 'startup-status.json',

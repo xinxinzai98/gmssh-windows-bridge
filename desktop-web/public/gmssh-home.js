@@ -1,16 +1,40 @@
 /* Present the native GMSSH machine DOM; credentials and records stay in GMSSH. */
-window.installWindowsUpdateNotice = function ({ version }) {
-  const anchor = document.querySelector('.tabs-home');
-  if (!anchor?.parentElement) return;
-  let notice = document.getElementById('gmssh-vendor-update');
-  if (!notice) {
-    notice = document.createElement('a'); notice.id = 'gmssh-vendor-update';
-    notice.href = 'https://www.gmssh.com/changelog'; notice.target = '_blank'; notice.rel = 'noopener';
-    notice.style.cssText = 'margin-left:auto;margin-right:12px;padding:5px 9px;flex-shrink:0;color:#b6bdd6;font-size:11px;text-decoration:none;border:1px solid #ffffff20;border-radius:6px;';
-    anchor.parentElement.append(notice);
+window.installGMSSHShell = function ({ viewerUrl }) {
+  window.removeGMSSHShell?.();
+  const base = new URL(viewerUrl);
+  if (base.protocol !== 'http:' || !['localhost', '127.0.0.1'].includes(base.hostname)) throw Error('Local assets required');
+  const hidden = new Set(), item = document.createElement('li'), button = document.createElement('button');
+  const image = document.createElement('img'), label = document.createElement('span');
+  item.className = 'gm-shell-settings-item'; button.className = 'gm-shell-settings'; button.type = 'button';
+  button.title = '设置'; button.setAttribute('aria-label', '设置');
+  image.className = 'gm-ui-icon'; image.alt = ''; image.src = new URL('ui-icons/gear.svg', base).href;
+  label.textContent = '设置'; button.append(image, label); item.append(button);
+  const hide = node => { if (node && !hidden.has(node)) { hidden.add(node); node.setAttribute('data-gmssh-shell-hidden', ''); } };
+  function mount() {
+    const sidebar = document.querySelector('.multi-computer-navbar');
+    if (!sidebar) return;
+    hide(sidebar.querySelector('.menu .icon-shezhi2')?.closest('.n-menu-item'));
+    for (const icon of sidebar.querySelectorAll('.menus .icon-bangzhuwendang')) hide(icon.closest('.menu-item'));
+    const footer = sidebar.querySelector('.menus');
+    if (footer && item.parentElement !== footer) footer.append(item);
+    button.setAttribute('aria-current', /^#\/home\/setting(?:[/?]|$)/.test(location.hash) ? 'page' : 'false');
   }
-  notice.textContent = `GMSSH ${version || '新版本'} · 待兼容验证`;
-  notice.title = '官方更新包不包含 Windows 增强功能，请使用验收后的兼容包更新。点击查看官方更新说明。';
+  button.onclick = () => {
+    window.gmsshWorkspaceController?.hide(); window.gmsshFilesController?.hide();
+    const native = document.querySelector('.multi-computer-navbar .menu .icon-shezhi2')?.closest('.n-menu-item-content,.n-menu-item');
+    if (native) native.click(); else location.hash = '/home/setting';
+  };
+  document.documentElement.setAttribute('data-gmssh-local-client', '');
+  document.title = 'GMSSH 局域网增强端';
+  document.getElementById('gmssh-vendor-update')?.remove();
+  window.addEventListener('hashchange', mount); mount();
+  const remove = () => {
+    window.removeEventListener('hashchange', mount); item.remove();
+    for (const node of hidden) node.removeAttribute('data-gmssh-shell-hidden');
+    document.documentElement.removeAttribute('data-gmssh-local-client');
+  };
+  window.removeGMSSHShell = remove;
+  return { refresh: mount, remove };
 };
 
 window.installWindowsMachinePolicy = function (options) {
@@ -58,6 +82,7 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
   const connections=devices||[{viewerUrl,machineId,target,targetPort,accessToken}];
   for(const device of connections){const url=new URL(device.viewerUrl);if(url.protocol!=='http:'||!['localhost','127.0.0.1'].includes(url.hostname)||url.username||url.password||url.hash||url.search)throw Error('Local device required');}
   const byId=new Map(connections.filter(device=>device.machineId).map(device=>[device.machineId,device]));
+  const shell = window.installGMSSHShell({ viewerUrl });
   const style = document.createElement('style'); style.textContent = css; document.head.append(style);
   let root, host, selected, fingerprint = '', timer, noticeTimer, disposed = false, infoBusy = false, infoFrame, infoReady, infoOrigin, infoRequestId = 0, cancelInfo, filesTimer, contextMenu;
   const metadata = new Map(), systemInfo = new Map(), currentRecords = new Map(), routeInfo = new Map(), scrollPositions = {list:{top:0,left:0},card:{top:0,left:0}};
@@ -304,6 +329,7 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
   }
   function render() {
     if (disposed) return;
+    shell.refresh();
     fitWorkspace();
     const nativeLogo=document.querySelector('.tabs-home img');
     if(nativeLogo && !nativeLogo.hasAttribute('data-gmssh-brand')){nativeLogo.src=new URL('brand/gmssh.png',base).href;nativeLogo.setAttribute('data-gmssh-brand','');}
@@ -394,6 +420,6 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
   observer.observe(document.body,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['hidden','class','disabled','src']});render();
   window.addEventListener('resize',fitWorkspace);void loadNativeMetadata();void refreshSystemInfo();
   const infoInterval=setInterval(()=>{void refreshSystemInfo();void refreshRoutes();},30000);
-  window.removeGMSSHHome=()=>{disposed=true;observer.disconnect();clearTimeout(timer);clearTimeout(noticeTimer);clearTimeout(filesTimer);clearInterval(infoInterval);cancelInfo?.();infoFrame?.remove();contextMenu?.remove();detailsDialog.remove();window.removeEventListener('resize',fitWorkspace);root?.remove();host?.classList.remove('gm-native-source');style.remove();};
+  window.removeGMSSHHome=()=>{disposed=true;observer.disconnect();clearTimeout(timer);clearTimeout(noticeTimer);clearTimeout(filesTimer);clearInterval(infoInterval);cancelInfo?.();infoFrame?.remove();contextMenu?.remove();detailsDialog.remove();window.removeEventListener('resize',fitWorkspace);root?.remove();host?.classList.remove('gm-native-source');shell.remove();style.remove();};
   return {refresh:render,select(id){selected=id;fingerprint='';render();},filesDevices:()=>[...currentRecords.values()].map(record=>({id:record.id,name:record.name,windows:record.windows,...(record.binding?.permissions?{permissions:record.binding.permissions}:{})})),permissions(id,value){const binding=byId.get(id);if(binding){binding.permissions={...value};fingerprint='';render();}},workspaceOverview(id){const record=currentRecords.get(id);return record?detailPane(record):null;},openNative(id,channel){const record=currentRecords.get(id);if(!record)return;if(channel==='terminal')record.terminal?.click();else if(!record.windows)record.desktop?.click();},openNativeFiles(id){const record=currentRecords.get(id);if(record&&!record.windows){record.desktop?.click();openLinuxFiles(record);}},remove:window.removeGMSSHHome};
 };

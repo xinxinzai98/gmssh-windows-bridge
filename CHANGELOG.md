@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Bundle the unchanged vendor resources inside one local enhancement app, preserve ASAR integrity and native protocol callbacks, and keep legacy external-resource configurations compatible. Hide legacy account/cloud-sync and version/workspace entries, move settings to the sidebar footer, and correct file-center button contrast while retaining device views and update-replacement protection.
+- Add portable repository guidance, Codex Cloud setup/check scripts and a bounded handoff. Keep live configurations and credentials local, include development instructions in public source exports, and ignore generated sync-conflict copies without removing them.
 - Fix transient monitor rejection when the two existing Windows information workers are occupied: queue within the same six-second deadline, release the registry lock while waiting, and keep the concurrency limit unchanged. Preserve allowlisted sampling failure code, stage and elapsed time in the native home view; ignore late callbacks after timeout. A live Wi-Fi host reproduced fast HTTP 409 failures before the repair; the same 20 serial reads and three three-query rounds pass afterward.
 - Prepare 0.4.0a38 as a stability-only candidate. Drop binary data whose asynchronous read finishes after its connection was replaced, and ignore late socket-open events before sending any authentication envelope.
 - Route video decoder failures through the same generation-scoped failure handler, ending the connected lifecycle once while keeping stale decoder callbacks inert. Add deferred-frame, late-open and decoder-error regressions; no device deployment or new feature is included.

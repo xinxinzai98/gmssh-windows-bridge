@@ -90,6 +90,7 @@ class ShareBundleTests(unittest.TestCase):
             root = Path(temporary)
             (root/'gmssh_windows_bridge').mkdir()
             (root/'README.md').write_text('public guide')
+            (root/'AGENTS.md').write_text('portable development instructions')
             (root/'gmssh_windows_bridge/module.py').write_text('public source')
             (root/'gmssh_windows_bridge/agent.json').write_text('private fixture')
             (root/'gmssh_windows_bridge/file-places.json').write_text('private favorite paths')
@@ -97,7 +98,7 @@ class ShareBundleTests(unittest.TestCase):
             (web/'gmssh-home.js').write_text('canonical generated asset')
             (web/'gmssh-home 2.js').write_text('pre-existing conflict copy')
             files = public_files(root)
-            self.assertEqual(set(files), {'README.md', 'gmssh_windows_bridge/module.py','gmssh_windows_bridge/desktop_web/gmssh-home.js'})
+            self.assertEqual(set(files), {'README.md', 'AGENTS.md', 'gmssh_windows_bridge/module.py','gmssh_windows_bridge/desktop_web/gmssh-home.js'})
             self.assertEqual((web/'gmssh-home 2.js').read_text(),'pre-existing conflict copy')
             for name in ['catalog.json', 'connection.json', 'local.app/info.json', 'bridge_host_key', 'windows_known_hosts', '.DS_Store',
                          'private/ai-devices.json', 'private/ai-status.json', 'private/ai-tasks.json', 'private/ai-job-11111111111111111111111111111111.dat', 'private/registry.lock',

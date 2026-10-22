@@ -18,7 +18,6 @@ window.installGMSSHWorkspace=function({viewerUrl}){
   const ratio=make('input');ratio.type='range';ratio.min='25';ratio.max='75';ratio.setAttribute('aria-label','桌面区域比例');ratio.title='调整桌面与终端的宽度比例';ratio.oninput=()=>{saved.devices[selected]={...prefs(selected),ratio:Number(ratio.value)/100};layout();};ratio.onchange=persist;
   const minimize=toolButton('首页','arrow-left',()=>{hide();document.querySelector('.tabs-home .tab-chip,.tab-chip--home')?.click();}),close=toolButton('关闭工作区','x',()=>closeWorkspace(selected));minimize.setAttribute('aria-label','返回首页');close.classList.add('gm-workspace-icon-only');
   close.title='关闭工作区视图；已打开的连接保留，可在各自桌面或终端标签中断开';exits.append(minimize,close);head.append(deviceControl,nav,ratio,tools,exits);root.append(head,note,body);document.body.append(root);
-  const tab=button('工作区',()=>open(selected||saved.selected||nodes()[0]?.id));tab.classList.add('gm-workspace-tab');
   const style=make('style');style.textContent=`
     .gm-workspace{position:fixed;inset:48px 0 0;z-index:2147482999;background:var(--gm-bg,#141414);color:var(--gm-text,#eee);font:13px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;display:flex;flex-direction:column;pointer-events:none}
     .gm-workspace[hidden]{display:none}.gm-workspace *{box-sizing:border-box}
@@ -31,12 +30,12 @@ window.installGMSSHWorkspace=function({viewerUrl}){
     .gm-workspace-tools{margin-left:auto}.gm-workspace-exits{padding-left:12px;border-left:1px solid #ffffff12}.gm-workspace-icon-only{width:30px;padding:0!important}.gm-workspace-icon-only .gm-workspace-button-label{display:none}
     .gm-workspace-head input[type=range]{width:78px;accent-color:#818cf8;flex:none}.gm-workspace-head select:focus-visible,.gm-workspace-head input:focus-visible{outline:2px solid #818cf8;outline-offset:2px}
     .gm-workspace-note{margin:0;padding:6px 16px;font-size:12px;background:#242429;pointer-events:auto}.gm-workspace-note:empty{display:none}.gm-workspace-body{flex:1;min-height:0;overflow:auto}.gm-workspace-body:not(:empty){pointer-events:auto;padding:20px}.gm-workspace-body .gm-device-details{max-width:720px;overflow:visible;height:auto}
-    .gm-workspace-history{display:grid;gap:10px;max-width:1100px;margin:auto}.gm-workspace-history article{padding:10px 12px;border:1px solid #ffffff15;border-radius:8px;font-size:13px}.gm-workspace-history article p{margin:5px 0;color:#aaa}.gm-workspace-tab{margin-left:6px;white-space:nowrap}
+    .gm-workspace-history{display:grid;gap:10px;max-width:1100px;margin:auto}.gm-workspace-history article{padding:10px 12px;border:1px solid #ffffff15;border-radius:8px;font-size:13px}.gm-workspace-history article p{margin:5px 0;color:#aaa}
     @media(max-width:1000px){.gm-workspace-head{gap:10px;padding:8px 12px}.gm-workspace-device{flex-basis:190px}.gm-workspace-tools .gm-workspace-button-label,.gm-workspace-exits .gm-workspace-button-label{display:none}.gm-workspace-tools .gm-ui-button,.gm-workspace-exits .gm-ui-button{width:32px;padding:0}.gm-workspace-head input[type=range]{display:none}}
     @media(max-width:640px){.gm-workspace-head{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:8px 10px}.gm-workspace-device{grid-area:1/1;min-width:0}.gm-workspace-exits{grid-area:1/2;border-left:0;padding-left:0;justify-self:end}.gm-workspace-modes{grid-area:2/1;overflow-x:auto;min-width:0;scrollbar-width:thin}.gm-workspace-head .gm-workspace-modes .gm-ui-button{padding:0 8px}.gm-workspace-tools{grid-area:2/2;justify-self:end}}
   `;
   document.head.append(style);
-  function mount(){const host=document.querySelector('.tabs-container');if(host&&!tab.isConnected)host.append(tab);if(visible){const bottom=host?.getBoundingClientRect().bottom||48;root.style.top=Math.max(40,bottom)+'px';layout();}}
+  function mount(){const host=document.querySelector('.tabs-container');if(visible){const bottom=host?.getBoundingClientRect().bottom||48;root.style.top=Math.max(40,bottom)+'px';layout();}}
   async function persist(){if(disposed)return;try{await call('layout',{tabs:saved.tabs,selected:saved.selected,devices:saved.devices});}catch{note.textContent='工作区布局未能保存，请检查本机存储空间和权限。';}}
   function restorePins(){for(const [node,props] of pinned){for(const [key,[value,priority]] of props){if(value)node.style.setProperty(key,value,priority);else node.style.removeProperty(key);}node.removeAttribute('data-gmssh-workspace-view');}pinned.clear();}
   function pin(node,rect){
@@ -76,7 +75,7 @@ window.installGMSSHWorkspace=function({viewerUrl}){
     const permissions=device(id).permissions,wanted=mode||prefs(id).layout;if(permissions&&(wanted==='terminal'&&!permissions.terminal||wanted==='desktop'&&!permissions.view||wanted==='split'&&(!permissions.view||!permissions.terminal)))mode=permissions.view?'desktop':'overview';
     const current=device(id);window.gmsshFilesController?.hide();restorePins();for(const [other,controller] of window.gmsshWindowsControllers||[])if(other!==id)controller.hide();
     clearInterval(historyTimer);paint++;paneMode=mode||prefs(id).layout;selected=saved.selected=id;if(!saved.tabs.includes(id)){if(saved.tabs.length>=50){note.textContent='最多打开 50 台设备工作区，请先关闭不使用的工作区。';return;}saved.tabs.push(id);}
-    saved.devices[id]={...prefs(id),...(mode?{layout:mode}:{})};visible=true;root.hidden=false;tab.setAttribute('aria-pressed','true');body.replaceChildren();note.textContent='';
+    saved.devices[id]={...prefs(id),...(mode?{layout:mode}:{})};visible=true;root.hidden=false;body.replaceChildren();note.textContent='';
     selector.replaceChildren(...saved.tabs.map(value=>{const option=make('option','',device(value)?.name||'已移除的设备');option.value=value;return option;}));selector.value=id;
     selector.title=current.name;deviceIcon.src=new URL('ui-icons/'+(current.windows?'windows':'monitor')+'.svg',base).href;deviceIcon.style.filter=current.windows?'none':'';filesButton.disabled=!!permissions&&!permissions.files&&!permissions.files_read;
     for(const [key,b] of modes){b.setAttribute('aria-pressed',String(key===prefs(id).layout));b.disabled=!!permissions&&(key==='desktop'&&!permissions.view||key==='terminal'&&!permissions.terminal||key==='split'&&(!permissions.view||!permissions.terminal));}
@@ -85,7 +84,7 @@ window.installGMSSHWorkspace=function({viewerUrl}){
     if(['terminal','split'].includes(prefs(id).layout))window.gmsshHomeController?.openNative?.(id,'terminal');
     mount();sendPreferences(id);await persist();
   }
-  function hide(){visible=false;root.hidden=true;tab.setAttribute('aria-pressed','false');restorePins();clearInterval(historyTimer);}
+  function hide(){visible=false;root.hidden=true;restorePins();clearInterval(historyTimer);}
   function closed(id){saved.tabs=saved.tabs.filter(value=>value!==id);if(saved.selected===id)saved.selected=saved.tabs.at(-1)||null;if(selected===id){selected=saved.selected;hide();}void persist();}
   function closeWorkspace(id){closed(id);}
   async function showHistory(){
@@ -110,7 +109,7 @@ window.installGMSSHWorkspace=function({viewerUrl}){
   }
   const observer=new MutationObserver(()=>{mount();for(const [node,s] of nativeSessions)if(!node.isConnected){nativeSessions.delete(node);void call('session',{machineId:s.id,name:s.name,channel:s.channel,instance:s.instance,state:'disconnected',reason:'NATIVE_VIEW_CLOSED'}).catch(()=>{});}for(const [id,instance] of desktopInstances)if(!window.gmsshWindowsControllers?.get(id)?.frame()?.isConnected){desktopInstances.delete(id);void call('session',{machineId:id,name:device(id)?.name||'设备',channel:'desktop',instance,state:'disconnected',reason:'TAB_CLOSED'}).catch(()=>{});}});
   observer.observe(document.body,{childList:true,subtree:true});window.addEventListener('resize',mount);window.addEventListener('message',receive);document.addEventListener('click',click,true);
-  function click(event){if(event.target instanceof Element&&event.target.closest('.tabs-container .tab-chip')&&!event.target.closest('.gm-workspace-tab'))hide();}
-  const controller={open,hide,closed,remove(){disposed=true;hide();clearInterval(restoreTimer);observer.disconnect();window.removeEventListener('resize',mount);window.removeEventListener('message',receive);document.removeEventListener('click',click,true);root.remove();tab.remove();style.remove();delete window.gmsshWorkspaceController;}};window.gmsshWorkspaceController=controller;mount();
+  function click(event){if(event.target instanceof Element&&event.target.closest('.tabs-container .tab-chip'))hide();}
+  const controller={open,hide,closed,remove(){disposed=true;hide();clearInterval(restoreTimer);observer.disconnect();window.removeEventListener('resize',mount);window.removeEventListener('message',receive);document.removeEventListener('click',click,true);root.remove();style.remove();delete window.gmsshWorkspaceController;}};window.gmsshWorkspaceController=controller;mount();
   void call('get').then(value=>{if(disposed)return;saved={tabs:value.tabs,selected:value.selected,devices:value.devices};for(const id of saved.tabs)window.gmsshWindowsControllers?.get(id)?.reserve?.();let attempts=0;restoreTimer=setInterval(()=>{if(disposed||++attempts>40){clearInterval(restoreTimer);return;}if(saved.selected&&device(saved.selected)){clearInterval(restoreTimer);void open(saved.selected);}},500);}).catch(()=>{note.textContent='本机工作区记录暂不可用；仍可手动打开设备。';});return controller;
 };

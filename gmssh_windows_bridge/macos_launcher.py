@@ -1,4 +1,4 @@
-"""Build a local macOS launcher from the installed, unchanged GMSSH runtime."""
+"""Build one local enhancement app using unchanged installed GMSSH resources."""
 
 import argparse
 import ctypes
@@ -14,6 +14,8 @@ import subprocess
 import sys
 import tempfile
 import uuid
+
+from . import __version__
 
 
 def write_asar(destination, files):
@@ -118,10 +120,10 @@ def _build_launcher(config, output):
     # A framework symlink makes child processes resolve the vendor's app instead.
     subprocess.run(["cp", "-cR", str(source / "Frameworks"), str(contents / "Frameworks")], check=True)
     for resource in (source / "Resources").iterdir():
-        if resource.name != "app.asar":
-            subprocess.run(["cp", "-cR", str(resource), str(contents / "Resources" / resource.name)], check=True)
+        name = {"app.asar": "vendor.asar", "app.asar.unpacked": "vendor.asar.unpacked"}.get(resource.name, resource.name)
+        subprocess.run(["cp", "-cR", str(resource), str(contents / "Resources" / name)], check=True)
     here = Path(__file__).parent
-    payload = {"vendorAsar": str(source / "Resources/app.asar"), "python": str(config.python.absolute()),
+    payload = {"vendorAsar": "vendor.asar", "python": str(config.python.absolute()),
                "target": config.target, "port": config.port,
                "label": config.label, "machineId": config.machine_id,
                "profile": str(profile)}
@@ -172,7 +174,9 @@ def _build_launcher(config, output):
     # Electron finds its existing helper bundles using the vendor's CFBundleName.
     info['NSLocalNetworkUsageDescription'] = '连接你添加的局域网电脑，提供监控、终端、文件传输和远程桌面。'
     info['NSCameraUsageDescription'] = '仅在你点击扫码后，使用摄像头在本机识别电脑连接二维码。'
-    info.pop("CFBundleURLTypes", None)
+    # Retain the vendor's gmssh:// callback handler inside this one app.
+    info["GMSSHBridgeVersion"] = __version__
+    info["ElectronAsarIntegrity"]["Resources/vendor.asar"] = dict(info["ElectronAsarIntegrity"]["Resources/app.asar"])
     info["ElectronAsarIntegrity"]["Resources/app.asar"]["hash"] = digest
     (contents / "Info.plist").write_bytes(plistlib.dumps(info))
     entitlements = contents / "Resources/launcher-entitlements.plist"
