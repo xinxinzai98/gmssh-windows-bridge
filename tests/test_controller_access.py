@@ -22,6 +22,44 @@ def encode(value):
 
 
 class ControllerAccessTests(unittest.TestCase):
+    def test_desktop_timeout_preserves_monitor_lease_and_reopen_checks_live_authorization(self):
+        from gmssh_windows_bridge.desktop import MonitorDesktopPool
+        for action in ['desktop-read','desktop-write']:
+            client=ControllerClient('192.168.250.2',inspect_authorization(encode(self.payload)))
+            client.authenticated=True
+            pool=MonitorDesktopPool(21118,0);pool.attach(client)
+            try:
+                with patch('gmssh_windows_bridge.controller_access._PinnedConnection') as connection:
+                    connection.return_value.getresponse.side_effect=TimeoutError('synthetic interrupted desktop')
+                    with self.assertRaisesRegex(StreamError,'OPERATION_TIMEOUT'):client.call(action,'a'*32)
+                    self.assertEqual(connection.return_value.request.call_count,1)
+                    self.assertTrue(client.authenticated)
+                    self.assertIsNone(client.local.connection)
+                lease,borrowed=pool.acquire(timeout=0)
+                self.assertIs(borrowed,client);lease.close()
+                replies=[{'protocol':2,'controllerId':'f'*32,'permissions':self.policy},{'session':'b'*32}]
+                with patch.object(client,'call',side_effect=replies) as call:
+                    self.assertEqual(client.open('desktop'),'b'*32)
+                    self.assertEqual([item.args[0] for item in call.call_args_list],['capabilities','open'])
+                denied=SimpleNamespace(status=403,read=lambda _limit:b'{"ok":false,"code":"ACCESS_DENIED"}')
+                with patch('gmssh_windows_bridge.controller_access._PinnedConnection') as connection:
+                    connection.return_value.getresponse.return_value=denied
+                    with self.assertRaisesRegex(StreamError,'AUTH_FAILED'):client.open('desktop')
+                    self.assertEqual(connection.return_value.request.call_count,1)
+                    self.assertFalse(client.authenticated)
+            finally:pool.detach(client)
+
+    def test_remote_desktop_rejection_is_not_a_retryable_transport_interruption(self):
+        response=SimpleNamespace(status=409,read=lambda _limit:b'{"ok":false,"code":"OPERATION_FAILED"}')
+        with patch('gmssh_windows_bridge.controller_access._PinnedConnection') as connection:
+            connection.return_value.getresponse.return_value=response
+            client=ControllerClient('192.168.250.2',inspect_authorization(encode(self.payload)))
+            try:
+                with self.assertRaises(StreamError) as error:client.call('desktop-read','a'*32)
+                self.assertEqual(error.exception.code,'REMOTE_OPERATION_FAILED')
+                self.assertEqual(connection.return_value.request.call_count,1)
+            finally:client.close()
+
     def test_source_rejection_keeps_a_distinct_error_code(self):
         response=type('Response',(),{'status':403,'read':lambda _self,_limit:b'{"ok":false,"code":"SOURCE_DENIED"}'})()
         with patch('gmssh_windows_bridge.controller_access._PinnedConnection') as connection:
@@ -115,7 +153,7 @@ class ControllerAccessTests(unittest.TestCase):
             connection.return_value.request.side_effect=TimeoutError('synthetic timeout')
             with self.assertRaisesRegex(StreamError,'OPERATION_TIMEOUT'):client.call('ai-task-start',args={'key':'a'*32,'command':'synthetic','timeout':1})
             self.assertEqual(connection.return_value.request.call_count,1)
-            self.assertFalse(client.authenticated);self.assertIsNone(client.local.connection)
+            self.assertTrue(client.authenticated);self.assertIsNone(client.local.connection)
             connection.return_value.close.assert_called_once()
         client.close()
 

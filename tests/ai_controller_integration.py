@@ -26,7 +26,10 @@ def run(go):
         root = Path(temporary)
         env = {**os.environ, 'GMSSH_CONTROLLER_FIXTURE': str(root), 'GO111MODULE': 'off'}
         with (root/'gateway.log').open('w') as log:
-            process = subprocess.Popen([go, 'test', '-run', '^TestControllerLoopbackFixture$', '-count=1'], cwd=repo/'tools'/'windows_connect', env=env, stdout=log, stderr=log, start_new_session=True)
+            fixture = root/'controller-fixture.test'
+            subprocess.run([go, 'test', '-c', '-o', str(fixture)], cwd=repo/'tools'/'windows_connect',
+                           env=env, stdout=log, stderr=log, check=True, timeout=120)
+            process = subprocess.Popen([str(fixture), '-test.run=^TestControllerLoopbackFixture$', '-test.count=1'], cwd=repo/'tools'/'windows_connect', env=env, stdout=log, stderr=log, start_new_session=True)
             try:
                 for _ in range(400):
                     if (root/'gateway.json').is_file():
@@ -34,6 +37,8 @@ def run(go):
                     if process.poll() is not None:
                         raise ValueError('Disposable Go fixture did not start')
                     time.sleep(.05)
+                else:
+                    raise TimeoutError('Disposable Go fixture readiness timed out')
                 value = json.loads((root/'gateway.json').read_text())
                 full_code, view_code = value['full']['code'], value['view']['code']
                 port = value['port']

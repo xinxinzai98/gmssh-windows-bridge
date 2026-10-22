@@ -12,9 +12,53 @@ from unittest.mock import MagicMock, patch
 import paramiko
 from gmssh_windows_bridge.desktop import MAX_FRAME, MonitorDesktopPool, MonitorUnavailable, connect_target, create_server, frame_header, read_frame, tailnet_channel
 from gmssh_windows_bridge.bridge import Session
+from gmssh_windows_bridge.file_stream import StreamError
 
 
 class DesktopTransportTests(unittest.TestCase):
+    def test_open_failure_keeps_safe_transport_and_authorization_codes(self):
+        from gmssh_windows_bridge.desktop import handle_connection
+        for code in ['OPERATION_TIMEOUT','REMOTE_IO','REMOTE_OPERATION_FAILED','AUTH_FAILED','ACCESS_DENIED','PEER_CHANGED']:
+            sent=[]
+            class WebSocket:
+                def recv(self,**_):return json.dumps({'password':'','token':'A'*43})
+                def send(self,value):sent.append(json.loads(value))
+            failure=StreamError(code);failure.__cause__=RuntimeError('synthetic-private-details')
+            cfg=SimpleNamespace(timeout=1,access_token='A'*43,monitor_channel=MagicMock(side_effect=failure),controller_policy=lambda:{'view':True})
+            handle_connection(cfg,WebSocket(),threading.BoundedSemaphore(1))
+            self.assertEqual(sent[-1]['code'],code)
+            self.assertNotIn('synthetic-private-details',json.dumps(sent))
+
+    def test_missing_monitor_distinguishes_temporary_wait_from_bad_authentication(self):
+        from gmssh_windows_bridge.desktop import handle_connection
+        for reason,expected in [('SSH_AUTHENTICATED','MONITOR_UNAVAILABLE'),('AuthenticationException','AUTH_FAILED'),('BadHostKeyException','PEER_CHANGED')]:
+            sent=[]
+            class WebSocket:
+                def recv(self,**_):return json.dumps({'password':'','token':'A'*43})
+                def send(self,value):sent.append(json.loads(value))
+            cfg=SimpleNamespace(timeout=1,access_token='A'*43,monitor_channel=MagicMock(side_effect=MonitorUnavailable('synthetic waiting')),
+                                monitor_pool=SimpleNamespace(snapshot=lambda:{'code':reason}))
+            handle_connection(cfg,WebSocket(),threading.BoundedSemaphore(1))
+            self.assertEqual(sent[-1]['code'],expected)
+
+    def test_established_transport_failure_keeps_its_safe_reason_before_close(self):
+        from gmssh_windows_bridge.desktop import forward
+        closed=threading.Event();sent=[]
+        class WebSocket:
+            def send(self,value):sent.append(value)
+            def close(self,*_):closed.set()
+            def __iter__(self):
+                if not closed.wait(3):raise TimeoutError('test viewer did not close')
+                return iter(())
+        channel=MagicMock();error=StreamError('OPERATION_TIMEOUT');error.__cause__=RuntimeError('synthetic-private-detail')
+        channel.recv.side_effect=[frame_header(3),b'abc',error]
+        forward(WebSocket(),channel)
+        self.assertEqual(sent[0],b'abc')
+        failures=[json.loads(value) for value in sent if isinstance(value,str)]
+        self.assertEqual(failures[0]['code'],'OPERATION_TIMEOUT')
+        self.assertNotIn('synthetic-private-detail',json.dumps(failures))
+        channel.close.assert_called_once()
+
     def test_monitor_authentication_and_desktop_lease_share_only_one_fixed_transport(self):
         pool = MonitorDesktopPool(21118, 0.01)
         config = SimpleNamespace(username='synthetic-user', target='windows.example.invalid', target_port=22,
@@ -56,7 +100,7 @@ class DesktopTransportTests(unittest.TestCase):
                 self.assertEqual(info['transport'], 'monitor'); self.assertTrue(info['requires_token']); self.assertFalse(info['keychain'])
                 with connect(f'ws://127.0.0.1:{port}/socket', origin=origin, proxy=None) as ws:
                     ws.send(json.dumps({'password': ''}))
-                    self.assertEqual(json.loads(ws.recv(timeout=3))['code'], 'DesktopAccessError')
+                    self.assertEqual(json.loads(ws.recv(timeout=3))['code'], 'AUTH_FAILED')
                 cfg.monitor_channel.assert_not_called()
                 with connect(f'ws://127.0.0.1:{port}/socket', origin=origin, proxy=None) as ws:
                     ws.send(json.dumps({'password': '', 'token': cfg.access_token}))
@@ -93,7 +137,7 @@ class DesktopTransportTests(unittest.TestCase):
                         credentials = {'password': '', 'saved': True}
                         if token: credentials['token'] = token
                         ws.send(json.dumps(credentials))
-                        self.assertEqual(json.loads(ws.recv(timeout=3))['code'], 'DesktopAccessError')
+                        self.assertEqual(json.loads(ws.recv(timeout=3))['code'], 'AUTH_FAILED')
                 upstream.assert_not_called()
                 cfg.keychain_store.get.assert_not_called()
                 with connect(f'ws://127.0.0.1:{port}/socket', origin=origin, proxy=None) as ws:

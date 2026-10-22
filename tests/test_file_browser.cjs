@@ -1,6 +1,6 @@
-const test=require('node:test'),assert=require('node:assert/strict'),path=require('node:path'),vm=require('node:vm');
+const test=require('node:test'),assert=require('node:assert/strict'),path=require('node:path'),vm=require('node:vm'),fs=require('node:fs');
 const esbuild=require('../desktop-web/node_modules/esbuild');
-const compiled=esbuild.build({stdin:{contents:"export {browseEntries,folderTarget} from './src/file-panel';export {Operations} from './src/operations';export {NativeTransfers} from './src/native-transfers';",resolveDir:path.join(__dirname,'../desktop-web')},bundle:true,platform:'node',format:'cjs',write:false});
+const compiled=esbuild.build({stdin:{contents:"export {browseEntries,folderTarget} from './src/file-panel';export {Operations} from './src/operations';export {NativeTransfers,transferMessage,transferStageMessage} from './src/native-transfers';",resolveDir:path.join(__dirname,'../desktop-web')},bundle:true,platform:'node',format:'cjs',write:false});
 const api=compiled.then(value=>{const scope={module:{exports:{}},exports:{},window:{setInterval:()=>0},clearInterval(){}};scope.exports=scope.module.exports;vm.runInNewContext(value.outputFiles[0].text,scope);return scope.module.exports;});
 const entry=(name,size=0,modified=0,directory=false)=>({name,size,modified,directory});
 
@@ -15,6 +15,31 @@ test('native verification reaches the view separately from transfer progress',as
   const queue=new NativeTransfers(async()=>({jobs:[{id:1,kind:'upload',name:'data.bin',status:'running',phase:'verifying',bytes:256,size:1024,verifyBytes:128,verifyTotal:512}]}),receive);
   try{const [task]=await updated;assert.equal(task.bytes,256);assert.equal(task.verifyBytes,128);assert.equal(task.verifyTotal,512);assert.equal(task.status,'running');}
   finally{queue.dispose();}
+});
+
+test('native startup errors expose a distinct message and diagnostic copy only requests the selected task',async()=>{
+  const {NativeTransfers,transferMessage,transferStageMessage}=await api;const calls=[];let receive;
+  const updated=new Promise(resolve=>receive=resolve);
+  const diagnostic={stage:'local-connect',code:'LOCAL_SERVICE_TIMEOUT',at:'2026-01-01T00:00:00.000Z'};
+  const queue=new NativeTransfers(async(action,data)=>{calls.push({action,data});return action==='list'?{jobs:[{id:4,name:'private.bin',kind:'download',status:'failed',code:'LOCAL_SERVICE_TIMEOUT',diagnostic}]}:{copied:true};},receive);
+  try{const [task]=await updated;assert.equal(task.diagnostic.stage,'local-connect');assert.match(task.message,/本机文件服务/);assert.match(transferMessage('WORKER_EXITED'),/进程提前退出/);assert.match(transferStageMessage('peer-ready'),/设备连接就绪/);await queue.copyDiagnostic(4);assert.deepEqual(JSON.parse(JSON.stringify(calls.find(c=>c.action==='copy-diagnostic'))),{action:'copy-diagnostic',data:{id:4}});}
+  finally{queue.dispose();}
+});
+
+test('device file page forwards diagnostic copy through the parent with its own device and replies to the same frame',async()=>{
+  const source=fs.readFileSync(path.join(__dirname,'../desktop-web/public/gmssh-files.js'),'utf8');
+  const begin=source.indexOf('  function receive(event){'),end=source.indexOf('  function click(event){',begin);
+  assert.ok(begin>=0&&end>begin);
+  const calls=[],replies=[],frame={postMessage:(value,origin)=>replies.push({value,origin})},id='a'.repeat(32),record={device:{machineId:id,viewerUrl:'http://127.0.0.1:22245/'},frame:{contentWindow:frame}};
+  const scope={URL,records:new Map([[id,record]]),nativeReady:Promise.resolve({status:'ok',data:{protocol:2}}),nativeProtocol:true,disposed:false,pollNative(){},
+    nativeInvoke:async(action,machineId,data)=>{calls.push({action,machineId,data});return {status:'ok',data:{copied:true}};}};
+  vm.createContext(scope);vm.runInContext(source.slice(begin,end)+'\nthis.receive=receive;',scope);
+  const event={source:frame,origin:'http://127.0.0.1:22245',data:{type:'gmssh-file-native',requestId:7,action:'copy-diagnostic',machineId:'b'.repeat(32),data:{id:4}}};
+  scope.receive(event);await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(calls,[{action:'copy-diagnostic',machineId:id,data:{id:4}}]);
+  assert.deepEqual(JSON.parse(JSON.stringify(replies)),[{value:{type:'gmssh-file-native-result',requestId:7,reply:{status:'ok',data:{copied:true}}},origin:event.origin}]);
+  scope.receive({...event,origin:'http://127.0.0.1:22246'});scope.receive({...event,source:{}});scope.receive({...event,data:{...event.data,action:'unknown-operation'}});
+  await new Promise(resolve=>setImmediate(resolve));assert.equal(calls.length,1);assert.equal(replies.length,1);
 });
 
 test('current-directory search is Unicode aware, sorts naturally, keeps folders first and never mutates its snapshot',async()=>{

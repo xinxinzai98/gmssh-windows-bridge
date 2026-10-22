@@ -23,8 +23,14 @@ const messages:Record<string,string>={
   REMOTE_IO:'远端读写失败，检查连接或权限后可继续',PROTOCOL_UNSUPPORTED:'本地文件服务版本不匹配，请重开更新后的管理端',
   OPERATION_TIMEOUT:'等待远端响应超时，请核对原任务后继续',OPERATION_INTERRUPTED:'操作响应中断，请核对原任务后继续',
   SESSION_CLOSED:'文件会话已结束或权限已变更，请重新核对授权',SERVER_UPGRADE_REQUIRED:'此授权需要更新管理端或服务端',
+  LOCAL_SERVICE_UNAVAILABLE:'本机文件服务尚未启动，已传部分保留；待服务就绪后继续',LOCAL_SERVICE_TIMEOUT:'本机文件服务启动或握手超时，请重开文件中心后继续',LOCAL_SERVICE_BUSY:'本机文件通道暂忙，请等待其他操作结束后继续',LOCAL_AUTH_FAILED:'本机操作授权已刷新，请重开管理端后继续',
+  CONNECTION_CLOSED:'文件连接已关闭，已传部分保留；核对连接后继续',WORKER_START_FAILED:'文件工作进程未能启动，请检查管理端安装和权限',WORKER_EXITED:'文件工作进程提前退出，任务已保留；可复制诊断后继续',WORKER_NO_RESULT:'文件工作进程没有返回结果，请核对任务后继续',DIAGNOSTIC_COPY_FAILED:'诊断未能复制，请重试',
 };
 export const transferMessage=(code:string)=>messages[code]||'文件任务暂不可用，请检查连接后继续';
+export const transferStageMessage=(stage?:string)=>({
+  'device-config':'正在核对设备配置','worker-start':'正在启动文件工作进程','local-connect':'正在等待本机文件服务','local-auth':'正在核对本机操作授权','peer-ready':'正在等待设备连接就绪','local-file':'正在核对本机文件权限','file-prepare':'正在打开并核对远端文件',
+  'transferring':'文件传输','verifying':'内容校验','saving':'最终保存',
+} as Record<string,string>)[stage||'']||'';
 export class NativeFileOperations extends Operations {
   constructor(private call:Call){super(()=>'');}
   override async request(op:string,values:Record<string,unknown>={}){if(op!=='list'&&op!=='mkdir')throw Error('文件操作不受支持');return this.call('fs-'+op,values);}
@@ -46,13 +52,14 @@ export class NativeTransfers {
   readonly native=true;items:TransferTask[]=[];private timer?:number;private disposed=false;private polling=false;
   places?:PlacesCall;
   constructor(private call:Call,private changed:(tasks:readonly TransferTask[])=>void,places=false){if(places)this.places=async(op,values)=>{try{return await this.call('places',{op,...values});}catch(error){if(['TRANSFER_IO','REMOTE_IO'].includes((error as {code?:string}).code||''))throw Object.assign(Error('无法核对设备连接，请检查连接后重试。'),{code:(error as {code:string}).code});throw error;}};void this.refresh();this.timer=window.setInterval(()=>void this.refresh(),700);}
-  async refresh(){if(this.disposed||this.polling)return;this.polling=true;try{const value=await this.call('list');if(this.disposed)return;if(!Array.isArray(value.jobs))throw Error('任务返回格式无效');this.items=value.jobs.map((j:any)=>({id:j.id,kind:j.kind,name:j.name,path:'',relative:j.name,status:j.status,bytes:j.bytes,size:j.size,started:j.started||Date.now(),createdAt:j.createdAt,source:j.source,target:j.target,code:j.code,sha256:j.sha256,cleanupPending:!!j.cleanupPending,copyBytes:j.copyBytes||0,phase:j.phase,verifyBytes:j.verifyBytes||0,verifyTotal:j.verifyTotal||0,message:j.status==='done'?'已校验并保存':transferMessage(j.code||'PAUSED')+(j.needsGrant&&['paused','failed','cancelled'].includes(j.status)?' · 需确认本机文件权限':'' )}));this.changed(this.items);}catch(error){if(!this.disposed){const note=document.getElementById('file-feedback');if(note){note.hidden=false;note.textContent=error instanceof Error?error.message:'任务列表暂不可用';}}}finally{this.polling=false;}}
+  async refresh(){if(this.disposed||this.polling)return;this.polling=true;try{const value=await this.call('list');if(this.disposed)return;if(!Array.isArray(value.jobs))throw Error('任务返回格式无效');this.items=value.jobs.map((j:any)=>({id:j.id,kind:j.kind,name:j.name,path:'',relative:j.name,status:j.status,bytes:j.bytes,size:j.size,started:j.started||Date.now(),createdAt:j.createdAt,source:j.source,target:j.target,code:j.code,sha256:j.sha256,cleanupPending:!!j.cleanupPending,copyBytes:j.copyBytes||0,phase:j.phase,stage:j.stage,diagnostic:j.diagnostic,verifyBytes:j.verifyBytes||0,verifyTotal:j.verifyTotal||0,message:j.status==='done'?'已校验并保存':transferMessage(j.code||'PAUSED')+(j.needsGrant&&['paused','failed','cancelled'].includes(j.status)?' · 需确认本机文件权限':'' )}));this.changed(this.items);}catch(error){if(!this.disposed){const note=document.getElementById('file-feedback');if(note){note.hidden=false;note.textContent=error instanceof Error?error.message:'任务列表暂不可用';}}}finally{this.polling=false;}}
   async action(action:string,data:Record<string,unknown>={}){await this.call(action,data);await this.refresh();}
   chooseUploads(remote:string,directory:boolean){return this.action('pick-upload',{remote,directory});}
   addUploads(entries:UploadEntry[],remote:string){return this.action('pick-upload',{remote,directory:entries.some(e=>!!e.directory),hints:entries.map(e=>({relative:e.relative,name:e.file?.name||e.relative.split('/').at(-1),directory:!!e.directory,size:e.file?.size||0,modified:e.file?.lastModified||0}))});}
   addDownloads(entries:{path:string;name:string;directory:boolean;size:number}[]){return this.action('pick-download',{entries});}
   retry(id:number,name?:string){return this.action('resume',name?{id,name}:{id});}
   pause(id:number){return this.action('pause',{id});}
+  copyDiagnostic(id:number){return this.action('copy-diagnostic',{id});}
   cancel(id:number){return this.action('cancel',{id});}
   cancelAll(){return this.action('cancel-all');}
   clearFinished(){return this.action('clear');}

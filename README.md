@@ -7,7 +7,8 @@
 <p align="center">面向局域网的 Windows 远程管理扩展</p>
 
 <p align="center">
-  <a href="https://github.com/xinxinzai98/gmssh-windows-bridge/releases/tag/v0.4.0a8">下载 Alpha 预览版</a> ·
+  <a href="https://github.com/xinxinzai98/gmssh-windows-bridge/releases/tag/v0.4.0a8">下载已发布 Alpha</a> ·
+  <a href="docs/release-0.4.0a37.md">0.4a37 候选说明</a> ·
   <a href="docs/getting-started.md">安装指南</a> ·
   <a href="docs/cli.md">CLI 文档</a> ·
   <a href="docs/upgrade-plan.md">升级方案</a> ·
@@ -16,7 +17,7 @@
 
 在 GMSSH / 极目 Linux 桌面中统一使用 Windows 的**资源监控、PowerShell、文件互传和远程桌面**。Windows 端提供一体化后台服务与托盘，macOS 端提供增强设备列表和桌面工作区，并保留原有 Linux 设备入口。
 
-> **已发布安装包：0.4.0a8 · Alpha。源码开发版本：0.4.0a35（开发候选；现有流程与 AI 窗口激活收尾）。** 本项目是非官方兼容扩展，当前基于 GMSSH 2.0.4。开发候选新增功能不包含在下方 0.4.0a8 下载包中，具体边界见[安装指南](docs/getting-started.md)、[AI 接入](docs/ai-access.md)与[验证记录](docs/validation.md)。
+> **已发布安装包：0.4.0a8 · Alpha。当前候选：0.4.0a37 · 尚未发布。** 候选包含文件恢复诊断和桌面超时自动恢复；连续零掉线仍未验收通过。本项目是非官方兼容扩展，基于已验收的 GMSSH 2.0.4。下方旧版下载包不包含候选新增功能；安装、已验项目与限制见[候选说明](docs/release-0.4.0a37.md)、[安装指南](docs/getting-started.md)及[验证记录](docs/validation.md)。
 
 ## 主要功能
 
@@ -36,7 +37,7 @@
 
 ## 下载
 
-从 [Releases](https://github.com/xinxinzai98/gmssh-windows-bridge/releases) 获取安装文件。当前版本为 Alpha 预发布版本。
+从 [Releases](https://github.com/xinxinzai98/gmssh-windows-bridge/releases) 获取已经发布的安装文件。**下表仍是旧版 0.4.0a8；0.4.0a37 候选没有公开下载地址。** 不要按新候选说明假定旧包具备全部功能。
 
 | 平台 / 内容 | 下载 | 说明 |
 |---|---|---|
@@ -49,7 +50,7 @@
 
 1. **安装 Windows 服务端。** 运行安装程序，完成管理员提示并设置连接密码。安装器会创建专用本地管理员账号 `gmssh`、配置后台服务，并允许同一子网访问 SSH 22 端口。
 2. **安装 Mac 控制端。** 先安装官方 GMSSH 2.0.4，再解压 Mac 安装包并运行 `Install GMSSH.command`。安装器自动准备独立 Python 环境；首次安装需要访问 GitHub 和 PyPI。
-3. **导入设备。** 在 Mac 首页点击“接入 Windows”，导入 Windows 桌面上的 `GMSSH-connection.json`，核对地址与 SSH 指纹并输入连接密码。
+3. **导入设备。** 0.4.0a37 候选统一从 Mac 首页“加号 → 添加机器 → Windows”进入，可粘贴独立授权码、扫描二维码、导入 `GMSSH-connection.json` 或手动填写。首次连接核对设备身份；旧版 0.4.0a8 使用其原有“接入 Windows”入口。
 
 完成后，从同一设备卡片进入监控、终端、文件和桌面。网络以局域网互通为基础，无需额外 VPN。详细操作、官方基座下载地址和故障处理见[安装与接入](docs/getting-started.md)。
 
@@ -81,7 +82,7 @@ flowchart LR
 | 纯净系统完整首装 | 尚未覆盖无既有组件的全部图形安装流程；不由已有设备的保留重装结果代替 |
 | 电源、硬件唤醒及部分桌面工具 | 已有实现与模拟检查，实机验证范围见记录 |
 
-0.4.0a8 发布包的文件侧栏支持单文件上传和下载（上限 512 MiB）。0.4.0a13 源码候选增加多文件、文件夹上传、拖入队列、冲突改名重试、下载取消与文件夹 ZIP 下载；该兼容路径单文件及文件夹打包仍限 512 MiB。0.4.0a17 本地候选的独立文件中心改为系统授权、流式读写与内容校验，支持上传/下载续传和重开恢复，单文件上限 1 TiB；已通过 520 MiB 本地合成回归与 4 MiB Windows 实机断线、重开续传；更大文件的实机闭环仍需稳定网络条件核对。候选的 Windows 延迟来自设备 SSH 端口 TCP 探测，未知或采集失败时不再显示本机桥延迟。剪贴板仅支持文本。音频、录屏和远程打印不在当前产品范围；本轮不新增其他远控扩展。
+0.4.0a8 发布包的文件侧栏支持单文件上传和下载（上限 512 MiB）。新候选保留旧浏览器侧栏的 512 MiB 与 ZIP 限制；独立文件中心使用系统授权、流式读写和内容校验，支持 Windows/Linux 统一队列、暂停续传与重开恢复，协议单文件上限为 1 TiB。0.4.0a35 已完成 520 MiB Windows 实机上传断线续传、下载进程恢复及实际 Mac 客户端退出重开后的下载校验；0.4.0a36 的诊断和重开流程另以 4 MiB 实机文件补验，不把旧版结果扩写为所有版本和容量均通过。候选的 Windows 延迟来自设备 SSH 端口 TCP 探测，未知或采集失败时不显示本机桥延迟。剪贴板仅支持文本。音频、录屏和远程打印不在当前产品范围。
 
 测试记录、模拟检查与实机结果分别列在[验证记录](docs/validation.md)。版本变化见 [CHANGELOG](CHANGELOG.md)，使用边界见[安全说明](SECURITY.md)。
 

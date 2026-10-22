@@ -31,6 +31,8 @@ window.installGMSSHFileCenter=function({viewerUrl,devices=[]}){
   const taskRows=new Map(),busyTasks=new Set();let taskLimit=50,deviceOptions='',batchBusy=false;
   const active=task=>['queued','running','committing'].includes(task.status),finished=task=>['done','cancelled'].includes(task.status)&&!task.cleanupPending;
   const taskErrors={PAUSED:'已暂停，保留已传部分',REAUTHORIZE:'需要重新确认本机文件权限',CONFLICT:'目标已有同名文件，请另存或改名继续',DISK_FULL:'磁盘空间或配额不足，释放空间后可继续',ACCESS_DENIED:'读写权限不足，请检查文件或目录权限',VOLUME_UNAVAILABLE:'磁盘或网络盘暂不可用，请重新连接后确认保存位置',READ_ONLY_VOLUME:'目标磁盘为只读，请检查挂载方式',SOURCE_CHANGED:'源文件已变化，请重新创建任务',PARTIAL_CHANGED:'已传部分发生变化，请确认原位置后核对',PARTIAL_MISSING:'未找到已传部分，请确认原保存目录',PEER_CHANGED:'设备身份已变化，请核对连接',DEVICE_CONFIG_CHANGED:'设备配置已变化，请核对连接',DEVICE_CONFIG_UNAVAILABLE:'设备配置未就绪，请先连接设备',NEED_CONNECTION:'请先连接设备再继续',HASH_MISMATCH:'内容校验未通过，文件尚未提交',FILE_TOO_LARGE:'文件超过目标文件系统限制',JOURNAL_WRITE_FAILED:'任务记录无法保存，请检查本机空间和权限',CANCELLED:'已取消',CANCELLED_FILE_RETAINED:'已取消，完整大小的目标文件保留供核验',TRANSFER_IO:'传输中断，已传部分已保留',REMOTE_IO:'远端读写失败，请检查连接和权限',PICKER_BUSY:'请先完成已打开的系统文件窗口'};
+  Object.assign(taskErrors,{LOCAL_SERVICE_UNAVAILABLE:'本机文件服务尚未启动，待服务就绪后继续',LOCAL_SERVICE_TIMEOUT:'本机文件服务启动或握手超时，请重开文件中心后继续',LOCAL_SERVICE_BUSY:'本机文件通道暂忙，请稍后继续',LOCAL_AUTH_FAILED:'本机操作授权已刷新，请重开管理端',CONNECTION_CLOSED:'文件连接已关闭，已传部分保留；核对连接后继续',WORKER_START_FAILED:'文件工作进程未能启动，请检查安装和权限',WORKER_EXITED:'文件工作进程提前退出，可复制诊断后继续',WORKER_NO_RESULT:'文件工作进程没有返回结果，请核对任务',DIAGNOSTIC_COPY_FAILED:'诊断未能复制，请重试'});
+  const taskStages={'device-config':'正在核对设备配置','worker-start':'正在启动文件工作进程','local-connect':'正在等待本机文件服务','local-auth':'正在核对本机操作授权','peer-ready':'正在等待设备连接就绪','local-file':'正在核对本机文件权限','file-prepare':'正在打开并核对远端文件',transferring:'文件传输',verifying:'内容校验',saving:'最终保存'};
   const problem=code=>taskErrors[code]||'文件任务暂不可用，请进入设备任务核对后继续';
   const feedback=text=>{taskFeedback.textContent=text;taskFeedback.hidden=!text;};
   const deviceName=(record,task)=>publicDevices().find(d=>d.id===(task.machineId||record?.device.machineId))?.name||task.device||record?.device.target||'已移除的设备';
@@ -95,7 +97,7 @@ window.installGMSSHFileCenter=function({viewerUrl,devices=[]}){
   }
   async function taskAction(view,action){
     const {task,key}=view.item;if(busyTasks.has(key)||batchBusy)return;busyTasks.add(key);feedback('');renderTasks();
-    try{const reply=await nativeInvoke(action,task.machineId,{id:task.id});if(reply.status!=='ok')feedback(problem(reply.code)+'（'+(reply.code||'TRANSFER_IO')+'）');await pollNative();}
+    try{const reply=await nativeInvoke(action,task.machineId,{id:task.id});if(reply.status!=='ok')feedback(problem(reply.code)+'（'+(reply.code||'TRANSFER_IO')+'）');else if(action==='copy-diagnostic')feedback('诊断已复制，可粘贴给维护者。');await pollNative();}
     finally{busyTasks.delete(key);renderTasks();}
   }
   async function batch(action){
@@ -127,15 +129,18 @@ window.installGMSSHFileCenter=function({viewerUrl,devices=[]}){
         const actions=make('div','gm-files-task-actions');view={root:row,name,detail,progress,description,item};
         view.locate=button('查看任务',()=>{const r=view.item.record;selected=r?.device.machineId;selector.value=selected;show('files');send(r,'transfers');});
         view.action=button('继续',()=>taskAction(view,active(view.item.task)?'pause':'resume'));view.cancel=button('取消',()=>taskAction(view,'cancel'));
-        actions.append(view.locate,view.action,view.cancel);row.append(name,detail,progress,expanded,actions);taskRows.set(key,view);
+        view.copy=button('复制诊断',()=>taskAction(view,'copy-diagnostic'));
+        actions.append(view.locate,view.action,view.cancel,view.copy);row.append(name,detail,progress,expanded,actions);taskRows.set(key,view);
       }
       view.item=item;const device=deviceName(record,task),labels={queued:'排队中',running:'传输中',committing:'正在保存',paused:'已暂停',done:task.machineId?'已校验并保存':'完成',failed:'未完成',cancelled:'已取消'};
-      const phase=task.phase==='copying'?'兼容保存中，完成前请勿打开目标文件':task.phase==='verifying'?'正在核对文件':labels[task.status];
+      const phase=active(task)&&task.phase==='verifying'&&!task.verifyTotal&&taskStages[task.stage]|| (task.phase==='copying'?'兼容保存中，完成前请勿打开目标文件':task.phase==='verifying'?'正在核对文件':labels[task.status]);
       const reason=task.message||(['failed','paused','cancelled'].includes(task.status)?problem(task.code||'PAUSED'):'');
       view.name.textContent=(task.kind==='download'?'↓ ':task.kind==='directory'?'↳ ':'↑ ')+task.name;view.name.title=task.name;view.root.dataset.state=task.status;
       view.detail.textContent=device+' · '+phase+' · '+bytes(task.phase==='copying'?(task.copyBytes||0):task.bytes)+' / '+bytes(task.size)+(reason?' · '+reason:'')+(task.needsGrant&&['paused','failed'].includes(task.status)?' · 需确认本机文件权限':'')+(task.cleanupPending?' · 临时文件待清理':'');
       view.progress.value=task.status==='done'?100:task.size>0?Math.min(100,100*(task.phase==='copying'?(task.copyBytes||0):task.bytes)/task.size):0;view.progress.setAttribute('aria-label',task.name+' 的进度');
       view.description.textContent=(task.source?'来源：'+task.source+'\n':'')+(task.target?'目标：'+task.target+'\n':'')+(task.createdAt?'创建时间：'+new Date(task.createdAt).toLocaleString()+'\n':'')+(task.code?'状态代码：'+task.code+'\n':'')+(task.sha256?'SHA-256：'+task.sha256+'\n':'')+(!task.machineId?'兼容任务的完整信息请进入设备查看。':'');
+      if(task.diagnostic)view.description.textContent+='\n上次失败阶段：'+(taskStages[task.diagnostic.stage]||task.diagnostic.stage)+'\n上次错误：'+(task.diagnostic.code||'未知')+(task.diagnostic.at?'\n发生时间：'+new Date(task.diagnostic.at).toLocaleString():'');
+      view.copy.hidden=!task.machineId||!task.diagnostic;view.copy.disabled=busyTasks.has(key)||batchBusy;view.copy.setAttribute('aria-label','复制诊断 · '+task.name);
       const disabled=busyTasks.has(key)||batchBusy;view.locate.disabled=disabled||!record||!!record.pending||record.removed;
       view.action.hidden=!task.machineId||task.status==='done';view.action.textContent=active(task)?'暂停':'继续';view.action.disabled=disabled;view.action.setAttribute('aria-label',view.action.textContent+' · '+task.name);
       view.cancel.hidden=!task.machineId||finished(task);view.cancel.textContent=task.cleanupPending?'清理临时文件':'取消';view.cancel.disabled=disabled;view.cancel.setAttribute('aria-label',view.cancel.textContent+' · '+task.name);
@@ -164,7 +169,7 @@ window.installGMSSHFileCenter=function({viewerUrl,devices=[]}){
     const record=[...records.values()].find(r=>r.frame?.contentWindow===event.source);
     if(record&&event.origin===new URL(record.device.viewerUrl).origin){
       if(event.data?.type==='gmssh-file-native'){
-        const data=event.data;if(!Number.isSafeInteger(data.requestId)||data.requestId<1||!['hello','list','fs-list','fs-mkdir','places','pick-upload','pick-download','resume','pause','cancel','clear','cancel-all'].includes(data.action)||!data.data||typeof data.data!=='object'||Array.isArray(data.data))return;
+        const data=event.data;if(!Number.isSafeInteger(data.requestId)||data.requestId<1||!['hello','list','fs-list','fs-mkdir','places','pick-upload','pick-download','resume','pause','cancel','clear','cancel-all','copy-diagnostic'].includes(data.action)||!data.data||typeof data.data!=='object'||Array.isArray(data.data))return;
         void nativeReady.then(async ready=>{
           let reply=ready;
           if(nativeProtocol)reply=(record.pending||record.removed)&&!['hello','list'].includes(data.action)?{status:'error',code:'DEVICE_CONFIG_CHANGED'}:data.action==='hello'?{status:'ok',data:{protocol:2,places:ready?.data?.places===true,linuxFiles:ready?.data?.linuxFiles===true}}:await nativeInvoke(data.action,record.device.machineId,data.data);

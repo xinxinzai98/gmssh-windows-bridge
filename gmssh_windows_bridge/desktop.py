@@ -185,19 +185,33 @@ def forward(websocket, channel, remember=None):
     stopped = threading.Event()
     channel.settimeout(1)
 
+    def report(error, received=True):
+        code = getattr(error, 'code', '')
+        messages = {'OPERATION_TIMEOUT': '等待桌面传输超时，连接已停止。请核对远端画面后重连。',
+                    'REMOTE_IO': '桌面加密通道已中断。请核对连接后重连。',
+                    'REMOTE_OPERATION_FAILED': '远端桌面操作未完成，请核对远端状态后手动重连。',
+                    'AUTH_FAILED': '独立授权已失效或被撤销，请重新核对授权。',
+                    'ACCESS_DENIED': '当前授权未允许桌面访问，请核对服务端权限。',
+                    'PEER_CHANGED': '设备证书已变化，请核对设备身份。',
+                    'SESSION_CLOSED': '远端桌面会话已结束，请重新连接。'}
+        message = messages.get(code)
+        if message is None:
+            code = 'DESKTOP_TRANSPORT_FAILED'
+            message = '桌面传输连接已中断。请核对远端画面后重连。' if received else '传输已连接，但 RustDesk 未返回握手。请检查 Windows 上的 RustDesk、直接 IP 访问和端口。'
+        try:
+            websocket.send(json.dumps({'type': 'error', 'code': code, 'message': message}, ensure_ascii=False))
+        except Exception:
+            pass
+
     def receive():
         received = False
         try:
             while not stopped.is_set():
                 websocket.send(read_frame(channel, stopped))
                 received = True
-        except Exception:
-            if not received and not stopped.is_set():
-                try:
-                    websocket.send(json.dumps({"type": "error", "message":
-                        "传输已连接，但 RustDesk 未返回握手。请检查 Windows 上的 RustDesk、直接 IP 访问和端口。"}, ensure_ascii=False))
-                except Exception:
-                    pass
+        except Exception as error:
+            if not stopped.is_set():
+                report(error, received)
         finally:
             stopped.set()
             websocket.close()
@@ -223,6 +237,9 @@ def forward(websocket, channel, remember=None):
                 websocket.close(1008, "binary control frame required")
                 break
             channel.sendall(frame_header(len(message)) + message)
+    except Exception as error:
+        if not stopped.is_set():
+            report(error)
     finally:
         stopped.set()
         channel.close()
@@ -284,6 +301,7 @@ def handle_connection(config, websocket, slots):
         forward(websocket, channel, keychain.save if keychain is not None else None)
     except Exception as error:
         controller_code = getattr(error, 'code', '')
+        code = controller_code if controller_code in {'AUTH_FAILED', 'ACCESS_DENIED', 'PEER_CHANGED', 'OPERATION_TIMEOUT', 'REMOTE_IO', 'REMOTE_OPERATION_FAILED', 'SESSION_CLOSED'} else 'DESKTOP_TRANSPORT_FAILED'
         if controller_code in {'AUTH_FAILED', 'ACCESS_DENIED', 'PEER_CHANGED'} and callable(getattr(config, 'controller_policy', None)):
             message = {'AUTH_FAILED': '独立授权已失效或被撤销，请向服务端重新获取授权码。',
                        'ACCESS_DENIED': '当前独立授权未允许桌面访问，请在服务端调整权限。',
@@ -293,24 +311,39 @@ def handle_connection(config, websocket, slots):
                     websocket.send(json.dumps({'type': 'controller_permissions', 'permissions': config.controller_policy()}))
                 except Exception:
                     pass
+        elif controller_code in {'OPERATION_TIMEOUT', 'REMOTE_IO', 'REMOTE_OPERATION_FAILED', 'SESSION_CLOSED'}:
+            message = {'OPERATION_TIMEOUT': '等待桌面传输超时，请稍后重连。',
+                       'REMOTE_IO': '桌面加密通道已中断，请稍后重连。',
+                       'REMOTE_OPERATION_FAILED': '远端桌面操作未完成，请核对远端状态后手动重连。',
+                       'SESSION_CLOSED': '远端桌面会话已结束，请手动重新连接。'}[controller_code]
         elif isinstance(error, DesktopAccessError):
+            code = 'AUTH_FAILED'
             message = "本机桌面授权已失效，请重新从启动器打开。"
         elif isinstance(error, MonitorUnavailable):
-            message = "请先在 GMSSH 连接这台机器的监控，再点击蓝色桌面图标。"
+            pool = getattr(config, 'monitor_pool', None)
+            reason = pool.snapshot().get('code') if pool is not None else ''
+            code = 'AUTH_FAILED' if reason == 'AuthenticationException' else 'PEER_CHANGED' if reason == 'BadHostKeyException' else 'MONITOR_UNAVAILABLE'
+            message = "请先在 GMSSH 核对并恢复这台机器的监控连接，再重连桌面。"
         elif isinstance(error, TailnetError):
             message = str(error)
         elif isinstance(error, paramiko.AuthenticationException):
+            code = 'AUTH_FAILED'
             message = "Windows SSH 密码验证失败。"
         elif isinstance(error, (paramiko.BadHostKeyException, paramiko.SSHException)) and not isinstance(error, paramiko.ChannelException):
+            if isinstance(error, paramiko.BadHostKeyException):
+                code = 'PEER_CHANGED'
             message = "SSH 连接或主机密钥核验失败，请检查可信 known_hosts。"
         elif isinstance(error, paramiko.ChannelException):
             message = "无法经 SSH 连接 Windows 本机 RustDesk。请确认直接 IP 访问已启用、端口正确且 SSH 允许转发。"
         elif isinstance(error, (ValueError, UnicodeError)):
             message = "本地登录请求无效，或目标设备身份未通过核对。"
+        elif code == 'OPERATION_TIMEOUT' or isinstance(error, (TimeoutError, socket.timeout)):
+            code = 'OPERATION_TIMEOUT'
+            message = "等待桌面传输超时，请稍后重连。"
         else:
             message = "桌面传输连接失败或已关闭。"
         try:
-            websocket.send(json.dumps({"type": "error", "message": message, "code": type(error).__name__}, ensure_ascii=False))
+            websocket.send(json.dumps({"type": "error", "message": message, "code": code}, ensure_ascii=False))
         except Exception:
             pass
     finally:

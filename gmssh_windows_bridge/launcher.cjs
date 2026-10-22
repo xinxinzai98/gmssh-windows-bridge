@@ -122,7 +122,11 @@ ipcMain.handle = (channel, listener) => handle(channel, channel === 'render-to-m
     if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).sort().join()!=='action,data,machineId'||typeof value.action!=='string'||(value.machineId!==null&&!/^[a-f0-9]{32}$/i.test(value.machineId)))return {status:'error',code:'INVALID_TRANSFER'};
     try{
       const ports=await listener(event,{type:'get-port'});nativeApiPort=ports?.multiPort;
-      const data=await fileTasks().invoke(value.action,value.machineId,value.data);
+      const data=await fileTasks().invoke(value.action==='copy-diagnostic'?'diagnostic':value.action,value.machineId,value.data);
+      if(value.action==='copy-diagnostic'){
+        try{clipboard.writeText(JSON.stringify(data,null,2));}catch{throw Object.assign(Error(),{code:'DIAGNOSTIC_COPY_FAILED'});}
+        return {status:'ok',data:{copied:true}};
+      }
       if(nativeFiles.activeCount())fileQuitAllowed=false;
       return {status:'ok',data};
     }catch(error){return {status:'error',code:typeof error?.code==='string'&&/^[A-Z_]{1,48}$/.test(error.code)?error.code:'TRANSFER_IO'};}

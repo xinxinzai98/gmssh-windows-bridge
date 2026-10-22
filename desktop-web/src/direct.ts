@@ -65,6 +65,17 @@ export class DirectClient {
       ...(options.saved && !desktopPassword ? { saved: true } : {}),
       ...(options.token ? { token: options.token } : {}) })), { once: true });
     socket.addEventListener("message", event => {
+      // Preserve a final relay failure before the following close event; video
+      // decoding may still be queued when the close event arrives.
+      if (typeof event.data === 'string') {
+        try {
+          const result=JSON.parse(event.data);
+          if(result?.type==='error'){
+            const known=['OPERATION_TIMEOUT','REMOTE_IO','MONITOR_UNAVAILABLE','REMOTE_OPERATION_FAILED','AUTH_FAILED','ACCESS_DENIED','PEER_CHANGED','SESSION_CLOSED','DESKTOP_TRANSPORT_FAILED'];
+            fail(new Error(typeof result.message==='string'&&result.message.length<=1024?result.message:'桌面传输已中断。'),known.includes(result.code)?result.code:'DESKTOP_TRANSPORT_FAILED');return;
+          }
+        }catch { /* The ordered parser below rejects malformed responses. */ }
+      }
       chain = chain.then(async () => {
         if (generation !== this.#generation) return;
         if (typeof event.data === "string") {
@@ -88,7 +99,7 @@ export class DirectClient {
       }).catch(fail);
     });
     socket.addEventListener("error", () => fail(new Error("本地桌面服务连接失败。")));
-    socket.addEventListener("close", () => fail(new Error("桌面连接已关闭。")));
+    socket.addEventListener("close", () => fail(new Error("桌面连接已关闭。"),'CONNECTION_CLOSED'));
     this.#timer = window.setTimeout(() => fail(new Error("登录超时，请检查 RustDesk 密码或 Windows 端确认提示。"),'DESKTOP_LOGIN_TIMEOUT'), desktopPassword ? 60_000 : 300_000);
     this.events.status(transport === "monitor" ? "正在等待这台机器的监控认证…" : transport === "tailscale" ? "正在核对 Tailscale 设备…" : "正在验证 Windows SSH…");
   }

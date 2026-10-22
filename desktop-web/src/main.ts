@@ -27,6 +27,7 @@ let transport = "ssh";
 let keychain = false;
 let savedPasswordAvailable = false;
 let blockAutoReconnect=false;
+let independentAuthorization=false,transportRecoveryAllowed=false,transportRecoveryCount=0,transportRecoveryTimer=0;
 let controlPermissions:DesktopPermissions={view:true,input:true,clipboard:true,files:true,terminal:true,power:true};
 let desktopPreferences={zoom:'fit',quality:'balanced',display:0};
 const instance=crypto.randomUUID();
@@ -66,8 +67,8 @@ function verifyWindowsLogin(){
 function cancelWindowsLoginRecovery(){
   windowsLoginRecoveryUntil=0;window.clearTimeout(windowsLoginRecoveryTimer);windowsLoginRecoveryTimer=0;
 }
-function recoverWindowsLogin(state:string){
-  if(state==='disconnected'||blockAutoReconnect){cancelWindowsLoginRecovery();cancelWindowsLoginCheck();return;}
+function recoverWindowsLogin(state:string,code?:string){
+  if(state==='disconnected'||blockAutoReconnect||['SESSION_CLOSED','REMOTE_OPERATION_FAILED'].includes(code||'')){cancelWindowsLoginRecovery();cancelWindowsLoginCheck();return;}
   if(state!=='failed'||Date.now()>windowsLoginRecoveryUntil||!keychain||!savedPasswordAvailable||!(transport==='monitor'||transport==='tailscale'))return;
   windowsLoginRecoveryUntil=0; // One saved-connection retry; never resubmit Windows credentials.
   windowsLoginRecoveryTimer=window.setTimeout(()=>{
@@ -77,6 +78,35 @@ function recoverWindowsLogin(state:string){
     connect.disabled=true;disconnect.disabled=false;
     status('Windows 登录会话已切换，正在恢复桌面连接…');
   },2000);
+}
+function cancelTransportRecovery(reset=false){
+  window.clearTimeout(transportRecoveryTimer);transportRecoveryTimer=0;
+  if(reset){transportRecoveryCount=0;transportRecoveryAllowed=false;}
+}
+function savedTransportAvailable(){
+  return !blockAutoReconnect&&controlPermissions.view&&!password.value&&!ssh.value&&
+    (transport==='monitor'&&independentAuthorization&&!!accessToken||
+     (transport==='monitor'||transport==='tailscale')&&keychain&&savedPasswordAvailable);
+}
+function recoverDesktopTransport(state:string,code?:string){
+  if(state==='disconnected'||blockAutoReconnect){cancelTransportRecovery();return;}
+  if(state!=='failed')return;
+  cancelTransportRecovery();
+  if(windowsLoginRecoveryTimer||!transportRecoveryAllowed||!savedTransportAvailable()||
+     !['OPERATION_TIMEOUT','REMOTE_IO','MONITOR_UNAVAILABLE','CONNECTION_CLOSED'].includes(code||'')||transportRecoveryCount>=3)return;
+  const attempt=++transportRecoveryCount;
+  transportRecoveryTimer=window.setTimeout(()=>{
+    transportRecoveryTimer=0;
+    if(client.connected||connect.disabled)return;
+    if(!savedTransportAvailable()){
+      get('connection-label').textContent='未连接';disconnect.disabled=true;
+      status('自动重连已停止，请核对连接设置后手动连接。');return;
+    }
+    client.connect('','',transport,{saved:keychain&&savedPasswordAvailable,remember:false,token:accessToken});
+    connect.disabled=true;disconnect.disabled=false;
+    get('connection-label').textContent=`正在重连 ${attempt}/3`;
+    status(`连接暂时中断，正在重新连接（${attempt}/3）…`);
+  },[2000,4000,8000][attempt-1]);
 }
 if (accessToken) history.replaceState(null, "", location.pathname + location.search);
 const tokenReady = new Promise<void>(resolve => {
@@ -95,12 +125,12 @@ const keys = new Map<string, KeyboardEvent>();
 const buttons = new Map<number, PointerEvent>();
 const client = new DirectClient(canvas, {
   status,
-  lifecycle(state,code){if(state==='failed'&&(code==='DESKTOP_AUTH_FAILED'||client.diagnostics?.snapshot().stages.some(s=>s.id==='desktopAuth'&&s.state==='failed')))blockAutoReconnect=true;recoverWindowsLogin(state);workspaceMessage({state,...(code?{reason:code}:{})});},
+  lifecycle(state,code){if(state==='failed'&&(['DESKTOP_AUTH_FAILED','AUTH_FAILED','ACCESS_DENIED','PEER_CHANGED'].includes(code||'')||client.diagnostics?.snapshot().stages.some(s=>s.id==='desktopAuth'&&s.state==='failed')))blockAutoReconnect=true;recoverWindowsLogin(state,code);recoverDesktopTransport(state,code);workspaceMessage({state,...(code?{reason:code}:{})});},
   permissions(value){controlPermissions={...value};workspaceMessage({permissions:value});filesAvailable=value.files||value.files_read===true;filesWritable=value.files;powerAvailable=value.power;get('transport-note').textContent=value.input?'独立授权连接，权限由服务端管理。':'仅查看桌面，键鼠由服务端禁用。';},
   credential(saved) { savedPasswordAvailable = saved; get("credential-note").textContent = saved ? "已保存至本机钥匙串，后续启动自动连接此设备。" : "钥匙串操作未完成，可以重新输入此设备的桌面连接密码。"; },
   peer(name) { peer = name;get('session-label').textContent=name; status(`${name} 已批准连接，等待画面…`); },
-  frame() { frames++; canvas.hidden = false; empty.hidden = true; keyboardInput.disabled=!controlPermissions.input; fullscreen.disabled = false;get('connection-label').textContent='已连接';get('connection-label').classList.add('online');get<HTMLButtonElement>('keyboard').disabled=!controlPermissions.input;get<HTMLButtonElement>('clipboard').disabled=!controlPermissions.clipboard;get<HTMLSelectElement>('quality').disabled=false;get('screen-size').textContent=`${canvas.width} × ${canvas.height}`; if(frames===1){get('login-wrap').hidden=true;status(`${peer} · 桌面连接正常`);void autoUnlockWindows();} },
-  stopped() { clearWindowsPassword(); keys.clear(); buttons.clear(); frames = 0; viewport.classList.remove("expanded"); canvas.hidden = true; empty.hidden = false;keyboardInput.disabled=true;get('input-hint').textContent='';get('login-wrap').hidden=false;get('connection-label').textContent='未连接';get('connection-label').classList.remove('online');get<HTMLButtonElement>('keyboard').disabled=get<HTMLButtonElement>('clipboard').disabled=get<HTMLSelectElement>('quality').disabled=true; connect.disabled = false; disconnect.disabled = fullscreen.disabled = true; },
+  frame() { transportRecoveryAllowed=true;cancelTransportRecovery();frames++; canvas.hidden = false; empty.hidden = true; keyboardInput.disabled=!controlPermissions.input; fullscreen.disabled = false;get('connection-label').textContent='已连接';get('connection-label').classList.add('online');get<HTMLButtonElement>('keyboard').disabled=!controlPermissions.input;get<HTMLButtonElement>('clipboard').disabled=!controlPermissions.clipboard;get<HTMLSelectElement>('quality').disabled=false;get('screen-size').textContent=`${canvas.width} × ${canvas.height}`; if(frames===1){get('login-wrap').hidden=true;status(`${peer} · 桌面连接正常`);void autoUnlockWindows();} },
+  stopped() { clearWindowsPassword(); keys.clear(); buttons.clear();keyboardInput.value='';keyboardInput.blur(); frames = 0; viewport.classList.remove("expanded"); canvas.hidden = true; empty.hidden = false;keyboardInput.disabled=true;get('input-hint').textContent='';get('login-wrap').hidden=false;get('connection-label').textContent=transportRecoveryTimer?`等待重连 ${transportRecoveryCount}/3`:transportRecoveryCount>=3?'未连接 · 自动重连已停止':'未连接';get('connection-label').classList.remove('online');get<HTMLButtonElement>('keyboard').disabled=get<HTMLButtonElement>('clipboard').disabled=get<HTMLSelectElement>('quality').disabled=true; connect.disabled = false; disconnect.disabled = !transportRecoveryTimer;fullscreen.disabled = true; },
   clipboard(text){get<HTMLTextAreaElement>('clipboard-text').value=text;get('clipboard-note').textContent='已收到 Windows 复制的文本。';},
   displays(items,current){const select=get<HTMLSelectElement>('display');select.replaceChildren(...items.map((item,index)=>{const option=document.createElement('option');option.value=String(index);option.textContent=`显示器 ${index+1}`;return option;}));const wanted=items[desktopPreferences.display]?desktopPreferences.display:current;select.value=String(wanted);select.disabled=items.length<2;queueMicrotask(()=>{if(wanted!==current)client.selectDisplay(wanted);client.quality(desktopPreferences.quality);});},
 });
@@ -110,6 +140,7 @@ fetch("/config.json").then(response => {
   return response.json();
 }).then(async config => {
   transport = config.transport;
+  independentAuthorization=!!config.authorization;
   if(config.authorization){controlPermissions={...config.authorization};get('login-wrap').querySelector('label:has(#desktop-password)')?.setAttribute('hidden','');password.required=false;get('credential-note').textContent='接入使用独立授权；Windows 系统解锁单独设置。';}
   keychain = config.keychain === true;
   savedPasswordAvailable = config.has_saved_password === true;
@@ -134,6 +165,7 @@ fetch("/config.json").then(response => {
   if (keychain && !config.has_saved_password) status("首次连接：输入安装时设置的固定密码，验证成功后记住。");
   if (controlPermissions.view && (direct || shared) && (initialAuth || !keychain || config.has_saved_password) && new URL(location.href).searchParams.get("autoconnect") === "1") {
     const first=initialAuth;initialAuth=undefined;
+    transportRecoveryAllowed=!first&&savedTransportAvailable();
     client.connect("",first?.password||"",transport,{saved:first?false:keychain,remember:keychain&&first?.remember===true,token:accessToken});
     connect.disabled = true; disconnect.disabled = false;
   }
@@ -144,10 +176,12 @@ get<HTMLFormElement>("login").addEventListener("submit", event => {
   event.preventDefault();
   cancelWindowsLoginRecovery();
   cancelWindowsLoginCheck();
+  cancelTransportRecovery(true);
   blockAutoReconnect=false;
   const sshPassword = ssh.value;
   const desktopPassword = password.value;
   ssh.value = password.value = "";
+  transportRecoveryAllowed=!sshPassword&&!desktopPassword&&savedTransportAvailable();
   client.connect(sshPassword, desktopPassword, transport, { saved: keychain, remember: keychain && get<HTMLInputElement>("remember-password").checked, token: accessToken });
   connect.disabled = true; disconnect.disabled = false;
 });
@@ -158,9 +192,9 @@ function releaseInputs(): void {
   keys.clear(); buttons.clear();
 }
 const textInput=installTextInput(canvas,keyboardInput,{enabled:()=>client.connected&&controlPermissions.input,release:releaseInputs,send:text=>client.text(text),error:error=>status(error instanceof Error?error.message:'文本未发送。'),hint:text=>{get('input-hint').textContent=text;get('input-hint').title=text;}});
-disconnect.addEventListener("click", () => { cancelWindowsLoginRecovery(); cancelWindowsLoginCheck(); releaseInputs(); client.disconnect(); status("已断开，此设备的后台服务继续运行。"); });
+disconnect.addEventListener("click", () => { cancelTransportRecovery(true);cancelWindowsLoginRecovery(); cancelWindowsLoginCheck(); releaseInputs(); client.disconnect(); status("已断开，此设备的后台服务继续运行。"); });
 window.addEventListener("blur", releaseInputs);
-window.addEventListener("pagehide", () => { cancelWindowsLoginRecovery(); cancelWindowsLoginCheck(); releaseInputs(); client.disconnect(); operations.close();cancelPower(); });
+window.addEventListener("pagehide", () => { cancelTransportRecovery(true);cancelWindowsLoginRecovery(); cancelWindowsLoginCheck(); releaseInputs(); client.disconnect(); operations.close();cancelPower(); });
 
 function position(event: PointerEvent): { x: number; y: number } {
   const rect = canvas.getBoundingClientRect();
@@ -329,6 +363,7 @@ window.addEventListener('message',event=>{
   if(event.data.tool==='files')openFileCenter();
   else if(event.data.tool==='power')get('power').click();
   else if(event.data.tool==='reconnect'&&!blockAutoReconnect&&!client.connected&&!connect.disabled&&keychain&&savedPasswordAvailable&&!password.value&&!ssh.value&&(transport==='monitor'||transport==='tailscale')){
+    cancelTransportRecovery(true);transportRecoveryAllowed=savedTransportAvailable();
     client.connect('','',transport,{saved:true,remember:false,token:accessToken});
     connect.disabled=true;disconnect.disabled=false;
   }

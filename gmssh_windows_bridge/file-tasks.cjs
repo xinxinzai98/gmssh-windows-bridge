@@ -6,6 +6,20 @@ const HEX=/^[a-f0-9]{64}$/,ID=/^[a-f0-9]{32}$/i,PEER=/^SHA256:[A-Za-z0-9+/]{43}$
 const MAX_PLACES=12,MAX_PLACE_DEVICES=200,MAX_PLACE_BYTES=16*1024**2;
 const unsigned=value=>BigInt.asUintN(64,BigInt(value)).toString();
 const fail=code=>Object.assign(Error(code),{code});
+const STAGES=new Set(['worker-start','device-config','local-connect','local-auth','peer-ready','local-file','file-prepare','transferring','verifying','saving']);
+function safeDiagnostic(value={},fallback='worker-start'){
+  if(!value||typeof value!=='object'||Array.isArray(value))value={};
+  const result={stage:STAGES.has(value.stage)?value.stage:STAGES.has(fallback)?fallback:'worker-start'};
+  if(/^[A-Z_]{1,48}$/.test(value.code||''))result.code=value.code;
+  if(/^\d{1,3}\.\d{1,3}\.\d{1,3}(?:a\d{1,4})?$/.test(value.version||''))result.version=value.version;
+  if(['StreamError','TimeoutError','ConnectionRefusedError','ConnectionResetError','BrokenPipeError','PermissionError','FileNotFoundError','OSError','ValueError','TypeError','JSONDecodeError','UnexpectedError','ProcessStart','ProcessExit'].includes(value.errorType))result.errorType=value.errorType;
+  for(const key of ['errno','exitCode'])if(Number.isInteger(value[key])&&Math.abs(value[key])<=65535)result[key]=value[key];
+  if(['ENOENT','EACCES','EPERM','EAGAIN','ENOMEM','EMFILE'].includes(value.systemCode))result.systemCode=value.systemCode;
+  if(['SIGTERM','SIGKILL','SIGABRT','SIGSEGV','SIGBUS','SIGPIPE','SIGHUP','SIGINT'].includes(value.signal))result.signal=value.signal;
+  if(typeof value.at==='string'&&/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value.at))result.at=value.at;
+  if(Number.isSafeInteger(value.elapsedMs)&&value.elapsedMs>=0)result.elapsedMs=value.elapsedMs;
+  return result;
+}
 function name(value,posix=false){if(typeof value!=='string'||!value||value.length>255||value==='.'||value==='..'||/[\/\x00-\x1f\x7f\ud800-\udfff]/u.test(value)||!posix&&(/[<>:"\\|?*]/.test(value)||/[. ]$/.test(value)||/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(value)))throw fail('INVALID_NAME');return value;}
 function remote(value){if(typeof value!=='string'||value.length>1024||!(/^[A-Za-z]:\//.test(value)||value.startsWith('/')))throw fail('INVALID_PATH');const posix=value.startsWith('/'),parts=value.slice(posix?1:3).split('/').filter(Boolean);parts.forEach(part=>name(part,posix));return (posix?'/':value[0].toUpperCase()+':/')+parts.join('/');}
 function relative(value,posix=false){if(typeof value!=='string'||value.split('/').length>32)throw fail('INVALID_NAME');return value.split('/').map(part=>name(part,posix)).join('/');}
@@ -31,6 +45,7 @@ function validPlaces(value){
   return value.devices;
 }
 function validJob(j){
+  if(j?.diagnostic!==undefined)j.diagnostic=safeDiagnostic(j.diagnostic);
   for(const key of ['verifyBytes','verifyTotal'])if(j?.[key]!==undefined)size(j[key]);
   if((j?.verifyBytes||0)>(j?.verifyTotal||0))throw fail('JOURNAL_INVALID');
   if(!j||!Number.isSafeInteger(j.id)||j.id<1||!ID.test(j.machineId)||!ID.test(j.partToken)||!['upload','download','directory'].includes(j.kind)||!['queued','running','committing','paused','done','failed','cancelled'].includes(j.status)||typeof j.name!=='string'||j.name.length>1024||!j.local||typeof j.local!=='object'||j.peer!==null&&!PEER.test(j.peer)||j.sha256!==null&&!HEX.test(j.sha256))throw fail('JOURNAL_INVALID');
@@ -95,7 +110,8 @@ class FileTasks {
     this.writePlaces({...records,[machineId]:{peer:result.peer,items}});return {items:items.map(item=>({...item})),maximum:MAX_PLACES};
   }
   activeCount(){return this.jobs.filter(j=>ACTIVE.has(j.status)).length;}
-  list(machineId){return {version:this.version,jobs:this.jobs.filter(j=>!machineId||j.machineId===machineId).map(j=>({id:j.id,machineId:j.machineId,device:j.device,name:j.name,kind:j.kind,status:j.status,bytes:j.bytes,size:j.size,phase:j.phase||'',verifyBytes:j.verifyBytes||0,verifyTotal:j.verifyTotal||0,copyBytes:j.copyBytes||0,code:j.code||'',sha256:j.status==='done'?j.sha256:null,started:j.started||0,createdAt:j.createdAt,source:j.kind==='download'?j.remote:j.local.source||j.local.root||'',target:j.kind==='download'?j.local.target:j.remote,needsGrant:!this.grants.has(j.id)&&j.status!=='done',cleanupPending:!!j.cleanupPending}))};}
+  list(machineId){return {version:this.version,jobs:this.jobs.filter(j=>!machineId||j.machineId===machineId).map(j=>({id:j.id,machineId:j.machineId,device:j.device,name:j.name,kind:j.kind,status:j.status,bytes:j.bytes,size:j.size,phase:j.phase||'',stage:this.running?.job===j?this.running.worker?.stage||this.running.stage||'worker-start':'',diagnostic:j.diagnostic?safeDiagnostic(j.diagnostic):null,verifyBytes:j.verifyBytes||0,verifyTotal:j.verifyTotal||0,copyBytes:j.copyBytes||0,code:j.code||'',sha256:j.status==='done'?j.sha256:null,started:j.started||0,createdAt:j.createdAt,source:j.kind==='download'?j.remote:j.local.source||j.local.root||'',target:j.kind==='download'?j.local.target:j.remote,needsGrant:!this.grants.has(j.id)&&j.status!=='done',cleanupPending:!!j.cleanupPending}))};}
+  diagnostic(machineId,id){const j=this.job(machineId,id);return {schema:1,component:'file-transfer',task:j.id,kind:j.kind,state:j.status,code:/^[A-Z_]{1,48}$/.test(j.code||'')?j.code:'',bytes:j.bytes,size:j.size,lastFailure:j.diagnostic?safeDiagnostic(j.diagnostic):null,sampledAt:new Date().toISOString()};}
   job(machineId,id){const j=this.jobs.find(j=>j.id===id&&j.machineId===machineId);if(!j)throw fail('TASK_NOT_FOUND');return j;}
   async binding(machineId){if(!ID.test(machineId))throw fail('INVALID_DEVICE');const value=await this.resolveBinding(machineId);if(!value)throw fail('DEVICE_CONFIG_UNAVAILABLE');return value;}
   async picker(run){if(this.dialogBusy)throw fail('PICKER_BUSY');this.dialogBusy=true;try{return await run();}finally{this.dialogBusy=false;}}
@@ -105,16 +121,19 @@ class FileTasks {
   }
   run(command,fd=-1,onEvent=async()=>{},directoryFd=-1){
     const env={...process.env};delete env.PYTHONPATH;delete env.PYTHONHOME;
-    const child=this.spawnWorker(this.python,['-m','gmssh_windows_bridge.transfer_worker'],{env,stdio:['pipe','pipe','ignore','ignore',fd<0?'ignore':fd,directoryFd<0?'ignore':directoryFd]});
-    let text='',result,problem,chain=Promise.resolve(),settled=false;
-    const processLine=async line=>{const event=JSON.parse(line);if(!event||typeof event!=='object')throw fail('INVALID_RESPONSE');if(event.event==='prepared'){await onEvent(event);child.stdin.write('{"ack":"prepared"}\n');}else if(event.event==='error')problem=fail(typeof event.code==='string'&&/^[A-Z_]{1,48}$/.test(event.code)?event.code:'TRANSFER_IO');else if(event.event==='done'){result=event.result;await onEvent(event);}else if(['progress','checkpoint'].includes(event.event))await onEvent(event);else throw fail('INVALID_RESPONSE');};
+    let child;
+    try{child=this.spawnWorker(this.python,['-m','gmssh_windows_bridge.transfer_worker'],{env,stdio:['pipe','pipe','ignore','ignore',fd<0?'ignore':fd,directoryFd<0?'ignore':directoryFd]});}
+    catch(error){throw Object.assign(fail('WORKER_START_FAILED'),{diagnostic:safeDiagnostic({errorType:'ProcessStart',systemCode:error.code})});}
+    let text='',result,problem,chain=Promise.resolve(),settled=false,latestStage=command.kind==='commit'?'saving':'worker-start';
+    const describe=error=>Object.assign(error,{diagnostic:safeDiagnostic(error.diagnostic,latestStage)});
+    const processLine=async line=>{const event=JSON.parse(line);if(!event||typeof event!=='object')throw fail('INVALID_RESPONSE');if(event.event==='stage'){if(!STAGES.has(event.stage))throw fail('INVALID_RESPONSE');latestStage=event.stage;this.version++;}else if(event.event==='prepared'){await onEvent(event);child.stdin.write('{"ack":"prepared"}\n');}else if(event.event==='error')problem=Object.assign(fail(typeof event.code==='string'&&/^[A-Z_]{1,48}$/.test(event.code)?event.code:'TRANSFER_IO'),{diagnostic:safeDiagnostic(event.diagnostic,latestStage)});else if(event.event==='done'){result=event.result;await onEvent(event);}else if(['progress','checkpoint'].includes(event.event))await onEvent(event);else throw fail('INVALID_RESPONSE');};
     const promise=new Promise((resolve,reject)=>{
-      child.on('error',error=>{if(!settled){settled=true;reject(fail(errorCode(error)));}});
+      child.on('error',error=>{if(!settled){settled=true;reject(Object.assign(fail('WORKER_START_FAILED'),{diagnostic:safeDiagnostic({errorType:'ProcessStart',systemCode:error.code})}));}});
       child.stdout.on('data',chunk=>{text+=chunk.toString('utf8');if(text.length>4*1024*1024){problem=fail('INVALID_RESPONSE');child.kill('SIGKILL');return;}let n;while((n=text.indexOf('\n'))>=0){const line=text.slice(0,n);text=text.slice(n+1);chain=chain.then(()=>processLine(line)).catch(error=>{problem=error;child.stdin.destroy();child.kill('SIGTERM');const timer=setTimeout(()=>child.kill('SIGKILL'),2000);child.once('close',()=>clearTimeout(timer));});}});
-      child.on('close',(code)=>{chain.finally(()=>{if(settled)return;settled=true;if(problem)reject(problem);else if(code!==0||!result)reject(fail('TRANSFER_IO'));else resolve(result);});});
-      child.stdin.on('error',()=>{});child.stdin.write(JSON.stringify(command)+'\n');
+      child.on('close',(code,signal)=>{chain.finally(()=>{if(settled)return;settled=true;if(problem)reject(describe(problem));else if(code!==0||!result)reject(Object.assign(fail(code!==0?'WORKER_EXITED':'WORKER_NO_RESULT'),{diagnostic:safeDiagnostic({stage:latestStage,errorType:'ProcessExit',exitCode:code,signal})}));else resolve(result);});});
+      child.stdin.on('error',()=>{});child.stdin.write(JSON.stringify({...command,...(command.kind==='commit'?{}:{diagnostics:1})})+'\n');
     });
-    const running={promise,stop:()=>{child.kill('SIGTERM');const timer=setTimeout(()=>child.kill('SIGKILL'),2000);promise.finally(()=>clearTimeout(timer)).catch(()=>{});}};return running;
+    const running={promise,get stage(){return latestStage;},stop:()=>{child.kill('SIGTERM');const timer=setTimeout(()=>child.kill('SIGKILL'),2000);promise.finally(()=>clearTimeout(timer)).catch(()=>{});}};return running;
   }
   async query(machineId,kind,values={}){if(this.queries.size>=2)throw fail('QUERY_BUSY');const b=await this.binding(machineId);if(values.remote&&values.remote.startsWith('/')!==!!b.ssh)throw fail('INVALID_PATH');const running=this.run({...connection(b),kind,...values});this.queries.add(running);try{return await running.promise;}finally{this.queries.delete(running);}}
   async probe(machineId,peer=null){return this.query(machineId,'probe',{peer});}
@@ -199,12 +218,13 @@ class FileTasks {
   clear(machineId,ids){const selected=ids===undefined?this.jobs.filter(j=>j.machineId===machineId):this.selectedJobs(machineId,ids),remove=new Set(selected.filter(j=>['done','cancelled'].includes(j.status)&&!j.cleanupPending));this.jobs=this.jobs.filter(j=>!remove.has(j));for(const j of remove)this.grants.delete(j.id);this.save();return {cleared:remove.size};}
   async invoke(action,machineId,data={}){
     if(this.readyError)throw fail(this.readyError);if(this.closed)throw fail('MANAGER_CLOSED');
-    const keys={hello:[],list:[],'fs-list':['path'],'fs-mkdir':['path'],places:['op','path','label'],'pick-upload':['remote','directory','hints'],'pick-download':['entries'],resume:['id','name'],pause:['id'],'pause-many':['ids'],cancel:['id'],clear:['ids'],'cancel-all':[]}[action];
+    const keys={hello:[],list:[],diagnostic:['id'],'fs-list':['path'],'fs-mkdir':['path'],places:['op','path','label'],'pick-upload':['remote','directory','hints'],'pick-download':['entries'],resume:['id','name'],pause:['id'],'pause-many':['ids'],cancel:['id'],clear:['ids'],'cancel-all':[]}[action];
     if(!keys||(machineId!=null&&!ID.test(machineId))||!data||typeof data!=='object'||Array.isArray(data)||Object.keys(data).some(k=>!keys.includes(k))||(!['hello','list'].includes(action)&&!ID.test(machineId)))throw fail('INVALID_TRANSFER');
-    if(['resume','pause','cancel'].includes(action)&&!Number.isSafeInteger(data.id))throw fail('INVALID_TRANSFER');
+    if(['resume','pause','cancel','diagnostic'].includes(action)&&!Number.isSafeInteger(data.id))throw fail('INVALID_TRANSFER');
     try{
     if(action==='hello')return {protocol:2,maximum:MAX_SIZE,places:true,linuxFiles:true};
     if(action==='list')return this.list(machineId);
+    if(action==='diagnostic')return this.diagnostic(machineId,data.id);
     if(action==='fs-list'||action==='fs-mkdir')return await this.query(machineId,action==='fs-list'?'list':action,{remote:remote(data.path)});
     if(action==='places')return await this.places(machineId,data);
     if(action==='pick-upload')return await this.pickUpload(machineId,data);
@@ -221,12 +241,13 @@ class FileTasks {
   pump(){if(this.running||this.closed||this.readyError)return;const job=this.jobs.find(j=>j.status==='queued');if(!job)return;const run={job,reason:null,worker:null,promise:null};this.running=run;run.promise=this.execute(run).finally(()=>{this.running=null;if(!this.closed)this.pump();});}
   session(job,state){try{this.onSession?.({machineId:job.machineId,name:job.device,channel:'files',instance:'task-'+job.id,state,...(state==='failed'?{reason:/^[A-Z_]{1,48}$/.test(job.code)?job.code:'TRANSFER_IO'}:{})});}catch{this.historyError='HISTORY_WRITE_FAILED';}}
   async execute(run){
-    const j=run.job;let fd=-1,directoryFd=-1;
+    const j=run.job;let fd=-1,directoryFd=-1;run.stage='device-config';run.began=Date.now();
     try{
       if(!this.grants.has(j.id))throw fail('REAUTHORIZE');const b=j.kind==='download'&&j.recoverCommit?null:await this.binding(j.machineId);if(run.reason)throw fail('PAUSED');j.status='running';j.started=Date.now();j.phase='verifying';j.verifyBytes=0;j.verifyTotal=0;j.code='';this.save();
       this.session(j,'connecting');
       if(b&&j.remote.startsWith('/')!==!!b.ssh)throw fail('DEVICE_CONFIG_CHANGED');
       if(j.kind==='directory'){const command={...connection(b),kind:'mkdir',remote:j.remote,peer:j.peer};run.worker=this.run(command);const result=await run.worker.promise;j.peer=result.peer;if(run.reason)throw fail('PAUSED');j.status='done';j.phase='';this.save();return;}
+      run.stage='local-file';
       if(j.kind==='upload'){
         fd=openFile(j.local.source,fs.constants.O_RDONLY);const p=proof(fd);if(p.size!==j.local.proof.size||p.modifiedNs!==j.local.proof.modifiedNs||p.dev!==j.local.proof.dev||p.ino!==j.local.proof.ino)throw fail('SOURCE_CHANGED');
       }else{
@@ -256,10 +277,11 @@ class FileTasks {
       if(j.kind==='download')await this.commit(j,run,fd,directoryFd,false);
       j.status='done';j.phase='';j.code='';this.save();if(j.kind==='download'){j.local.part=undefined;j.recoverCommit=false;}this.grants.delete(j.id);
       if(j.kind==='upload'){try{await this.query(j.machineId,'discard',{remote:j.remote,peer:j.peer,partToken:j.partToken,size:j.size,sha256:j.sha256});}catch{j.cleanupPending=true;this.save();}}
-    }catch(error){j.status=run.reason?'paused':'failed';j.code=run.reason?'PAUSED':errorCode(error);j.phase='';if(j.kind==='download'&&['VOLUME_UNAVAILABLE','TARGET_CHANGED'].includes(j.code))this.grants.delete(j.id);if(j.kind==='download'&&fd>=0){try{const p=proof(fd);if(p.dev===j.local.partProof?.dev&&p.ino===j.local.partProof?.ino&&p.size<=j.size)j.bytes=p.size;}catch{}}try{this.save();}catch{j.code='JOURNAL_WRITE_FAILED';}}
+    }catch(error){j.status=run.reason?'paused':'failed';j.code=run.reason?'PAUSED':errorCode(error);if(!run.reason)j.diagnostic={...safeDiagnostic(error.diagnostic,run.worker?.stage||run.stage),code:j.code,at:new Date().toISOString(),elapsedMs:Math.max(0,Date.now()-run.began)};j.phase='';if(j.kind==='download'&&['VOLUME_UNAVAILABLE','TARGET_CHANGED'].includes(j.code))this.grants.delete(j.id);if(j.kind==='download'&&fd>=0){try{const p=proof(fd);if(p.dev===j.local.partProof?.dev&&p.ino===j.local.partProof?.ino&&p.size<=j.size)j.bytes=p.size;}catch{}}try{this.save();}catch{j.code='JOURNAL_WRITE_FAILED';}}
     finally{closeGrant(fd);closeGrant(directoryFd);this.session(j,j.status==='done'?'completed':j.status==='paused'?'disconnected':'failed');}
   }
   async commit(j,run,fd,directoryFd,alreadyFinal){
+    run.stage='saving';
     const parent=directoryProof(directoryFd),p=proof(fd);j.status='committing';j.phase='saving';j.recoverCommit=true;this.save();
     const command={kind:'commit',source:path.basename(alreadyFinal?j.local.target:j.local.part),target:path.basename(j.local.target),size:j.size,sha256:j.sha256,expected:p,directoryProof:parent,copyProof:j.local.copyProof||null,allowRebind:!!(run.rebind||this.grants.get(j.id)?.revalidate&&j.local.directoryProof&&!sameFile(parent,j.local.directoryProof))};
     run.worker=this.run(command,fd,async event=>{

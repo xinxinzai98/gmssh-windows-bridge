@@ -154,7 +154,7 @@ class ControllerClient:
         try:
             request_started = time.monotonic()
             connection = getattr(self.local, 'connection', None)
-            # The helper closes idle HTTP connections after five seconds. Use
+            # Older helpers close idle HTTP connections after five seconds. Use
             # the last request's start (not response end) as a conservative age,
             # and reconnect before sending anything; never replay an operation.
             if connection is not None and request_started - getattr(self.local, 'request_started', 0) >= 4:
@@ -169,7 +169,7 @@ class ControllerClient:
             raw = json.dumps(body, separators=(',', ':'), ensure_ascii=False).encode('utf-8')
             if len(raw) > 128*1024:
                 raise StreamError('INVALID_TRANSFER')
-            connection.timeout = 65 if action == 'execute' else 8
+            connection.timeout = 65 if action == 'execute' else 20 if action in {'desktop-read', 'desktop-write'} else 8
             if connection.sock:
                 connection.sock.settimeout(connection.timeout)
             self.local.request_started = request_started
@@ -196,7 +196,8 @@ class ControllerClient:
                            'DESKTOP_LOCKED', 'AI_PAUSED', 'STALE_TARGET', 'TARGET_NOT_FOUND', 'AMBIGUOUS_TARGET',
                            'UNSUPPORTED_PATTERN', 'FOCUS_DENIED', 'DESKTOP_BUSY', 'INVALID_QUERY', 'QUERY_FAILED', 'PASSWORD_FIELD', 'DESKTOP_QUERY_FAILED',
                            'SESSION_CLOSED', 'OPERATION_TIMEOUT', 'OPERATION_INTERRUPTED', 'OUTCOME_UNKNOWN'}
-                raise StreamError('AUTH_FAILED' if action == 'capabilities' and response.status in (401, 403) else error if error in allowed else 'REMOTE_IO')
+                fallback = 'REMOTE_OPERATION_FAILED' if action in {'desktop-read', 'desktop-write'} else 'REMOTE_IO'
+                raise StreamError('AUTH_FAILED' if action == 'capabilities' and response.status in (401, 403) else error if error in allowed else fallback)
             result = reply.get('result')
             if not isinstance(result, dict):
                 raise StreamError('INVALID_RESPONSE')
@@ -216,7 +217,8 @@ class ControllerClient:
                 connection.close()
             raise StreamError('PEER_CHANGED') from None
         except (TimeoutError, socket.timeout):
-            self.authenticated = False
+            # An I/O timeout retires this connection, not the last validated grant.
+            # Every new session still authorizes against the live server again.
             self.local.connection = None
             if 'connection' in locals() and connection:
                 connection.close()
@@ -454,7 +456,7 @@ class ControllerDesktopSocket:
         self.closed = False
 
     def settimeout(self, timeout):
-        pass  # HTTPS polls have a bounded three-second server wait/eight-second deadline.
+        pass  # The three-second server poll and HTTPS I/O have separate deadlines.
 
     def recv(self, size):
         if self.closed:

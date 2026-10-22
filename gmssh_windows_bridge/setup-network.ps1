@@ -120,7 +120,7 @@ function Set-GMSSHIPv6Sources([string]$ProgramRoot,[string]$DataRoot,[string[]]$
         if ((@(Get-GMSSHIPv6Sources $DataRoot) -join ',') -cne ($desired -join ',')) { throw 'IPv6 来源设置回读不一致。' }
     } catch {
         $failure=$_; $rollbackFailed=$false
-        try { if ($saved) { [IO.File]::WriteAllText($temporary,$oldText,[Text.UTF8Encoding]::new($false));[IO.File]::Replace($temporary,$path,$null) } } catch { $rollbackFailed=$true }
+        try { if ($saved) { [IO.File]::WriteAllText($temporary,$oldText,[Text.UTF8Encoding]::new($false));[IO.File]::Replace($temporary,$path,[NullString]::Value) } } catch { $rollbackFailed=$true }
         [array]::Reverse($changed)
         foreach ($item in $changed) {
             try {

@@ -8,6 +8,31 @@ function load(name,extra={}){
 }
 const {TransferQueue,validateRelativePath,droppedUploads}=load('transfers');
 const plain=value=>JSON.parse(JSON.stringify(value));
+test('relay errors keep a safe cause even when the socket closes immediately after its final message',async()=>{
+  const sockets=[],events=[];
+  class Socket{
+    static OPEN=1;readyState=1;listeners=new Map();
+    constructor(){sockets.push(this);}
+    addEventListener(name,listener){this.listeners.set(name,listener);}
+    send(){}
+    close(){this.readyState=3;this.listeners.get('close')?.({});}
+  }
+  const {DirectClient}=load('direct',{WebSocket:Socket,location:{origin:'http://127.0.0.1:22258'},window:{setTimeout:()=>1,clearTimeout(){}}});
+  for(const [code,expected] of [['OPERATION_TIMEOUT','OPERATION_TIMEOUT'],['private-unrecognized-cause','DESKTOP_TRANSPORT_FAILED']]){
+    const client=new DirectClient({}, {status(){},stopped(){},frame(){},peer(){},lifecycle:(state,reason)=>events.push({state,reason})});
+    client.connect('','');const socket=sockets.at(-1);
+    socket.listeners.get('message')({data:JSON.stringify({type:'error',message:'桌面传输已中断。',code})});socket.close();
+    await new Promise(resolve=>setImmediate(resolve));assert.equal(events.filter(e=>e.state==='failed').at(-1).reason,expected);client.disconnect();
+  }
+});
+test('desktop transport errors remain distinct from authentication rejection without exporting arbitrary error text',()=>{
+  const {DesktopDiagnostics}=load('diagnostics');
+  for(const connected of [false,true]){
+    const d=new DesktopDiagnostics();d.begin();d.transport();d.handshake();if(connected){d.approved('1.5.1');d.frame();}
+    d.failed('OPERATION_TIMEOUT');const snapshot=d.snapshot();assert.equal(snapshot.stages.find(s=>s.id==='desktopTransport').code,'OPERATION_TIMEOUT');assert.notEqual(snapshot.stages.find(s=>s.id==='desktopAuth').state,'failed');
+  }
+  const d=new DesktopDiagnostics();d.begin();d.failed('arbitrary-private-error');assert.ok(!JSON.stringify(d.snapshot()).includes('arbitrary-private-error'));
+});
 function queueFixture(){
   const files=new Map(),events=[],saved=[];let block;
   const worker={

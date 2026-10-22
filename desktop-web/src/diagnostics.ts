@@ -19,6 +19,9 @@ export class DesktopDiagnostics {
   frame(){this.frames++;this.lastFrame=this.clock();if(this.frames===1)this.set('firstFrame','passed','FIRST_FRAME_OK');this.set('frames','passed','FRAMES_RECEIVED');}
   failed(code='DESKTOP_TRANSPORT_FAILED'){
     const auth=this.stages.find(s=>s.id==='desktopAuth'),transport=this.stages.find(s=>s.id==='desktopTransport'),handshake=this.stages.find(s=>s.id==='desktopHandshake');
+    if(['OPERATION_TIMEOUT','REMOTE_IO','MONITOR_UNAVAILABLE','REMOTE_OPERATION_FAILED','AUTH_FAILED','ACCESS_DENIED','PEER_CHANGED','SESSION_CLOSED','CONNECTION_CLOSED'].includes(code)){
+      this.set('desktopTransport','failed',code);if(auth?.state==='passed')this.set('frames','failed',code);return;
+    }
     if(auth?.state==='passed'){this.set('frames','failed','DESKTOP_DISCONNECTED');if(!this.frames)this.set('firstFrame','failed','DESKTOP_DISCONNECTED');}
     else if(handshake?.state==='passed')this.set('desktopAuth','failed',code==='DESKTOP_LOGIN_TIMEOUT'?code:'DESKTOP_AUTH_FAILED');
     else if(transport?.state==='passed')this.set('desktopHandshake','failed',code==='DESKTOP_LOGIN_TIMEOUT'?'DESKTOP_HANDSHAKE_TIMEOUT':'DESKTOP_HANDSHAKE_FAILED');

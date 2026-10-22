@@ -1,5 +1,6 @@
 #requires -Version 5.1
 # Native file transactions; all firewall, service and account queries are fixtures.
+param([switch]$MetadataRollbackOnly)
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot '..\gmssh_windows_bridge\setup-connect.ps1')
 . (Join-Path $PSScriptRoot '..\gmssh_windows_bridge\setup-network.ps1')
@@ -30,6 +31,12 @@ function Set-NetFirewallRule{[CmdletBinding()]param($PolicyStore,$Name,$RemoteAd
  if($script:externalChange){$script:externalChange=$false;$changed=Get-Content $script:metadataPath -Raw|ConvertFrom-Json;$changed.marker='updated-by-another-operation';[IO.File]::WriteAllText($script:metadataPath,($changed|ConvertTo-Json -Depth 8))}
 }
 function Remove-NetFirewallRule{[CmdletBinding()]param($PolicyStore,$Name);Owned $Name $PolicyStore;$script:changes++;[void]$script:rules.Remove($Name)}
+$script:sourceReader=(Get-Item Function:\Get-GMSSHIPv6Sources).ScriptBlock
+$script:failMetadataReadback=$false
+function Get-GMSSHIPv6Sources{param([string]$DataRoot)
+ if($script:failMetadataReadback){$script:failMetadataReadback=$false;throw 'Synthetic metadata readback failure'}
+ & $script:sourceReader $DataRoot
+}
 try{
  foreach($p in @($program,$data)){New-Item -ItemType Directory -Path $p|Out-Null}
  'fixture'|Set-Content $script:sshd
@@ -45,6 +52,15 @@ try{
  Assert ($script:rules.Count -eq 3 -and $script:rules['GMSSH-Windows-SSH-IPv6'].LocalPort -eq 22 -and $script:rules['GMSSH-Windows-Connect-IPv6'].LocalPort -eq 22257) 'Required owned ports were not synchronized'
  Assert ((Get-Content $path -Raw|ConvertFrom-Json).marker -ceq 'retain-other-settings') 'Unrelated settings were lost'
  $original=[IO.File]::ReadAllText($path);$oldSources=$script:rules['GMSSH-Windows-Connect-IPv6'].RemoteAddress -join ','
+ $script:failMetadataReadback=$true;$blocked=$false;$failure=''
+ try{Set-GMSSHIPv6Sources $program $data @('2001:db8:20::4')}catch{$blocked=$true;$failure=$_.Exception.Message}
+ Assert ($blocked -and $failure -ceq 'Synthetic metadata readback failure') 'Post-save failure was hidden by a rollback error'
+ Assert ([IO.File]::ReadAllText($path) -ceq $original) 'Post-save failure did not restore original metadata bytes'
+ foreach($name in @('GMSSH-Windows-Connect-IPv6','GMSSH-Windows-SSH-IPv6')){
+  Assert (($script:rules[$name].RemoteAddress -join ',') -ceq $oldSources -and $script:rules[$name].Enabled -ceq 'True') 'Post-save failure did not restore original firewall scope'
+ }
+ Assert ($script:rules.Count -eq 3 -and $script:rules['foreign-rule'].Enabled -ceq 'True') 'Post-save failure changed an unrelated rule'
+ if($MetadataRollbackOnly){'PASS: real metadata replace/readback failure restores exact original bytes and fixture firewall scopes; no system configuration changed.';return}
  $lock=[IO.File]::Open($path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
  try{$blocked=$false;try{Set-GMSSHIPv6Sources $program $data @('2001:db8:20::4')}catch{$blocked=$true};Assert $blocked 'Locked metadata was overwritten'}finally{$lock.Dispose()}
  Assert ([IO.File]::ReadAllText($path) -ceq $original -and ($script:rules['GMSSH-Windows-Connect-IPv6'].RemoteAddress -join ',') -ceq $oldSources) 'Metadata write failure did not restore firewall scope'

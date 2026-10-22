@@ -1,5 +1,6 @@
 import { Operations, type FileEntry } from './operations';
 import { TransferQueue, droppedUploads, selectedUploads, validateRelativePath, type TransferTask, type TransferCollection } from './transfers';
+import { transferStageMessage } from './native-transfers';
 
 const get=<T extends HTMLElement>(id:string)=>document.getElementById(id) as T;
 const size=(bytes:number)=>bytes>=1024**2?(bytes/1024**2).toFixed(1)+' MiB':bytes>=1024?(bytes/1024).toFixed(1)+' KiB':bytes+' B';
@@ -24,7 +25,7 @@ export function installFilePanel(options:{token:()=>string;operations:Operations
   type Location={path:string;query:string;order:string;scroll:number;outerScroll:number};
   const history:Location[]=[];let historyIndex=-1;
   const pendingDrops=new Set<AbortController>();
-  const rows=new Map<number,{root:HTMLElement;name:HTMLElement;detail:HTMLElement;bar:HTMLProgressElement;cancel:HTMLButtonElement;retry:HTMLButtonElement;rename:HTMLInputElement;renameButton:HTMLButtonElement;pause:HTMLButtonElement;description:HTMLElement}>();
+  const rows=new Map<number,{root:HTMLElement;name:HTMLElement;detail:HTMLElement;bar:HTMLProgressElement;cancel:HTMLButtonElement;retry:HTMLButtonElement;rename:HTMLInputElement;renameButton:HTMLButtonElement;pause:HTMLButtonElement;copy:HTMLButtonElement;description:HTMLElement}>();
   const filters=document.createElement('div'),search=document.createElement('input'),status=document.createElement('select'),matches=document.createElement('p');filters.className='transfer-filters';
   search.type='search';search.placeholder='搜索文件名或路径';search.maxLength=256;search.setAttribute('aria-label','搜索此设备的任务');status.setAttribute('aria-label','筛选此设备的任务状态');
   for(const [value,label] of [['all','全部状态'],['active','进行中与排队'],['attention','需要处理'],['paused','已暂停'],['failed','未完成'],['done','已完成'],['cancelled','已取消']]){const option=document.createElement('option');option.value=value;option.textContent=label;status.append(option);}
@@ -78,9 +79,10 @@ export function installFilePanel(options:{token:()=>string;operations:Operations
       finally{creating=false;if(!disposed){updateSelection();if(options.closeBrowseAfterUse&&!browsing)options.operations.close();}}
     })();
   };
+  const copyStatus=document.createElement('p');copyStatus.className='transfer-hint';copyStatus.setAttribute('role','status');copyStatus.hidden=true;get('transfer-list').before(copyStatus);
   const tell=(text:string)=>{note.textContent=text;};
   const fail=(error:unknown)=>{get('file-feedback').textContent=error instanceof Error?error.message:String(error);get('file-feedback').hidden=false;};
-  const run=(action:()=>void|Promise<void>)=>{if(disposed)return;get('file-feedback').hidden=true;try{Promise.resolve(action()).catch(fail);}catch(error){fail(error);}};
+  const run=(action:()=>void|Promise<void>)=>{if(disposed)return;get('file-feedback').hidden=true;copyStatus.hidden=true;try{Promise.resolve(action()).catch(fail);}catch(error){fail(error);}};
   const runWrite=(action:()=>void|Promise<void>)=>run(()=>{if(!writable())throw Error('此授权仅允许读取文件，上传不可用。');return action();});
   const join=(name:string)=>computer()?name+'/':path.replace(/\/$/,'')+'/'+name;
   const save=(file:{blob:Blob;name:string})=>{const url=URL.createObjectURL(file.blob),anchor=document.createElement('a');anchor.href=url;anchor.download=file.name;anchor.click();setTimeout(()=>URL.revokeObjectURL(url),60_000);};
@@ -176,7 +178,8 @@ export function installFilePanel(options:{token:()=>string;operations:Operations
         const rename=document.createElement('input');rename.setAttribute('aria-label','重试文件名');rename.value=task.relative?.split('/').pop()||task.name;rename.maxLength=255;
         const renameButton=button('改名重试',()=>run(()=>queue.retry(task.id,rename.value)));
         const expanded=document.createElement('details'),summary=document.createElement('summary'),description=document.createElement('p');expanded.className='transfer-details';summary.textContent='详细信息';expanded.append(summary,description);
-        actions.append(pause,cancel,retry,rename,renameButton);root.append(name,detail,bar,expanded,actions);view={root,name,detail,bar,cancel,retry,rename,renameButton,pause,description};rows.set(task.id,view);
+        const copy=button('复制诊断',()=>run(async()=>{await queue.copyDiagnostic?.(task.id);copyStatus.textContent='诊断已复制，可粘贴给维护者。';copyStatus.hidden=false;}));
+        actions.append(pause,cancel,retry,rename,renameButton,copy);root.append(name,detail,bar,expanded,actions);view={root,name,detail,bar,cancel,retry,rename,renameButton,pause,copy,description};rows.set(task.id,view);
       }
       view.name.textContent=(task.kind==='download'?'↓ ':'↑ ')+task.name;view.name.title=task.name;view.root.dataset.state=task.status;
       const active=task.status==='running'||task.status==='committing',rate=active&&task.phase==='receiving'?task.bytes/Math.max(.1,(Date.now()-task.started)/1000):0;
@@ -184,6 +187,9 @@ export function installFilePanel(options:{token:()=>string;operations:Operations
       view.detail.textContent=active?(task.phase==='copying'?'正在兼容保存（完成前请勿打开目标文件） · '+size(task.copyBytes||0)+' / '+size(task.size):task.phase==='saving'?'正在校验并保存到目标磁盘':task.phase==='waiting'?'等待前面的文件传输':task.phase==='verifying'?'正在核对文件内容与已传部分'+(task.verifyTotal?' · '+size(task.verifyBytes||0)+' / '+size(task.verifyTotal):''):task.phase==='preparing'?'正在打包文件夹 · 已读取 '+size(task.bytes):size(task.bytes)+' / '+size(task.size)+(rate?' · '+size(Math.round(rate))+'/s'+(remaining?' · 约 '+remaining+' 秒':''):'')):task.message||({queued:'排队中',paused:'已暂停',done:'完成',failed:'传输未完成',cancelled:'已取消'} as Record<string,string>)[task.status];
       view.bar.value=task.status==='done'?100:task.phase==='verifying'&&task.verifyTotal?100*(task.verifyBytes||0)/task.verifyTotal:task.phase==='copying'&&task.size>0?100*(task.copyBytes||0)/task.size:task.size>0&&task.phase!=='preparing'?100*task.bytes/task.size:0;
       view.bar.setAttribute('aria-label',task.name+(task.phase==='verifying'?' 的校验进度':' 的传输进度'));view.description.textContent=(task.source?'来源：'+task.source+'\n':'')+(task.target?'目标：'+task.target+'\n':'')+(task.createdAt?'创建时间：'+new Date(task.createdAt).toLocaleString()+'\n':'')+(task.code?'状态代码：'+task.code+'\n':'')+(task.sha256?'SHA-256：'+task.sha256:'')+(!queue.native?'远端路径：'+task.path:'');
+      if(active&&task.phase==='verifying'&&!task.verifyTotal&&transferStageMessage(task.stage))view.detail.textContent=transferStageMessage(task.stage);
+      view.copy.hidden=!queue.copyDiagnostic||!task.diagnostic;view.copy.setAttribute('aria-label','复制诊断 · '+task.name);
+      if(task.diagnostic)view.description.textContent+='\n上次失败阶段：'+(transferStageMessage(task.diagnostic.stage)||task.diagnostic.stage)+'\n上次错误：'+(task.diagnostic.code||'未知')+(task.diagnostic.at?'\n发生时间：'+new Date(task.diagnostic.at).toLocaleString():'');
       view.pause.hidden=!queue.pause||!['queued','running','committing'].includes(task.status);view.pause.setAttribute('aria-label','暂停 · '+task.name);view.cancel.hidden=!task.cleanupPending&&!['queued','running','committing','paused','failed'].includes(task.status);view.cancel.textContent=task.cleanupPending?'清理临时文件':task.status==='failed'?'跳过':'取消';
       view.cancel.setAttribute('aria-label',view.cancel.textContent+' · '+task.name);view.retry.setAttribute('aria-label',(queue.native?'继续':'重试')+' · '+task.name);view.renameButton.setAttribute('aria-label','改名重试 · '+task.name);view.rename.setAttribute('aria-label','重试文件名 · '+task.name);
       view.retry.hidden=!['failed','cancelled','paused'].includes(task.status);view.retry.disabled=view.renameButton.disabled=task.kind==='upload'&&!writable();view.retry.textContent=queue.native?'继续':'重试';const conflict=task.kind==='upload'&&task.status==='failed'&&task.message.includes('同名');view.rename.hidden=view.renameButton.hidden=!conflict;

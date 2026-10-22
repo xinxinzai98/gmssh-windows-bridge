@@ -1,6 +1,8 @@
 # 发布检查
 
-## 0.4.0a34 Alpha 候选
+## 0.4.0a37 Alpha 候选
+
+当前整理对象为 0.4.0a37，尚未创建公开 Release。公开附件仍为 0.4.0a8；本地构建与净化检查不代表 GitHub CI 已通过。功能、设备实测和已知限制统一见[候选说明](release-0.4.0a37.md)。本轮不修改现有设备或日常运行环境。
 
 普通使用者入口见[安装与接入](getting-started.md)。源码留在 Git；可执行安装包、源码 ZIP、wheel 与 SHA-256 清单放到 GitHub 的Alpha 预发布 Release。发布范围只包含项目源码目录和新构建的通用附件，保留开发者现有环境。
 
@@ -24,7 +26,7 @@ python tools/build_share_bundle.py --wheel /path/to/current-wheel.whl \
   --output /path/to/new-share-folder
 ```
 
-构建 wheel 应使用干净临时源码目录，避免旧 `build/lib` 资源残留。公共清单只记录版本、相对文件名和校验值；设备验收的截图、真实连接文件与本机路径留在仓库外。
+构建 wheel 应将允许导出的源码放在本机系统临时目录中，避开云同步目录，避免旧 `build/lib` 及同步冲突副本进入包。前端先在该目录重建并核对，再生成 wheel；导出器仍需逐文件拒绝多余内容。公共清单只记录版本、相对文件名和校验值；设备验收的截图、真实连接文件与本机路径留在仓库外。
 
 0.4.0a10 的接入组件由 `tools/windows_connect/` 的标准库 Go 源码编译，构建时核对可执行文件与源码摘要。公开包不得携带 `connect-meta.dat`、`connect-password.dat`、`connect-identity.dat` 或真实连接码。升级只替换程序文件，保留私有状态；先停止本程序的接入任务，失败时回退程序、任务和新增防火墙规则。连接码实机验收与此前的 0.4.0a9 验收分开记录。
 
@@ -64,7 +66,7 @@ Windows 内部引擎保留 RustDesk 的原始二进制，不声称自己实现�
 ```bash
 python -m unittest discover -s tests -v
 python -m pip wheel . --no-deps --wheel-dir dist
-python -m pip install --force-reinstall --no-deps dist/gmssh_windows_bridge-0.4.0a34-py3-none-any.whl
+python -m pip install --force-reinstall --no-deps dist/gmssh_windows_bridge-0.4.0a37-py3-none-any.whl
 python -I -m gmssh_windows_bridge --help
 python -I -m gmssh_windows_bridge --version
 ```
@@ -72,3 +74,11 @@ python -I -m gmssh_windows_bridge --version
 本项目代码许可证为 MIT。构建、检查和本地文件交付与 GitHub 推送、创建 tag/Release 分开进行；远端 CI 的结果须从实际运行记录确认。
 
 CI 的 Linux Go 任务还会安装本项目的 Python 桌面依赖，并运行 `python tests/ai_controller_integration.py --go go`，检查真实固定证书 HTTPS 上的两端协议。它只启动本机回环夹具，使用临时合成文件和授权，不连接设备、不读取钥匙串，也不代替 Windows 图形流程或设备权限撤销的验收。
+
+## 候选交付清单
+
+- `GMSSH-Windows-Setup-0.4.0a37.exe`：通用局域网完整安装器，包含已核验的离线 OpenSSH 与固定桌面引擎，缺少 VC++ 时从微软获取；无指定电脑或预设连接。
+- `GMSSH-Mac-Setup-0.4.0a37.zip`：本项目 wheel、首装命令、固定依赖和使用说明；不包含原版 GMSSH、发布者的完整 `.app` 或设备配置。已有同名增强端时首装脚本会停止，不覆盖现有应用。
+- `GMSSH-Source-0.4.0a37.zip`、同版本 wheel、说明和 `SHA256SUMS`：从允许的源码边界导出，逐项核对版本及内容。
+
+从干净源码目录重建 Web 资源，核对其与提交候选相同，再构建 wheel 和 Windows helper。安装器与源码、离线组件、桌面引擎及隐私检查都通过后，才把附件列为本地可交付候选。源码改动后须重新导出，不能只换旧文件名或校验值。提交、推送、创建标签与 Release 仍按各自授权执行；当前候选没有可宣称通过的远端 CI 运行。

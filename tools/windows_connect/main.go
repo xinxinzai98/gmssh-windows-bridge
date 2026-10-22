@@ -142,12 +142,18 @@ func run() error {
 			return errUnavailable
 		}
 		defer listener.Close()
-		server := &http.Server{Handler: s.handler(), TLSConfig: configuration, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 8 * time.Second, WriteTimeout: 8 * time.Second, IdleTimeout: 5 * time.Second, MaxHeaderBytes: 8192, ErrorLog: log.New(io.Discard, "", 0)}
-		return server.Serve(tls.NewListener(listener, configuration))
+		return serveConnections(listener, s.handler(), configuration)
 	default:
 		return errUnavailable
 	}
 	return nil
+}
+
+func serveConnections(listener net.Listener, handler http.Handler, configuration *tls.Config) error {
+	// net/http also uses the smallest header/read/write budget for TLS handshakes.
+	// Five seconds cut off real LAN handshakes and requests during short stalls.
+	server := &http.Server{Handler: handler, TLSConfig: configuration, ReadHeaderTimeout: 15 * time.Second, ReadTimeout: 20 * time.Second, WriteTimeout: 20 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 8192, ErrorLog: log.New(io.Discard, "", 0)}
+	return server.Serve(tls.NewListener(listener, configuration))
 }
 
 func main() {

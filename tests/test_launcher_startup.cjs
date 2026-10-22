@@ -251,6 +251,18 @@ test('untrusted pages cannot read enrollment clipboard, and invalid clipboard co
   result.app.emit('will-quit');
 });
 
+test('copying a file diagnostic is restricted to native home and uses the redacted report action',async()=>{
+  const result=await launch({nativeTransfers:true});
+  result.ipcMain.handle('render-to-main',async()=>({multiPort:5000}));
+  const handler=result.handlers.get('render-to-main'),request={type:'gmssh-transfer',data:{action:'copy-diagnostic',machineId:'1'.repeat(32),data:{id:4}}};
+  try{
+    assert.equal((await handler({sender:{getURL:()=> 'https://untrusted.invalid/'}},request)).status,'error');assert.equal(result.copies.length,0);
+    const response=await handler({sender:{getURL:()=> 'file:///synthetic/app.asar/dist/index.html#/home'}},request);
+    assert.equal(response.status,'ok');assert.equal(response.data.copied,true);assert.equal(result.nativeCalls.at(-1).action,'diagnostic');assert.equal(result.nativeCalls.at(-1).data.id,4);
+    assert.deepEqual(result.copies,['{}']);assert.equal(result.clipboardReads(),0);
+  }finally{result.app.emit('will-quit');}
+});
+
 test('native transfer IPC rejects untrusted or malformed requests before choosing any local file',async()=>{
   const result=await launch({pairingOnly:true});result.ipcMain.handle('render-to-main',async()=>({multiPort:22200}));const invoke=result.handlers.get('render-to-main');
   for(const sender of [undefined,{getURL:()=> 'https://untrusted.invalid/'}])assert.equal((await invoke({sender},{type:'gmssh-transfer',data:{action:'hello',machineId:null,data:{}}})).code,'UNTRUSTED_PAGE');
