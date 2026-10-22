@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="https://github.com/xinxinzai98/gmssh-windows-bridge/releases/tag/v0.4.0a8">下载已发布 Alpha</a> ·
-  <a href="docs/release-0.4.0a37.md">0.4a37 候选说明</a> ·
+  <a href="docs/release-0.4.0a38.md">0.4a38 收尾候选</a> ·
   <a href="docs/getting-started.md">安装指南</a> ·
   <a href="docs/cli.md">CLI 文档</a> ·
   <a href="docs/upgrade-plan.md">升级方案</a> ·
@@ -17,7 +17,7 @@
 
 在 GMSSH / 极目 Linux 桌面中统一使用 Windows 的**资源监控、PowerShell、文件互传和远程桌面**。Windows 端提供一体化后台服务与托盘，macOS 端提供增强设备列表和桌面工作区，并保留原有 Linux 设备入口。
 
-> **已发布安装包：0.4.0a8 · Alpha。当前候选：0.4.0a37 · 尚未发布。** 候选包含文件恢复诊断和桌面超时自动恢复；连续零掉线仍未验收通过。本项目是非官方兼容扩展，基于已验收的 GMSSH 2.0.4。下方旧版下载包不包含候选新增功能；安装、已验项目与限制见[候选说明](docs/release-0.4.0a37.md)、[安装指南](docs/getting-started.md)及[验证记录](docs/validation.md)。
+> **已发布安装包：0.4.0a8 · Alpha。当前候选：0.4.0a38 · 尚未发布。** 本轮只收尾既有功能，修复桌面切换时的迟到事件和失败状态。针对一台反复超时的 Wi-Fi 测试机，ax/ac 往返对照支持采用该机的 ac 兼容设置；临时只读复测后，同机原生 Mac 客户端的持续连接、文件中心后台保持及完全退出重开自动连接均通过。后续修复监控并发占满时的立即拒绝，并补齐采集失败诊断，同机串行和并发查询对照通过。其他设备及未覆盖项目保留各自验收边界，保持 Alpha。本项目是非官方兼容扩展，基于已验收的 GMSSH 2.0.4。下方旧版下载包不包含候选新增功能；安装、已验项目与限制见[候选说明](docs/release-0.4.0a38.md)、[安装指南](docs/getting-started.md)及[验证记录](docs/validation.md)。
 
 ## 主要功能
 
@@ -37,7 +37,7 @@
 
 ## 下载
 
-从 [Releases](https://github.com/xinxinzai98/gmssh-windows-bridge/releases) 获取已经发布的安装文件。**下表仍是旧版 0.4.0a8；0.4.0a37 候选没有公开下载地址。** 不要按新候选说明假定旧包具备全部功能。
+从 [Releases](https://github.com/xinxinzai98/gmssh-windows-bridge/releases) 获取已经发布的安装文件。**下表仍是旧版 0.4.0a8；0.4.0a38 候选没有公开下载地址。** 不要按新候选说明假定旧包具备全部功能。
 
 | 平台 / 内容 | 下载 | 说明 |
 |---|---|---|
@@ -50,7 +50,7 @@
 
 1. **安装 Windows 服务端。** 运行安装程序，完成管理员提示并设置连接密码。安装器会创建专用本地管理员账号 `gmssh`、配置后台服务，并允许同一子网访问 SSH 22 端口。
 2. **安装 Mac 控制端。** 先安装官方 GMSSH 2.0.4，再解压 Mac 安装包并运行 `Install GMSSH.command`。安装器自动准备独立 Python 环境；首次安装需要访问 GitHub 和 PyPI。
-3. **导入设备。** 0.4.0a37 候选统一从 Mac 首页“加号 → 添加机器 → Windows”进入，可粘贴独立授权码、扫描二维码、导入 `GMSSH-connection.json` 或手动填写。首次连接核对设备身份；旧版 0.4.0a8 使用其原有“接入 Windows”入口。
+3. **导入设备。** 当前候选统一从 Mac 首页“加号 → 添加机器 → Windows”进入，可粘贴独立授权码、扫描二维码、导入 `GMSSH-connection.json` 或手动填写。首次连接核对设备身份；旧版 0.4.0a8 使用其原有“接入 Windows”入口。
 
 完成后，从同一设备卡片进入监控、终端、文件和桌面。网络以局域网互通为基础，无需额外 VPN。详细操作、官方基座下载地址和故障处理见[安装与接入](docs/getting-started.md)。
 

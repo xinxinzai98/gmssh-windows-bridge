@@ -61,9 +61,12 @@ export class DirectClient {
       this.diagnostics.failed(code);this.events.lifecycle?.('failed',code||'DESKTOP_FAILED');this.disconnect(true);
       this.events.status(error instanceof Error ? error.message : "连接失败。");
     };
-    socket.addEventListener("open", () => socket.send(JSON.stringify({ password: sshPassword,
+    socket.addEventListener("open", () => {
+      if (generation !== this.#generation || socket.readyState !== WebSocket.OPEN) return;
+      socket.send(JSON.stringify({ password: sshPassword,
       ...(options.saved && !desktopPassword ? { saved: true } : {}),
-      ...(options.token ? { token: options.token } : {}) })), { once: true });
+      ...(options.token ? { token: options.token } : {}) }));
+    }, { once: true });
     socket.addEventListener("message", event => {
       // Preserve a final relay failure before the following close event; video
       // decoding may still be queued when the close event arrives.
@@ -95,7 +98,9 @@ export class DirectClient {
           if (result.type === "tailscale_ready") { this.diagnostics.transport();this.events.status("Tailscale 设备已核对，等待 RustDesk 握手；留空密码时请在 Windows 端确认。"); return; }
           throw new Error(result.type === "error" && typeof result.message === "string" ? result.message : "无效的传输响应。");
         }
-        const bytes=await frameBytes(event.data);this.diagnostics.received(bytes.length);await this.#receive(bytes, generation);
+        const bytes=await frameBytes(event.data);
+        if (generation !== this.#generation) return;
+        this.diagnostics.received(bytes.length);await this.#receive(bytes, generation, fail);
       }).catch(fail);
     });
     socket.addEventListener("error", () => fail(new Error("本地桌面服务连接失败。")));
@@ -104,7 +109,7 @@ export class DirectClient {
     this.events.status(transport === "monitor" ? "正在等待这台机器的监控认证…" : transport === "tailscale" ? "正在核对 Tailscale 设备…" : "正在验证 Windows SSH…");
   }
 
-  async #receive(bytes: Uint8Array, generation: number): Promise<void> {
+  async #receive(bytes: Uint8Array, generation: number, fail: (error: unknown, code?: string) => void): Promise<void> {
     if (bytes.length > LIMITS.websocketFrame) throw new Error("远端数据帧过大。");
     const fields = topLevelFieldNumbers(bytes);
     if(fields.includes(28)){
@@ -151,7 +156,7 @@ export class DirectClient {
       const renderer = await Vp9CanvasRenderer.create(this.canvas, () => {
         if (generation !== this.#generation) return;
         this.diagnostics.frame();this.#send({ misc: { videoReceived: true } }); this.events.frame();
-      }, error => { if (generation === this.#generation) { this.diagnostics.failed();this.disconnect(true); this.events.status(error.message); } });
+      }, fail);
       if (generation !== this.#generation) { renderer.close(); return; }
       this.#renderer = renderer;
       renderer.setDisplay(display.width, display.height);

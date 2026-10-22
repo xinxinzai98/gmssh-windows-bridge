@@ -61,6 +61,8 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
   const style = document.createElement('style'); style.textContent = css; document.head.append(style);
   let root, host, selected, fingerprint = '', timer, noticeTimer, disposed = false, infoBusy = false, infoFrame, infoReady, infoOrigin, infoRequestId = 0, cancelInfo, filesTimer, contextMenu;
   const metadata = new Map(), systemInfo = new Map(), currentRecords = new Map(), routeInfo = new Map(), scrollPositions = {list:{top:0,left:0},card:{top:0,left:0}};
+  const infoCodes = new Set(['OPERATION_TIMEOUT','QUERY_FAILED','REMOTE_IO','ACCESS_DENIED','AUTH_FAILED','PEER_CHANGED','INVALID_RESPONSE','MONITOR_UNAVAILABLE','OPERATIONS_UNAVAILABLE','LOCAL_AUTH_FAILED','SYSTEM_INFO_TIMEOUT','SYSTEM_INFO_CHANNEL_CLOSED']);
+  const infoStages = new Set(['frame','connect','authorize','query']);
   let routeQuery='',routeSampled=0,routeBusy=false;
   const fitWorkspace = () => { if (root?.getClientRects().length) root.style.height = Math.max(0, window.innerHeight - Math.max(0, root.getBoundingClientRect().top)) + 'px'; };
   const make = (tag, className, text) => { const node = document.createElement(tag); node.className = className || ''; if (text !== undefined) node.textContent = text; return node; };
@@ -288,7 +290,11 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
       const rate=previous&&seconds>0&&network.received>=previous.received&&network.sent>=previous.sent;
       const traffic=make('small','',rate?'↓ '+size((network.received-previous.received)/seconds)+'/s  ↑ '+size((network.sent-previous.sent)/seconds)+'/s':'已接收 '+size(network.received)+' · 已发送 '+size(network.sent));traffic.title=rate?'最近 '+Math.round(seconds)+' 秒的平均速率':'网卡启动以来的累计流量';box.append(traffic);pane.append(box);}
     if(record.windows&&!info.network)pane.append(make('p','gm-muted',info.unavailable?'配置与网络信息暂不可用，会自动重试。':'正在读取配置与网络信息…'));
-    if(info.sampledAt)pane.append(make('small','gm-muted',(info.unavailable?'本次采集失败，上次更新 ':'更新于 ')+new Date(info.sampledAt).toLocaleTimeString()));
+    if(info.sampledAt||info.unavailable){
+      const reason=['OPERATION_TIMEOUT','SYSTEM_INFO_TIMEOUT'].includes(info.failure?.code)?'本次采集超时':info.failure?.code==='MONITOR_UNAVAILABLE'?'等待监控连接':['ACCESS_DENIED','AUTH_FAILED','LOCAL_AUTH_FAILED'].includes(info.failure?.code)?'请检查设备信息读取授权':'本次采集失败';
+      const note=make('small','gm-muted',info.unavailable?reason+'，'+(info.sampledAt?'保留上次数据，更新于 '+new Date(info.sampledAt).toLocaleTimeString():'尚无成功采样'):'更新于 '+new Date(info.sampledAt).toLocaleTimeString());
+      if(info.failure)note.title='采集诊断：'+info.failure.code+' · '+info.failure.stage+' · '+info.failure.elapsedMs+' ms';pane.append(note);
+    }
     else if(Number.isFinite(info.lastUpdateTime)&&info.lastUpdateTime>0)pane.append(make('small','gm-muted','更新于 '+new Date(info.lastUpdateTime*1000).toLocaleTimeString()));
     if(Array.isArray(info.disks)&&info.disks.length&&(!record.windows||info.disks.length>1)){
       pane.append(make('h3','','磁盘分区'));
@@ -376,13 +382,13 @@ window.installGMSSHHome = function ({ viewerUrl, machineId, target, targetPort =
         const requestId=++infoRequestId;
         const done=(error,value)=>{clearTimeout(timeout);cancelInfo=undefined;window.removeEventListener('message',receive);error?reject(error):resolve(value);};
         const receive=event=>{if(event.source!==infoFrame?.contentWindow||event.origin!==source.origin||event.data?.type!=='gmssh-system-info'||event.data.requestId!==requestId)return;
-          const reply=event.data;reply.ok&&reply.info&&typeof reply.info==='object'?done(null,reply.info):done(Error());};
-        const timeout=setTimeout(()=>done(Error()),15000);cancelInfo=()=>done(Error());window.addEventListener('message',receive);
+          const reply=event.data;if(reply.ok&&reply.info&&typeof reply.info==='object')done(null,reply.info);else done(Object.assign(Error('设备信息查询未完成'),{code:infoCodes.has(reply.code)?reply.code:'QUERY_FAILED',stage:infoStages.has(reply.stage)?reply.stage:'query',elapsedMs:Number.isFinite(reply.elapsedMs)?Math.min(60000,Math.max(0,reply.elapsedMs)):0}));};
+        const timeout=setTimeout(()=>done(Object.assign(Error('设备信息页面响应超时'),{code:'SYSTEM_INFO_TIMEOUT',stage:'frame',elapsedMs:15000})),15000);cancelInfo=()=>done(Error());window.addEventListener('message',receive);
         infoReady.then(()=>{if(!disposed&&infoBusy&&requestId===infoRequestId)infoFrame.contentWindow.postMessage({type:'gmssh-system-info-request',token:binding.accessToken,requestId},source.origin);});
       });
       if(disposed)return;
       const previous=systemInfo.get(sampledId);systemInfo.set(sampledId,{...info,sampledAt:Date.now(),previous:previous?{sampledAt:previous.sampledAt,network:previous.network}:undefined});fingerprint='';render();
-    }catch{if(!disposed){systemInfo.set(sampledId,{...systemInfo.get(sampledId),unavailable:true});fingerprint='';render();}}finally{infoBusy=false;if(!disposed&&selected!==sampledId)void refreshSystemInfo();}
+    }catch(error){if(!disposed){systemInfo.set(sampledId,{...systemInfo.get(sampledId),unavailable:true,failure:{code:infoCodes.has(error?.code)?error.code:'QUERY_FAILED',stage:infoStages.has(error?.stage)?error.stage:'query',elapsedMs:Number.isFinite(error?.elapsedMs)?Math.min(60000,Math.max(0,error.elapsedMs)):0}});fingerprint='';render();}}finally{infoBusy=false;if(!disposed&&selected!==sampledId)void refreshSystemInfo();}
   }
   const observer=new MutationObserver(records=>{if(records.every(record=>root?.contains(record.target)))return;clearTimeout(timer);timer=setTimeout(render,100);});
   observer.observe(document.body,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['hidden','class','disabled','src']});render();

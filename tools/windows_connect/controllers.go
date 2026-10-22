@@ -389,16 +389,21 @@ func (b *controllerBroker) request(c controller, r controllerRequest, address st
 		if err != nil {
 			return nil, err
 		}
-		select {
-		case b.infoSlots <- struct{}{}:
-		default:
-			return nil, errUnavailable
-		}
-		defer func() { <-b.infoSlots }()
 		b.mu.Unlock()
 		defer b.mu.Lock()
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
+		// Fast/slow metrics and device details can arrive together. Wait within
+		// the same deadline, without holding up desktop or permission requests.
+		select {
+		case b.infoSlots <- struct{}{}:
+		case <-ctx.Done():
+			return nil, aiFailure("OPERATION_TIMEOUT")
+		}
+		defer func() { <-b.infoSlots }()
+		if ctx.Err() != nil {
+			return nil, aiFailure("OPERATION_TIMEOUT")
+		}
 		body, err := b.readInfo(ctx, file, prefix)
 		if err != nil {
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {

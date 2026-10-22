@@ -1,9 +1,9 @@
 const test=require('node:test'),assert=require('node:assert/strict'),path=require('node:path'),vm=require('node:vm');
 const {File,Blob}=require('node:buffer');
 const esbuild=require('../desktop-web/node_modules/esbuild');
-function load(name,extra={}){
-  const result=esbuild.buildSync({entryPoints:[path.join(__dirname,'../desktop-web/src/'+name+'.ts')],bundle:true,platform:'node',format:'cjs',write:false});
-  const scope={module:{exports:{}},File,Blob,AbortController,TextEncoder,ArrayBuffer,URL,setTimeout,clearTimeout,window:{setTimeout},...extra};
+function load(name,extra={},external=[]){
+  const result=esbuild.buildSync({entryPoints:[path.join(__dirname,'../desktop-web/src/'+name+'.ts')],bundle:true,platform:'node',format:'cjs',write:false,external});
+  const scope={module:{exports:{}},File,Blob,AbortController,TextEncoder,TextDecoder,ArrayBuffer,URL,setTimeout,clearTimeout,window:{setTimeout},...extra};
   vm.runInNewContext(result.outputFiles[0].text,scope);return scope.module.exports;
 }
 const {TransferQueue,validateRelativePath,droppedUploads}=load('transfers');
@@ -32,6 +32,60 @@ test('desktop transport errors remain distinct from authentication rejection wit
     d.failed('OPERATION_TIMEOUT');const snapshot=d.snapshot();assert.equal(snapshot.stages.find(s=>s.id==='desktopTransport').code,'OPERATION_TIMEOUT');assert.notEqual(snapshot.stages.find(s=>s.id==='desktopAuth').state,'failed');
   }
   const d=new DesktopDiagnostics();d.begin();d.failed('arbitrary-private-error');assert.ok(!JSON.stringify(d.snapshot()).includes('arbitrary-private-error'));
+});
+function directFixture(){
+  const sockets=[],events=[],renderers=[];
+  class Socket{
+    static OPEN=1;readyState=1;sent=[];listeners=new Map();
+    constructor(){sockets.push(this);}
+    addEventListener(name,handler){this.listeners.set(name,handler);}
+    send(value){assert.equal(this.readyState,Socket.OPEN,'closed sockets must not receive credentials or frames');this.sent.push(value);}
+    close(){this.readyState=3;this.listeners.get('close')?.({});}
+    deliver(data){this.listeners.get('message')({data});}
+  }
+  const decoder={Vp9CanvasRenderer:{create(canvas,frame,error){const renderer={frame,error,closed:false,setDisplay(){},decode(){},close(){this.closed=true;}};renderers.push(renderer);return renderer;}}};
+  const {DirectClient}=load('direct',{WebSocket:Socket,location:{origin:'http://127.0.0.1:22258'},crypto:require('node:crypto').webcrypto,
+    window:{setTimeout:()=>1,clearTimeout(){}},require(name){assert.equal(name,'../vendor/video');return decoder;}},['../vendor/video']);
+  const {Message}=load('../vendor/generated/kessoku_wire');
+  const encode=value=>Message.encode(Message.fromPartial(value)).finish();
+  const client=new DirectClient({}, {status(){},stopped(){},frame(){},peer(){},lifecycle:(state,reason)=>events.push({state,reason})});
+  const flush=()=>new Promise(resolve=>setImmediate(resolve));
+  async function connected(){
+    client.connect('','');const socket=sockets.at(-1);
+    socket.deliver(encode({hash:{salt:'synthetic-salt',challenge:'synthetic-challenge'}}));await flush();
+    socket.deliver(encode({loginResponse:{peerInfo:{hostname:'LAB-PC',platform:'Windows',version:'1.5.1',currentDisplay:0,displays:[{x:0,y:0,width:1280,height:720,online:true}]}}}));await flush();
+    assert.equal(client.connected,true);return socket;
+  }
+  return {client,sockets,events,renderers,encode,flush,connected};
+}
+test('a delayed binary frame from a discarded connection cannot send into or update the new connection',async()=>{
+  const h=directFixture();let release,started;
+  const reading=new Promise(resolve=>{started=resolve;});
+  class DelayedBlob extends Blob{arrayBuffer(){started();return new Promise(resolve=>{release=resolve;});}}
+  try{
+    h.client.connect('','');h.sockets.at(-1).deliver(new DelayedBlob());await reading;
+    h.client.connect('','');const current=h.sockets.at(-1),before=plain(h.client.diagnostics.snapshot());
+    release(Uint8Array.from(h.encode({testDelay:{time:1n,fromClient:false}})).buffer);await h.flush();
+    assert.equal(current.sent.length,0,'the old ping must not be echoed on the replacement socket');
+    assert.deepEqual(plain(h.client.diagnostics.snapshot()),before);
+    current.deliver(h.encode({testDelay:{time:2n,fromClient:false}}));await h.flush();
+    assert.equal(current.sent.length,1,'fresh frames on the current socket still work');
+  }finally{h.client.disconnect();}
+});
+test('a late socket-open callback after disconnect does not send saved credentials',()=>{
+  const h=directFixture();h.client.connect('synthetic-password','');const socket=h.sockets.at(-1);h.client.disconnect();
+  assert.doesNotThrow(()=>socket.listeners.get('open')());assert.equal(socket.sent.length,0);
+});
+test('a decoder failure ends the connected lifecycle exactly once and stale decoder errors stay ignored',async()=>{
+  const h=directFixture();
+  try{
+    await h.connected();const renderer=h.renderers.at(-1);renderer.error(Error('synthetic decoder failure'));await h.flush();
+    assert.equal(h.client.connected,false);assert.equal(renderer.closed,true);
+    assert.equal(h.events.filter(event=>event.state==='failed').length,1);
+    assert.equal(h.events.at(-1).state,'failed');
+    h.client.connect('','');const count=h.events.length;renderer.error(Error('old decoder callback'));await h.flush();
+    assert.equal(h.events.length,count);assert.equal(h.events.at(-1).state,'connecting');
+  }finally{h.client.disconnect();}
 });
 function queueFixture(){
   const files=new Map(),events=[],saved=[];let block;

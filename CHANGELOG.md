@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix transient monitor rejection when the two existing Windows information workers are occupied: queue within the same six-second deadline, release the registry lock while waiting, and keep the concurrency limit unchanged. Preserve allowlisted sampling failure code, stage and elapsed time in the native home view; ignore late callbacks after timeout. A live Wi-Fi host reproduced fast HTTP 409 failures before the repair; the same 20 serial reads and three three-query rounds pass afterward.
+- Prepare 0.4.0a38 as a stability-only candidate. Drop binary data whose asynchronous read finishes after its connection was replaced, and ignore late socket-open events before sending any authentication envelope.
+- Route video decoder failures through the same generation-scoped failure handler, ending the connected lifecycle once while keeping stale decoder callbacks inert. Add deferred-frame, late-open and decoder-error regressions; no device deployment or new feature is included.
 - Assemble the 0.4.0a37 Alpha candidate with matching Windows/Mac packages and source. Keep the public 0.4.0a8 downloads separate from the unpublished candidate, align installation and acceptance documents, and retain the unresolved intermittent Wi-Fi timeout limit. Document completed file-policy and 520 MiB recovery checks without expanding their native-version coverage.
 - Restore the original IPv6 metadata bytes when post-save verification fails: pass an actual null backup path to File.Replace on PowerShell. Extend the native temporary-file regression to check metadata and owned firewall rollback while preserving unrelated rules; no installed device configuration changes are part of candidate assembly.
 - Compile the disposable Python/Go integration fixture before starting its readiness budget, so a cold toolchain cache is not mistaken for a service-start failure. Keep the actual loopback readiness check bounded and report its timeout explicitly.
