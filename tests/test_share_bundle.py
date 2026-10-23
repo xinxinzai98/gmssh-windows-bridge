@@ -30,6 +30,9 @@ class ShareBundleTests(unittest.TestCase):
                 if mode=='correct':
                     result=build_share(root,output,wheel);self.assertEqual(result['version'],version)
                     self.assertTrue((output/f'GMSSH-Mac-Setup-{version}.zip').is_file())
+                    with zipfile.ZipFile(output/f'GMSSH-Mac-Setup-{version}.zip') as mac:
+                        self.assertIn('Update GMSSH.command', mac.namelist())
+                        self.assertEqual(stat.S_IMODE(mac.getinfo('Update GMSSH.command').external_attr >> 16), 0o755)
                 else:
                     with self.assertRaisesRegex(ValueError,'Wheel'):build_share(root,output,wheel)
                     self.assertFalse(output.exists())
