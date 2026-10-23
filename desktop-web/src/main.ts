@@ -4,6 +4,7 @@ import { keyboardModifiers, keyEvent } from "../vendor/input";
 import { Operations } from './operations';
 import { installFilePanel } from './file-panel';
 import { installTextInput } from './text-input';
+import { installWorkspaceToolbar } from './workspace-toolbar';
 
 const get = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
 const canvas = get<HTMLCanvasElement>("screen");
@@ -17,7 +18,7 @@ const viewport = get("viewport");
 const keyboardInput = get<HTMLTextAreaElement>('desktop-input');
 const embedded = window.parent !== window;
 if (embedded) {
-  fullscreen.textContent = "放大画面";
+  get('fullscreen-label').textContent = "放大画面";
   get("leave-fullscreen").textContent = "恢复面板";
 }
 const status = (text: string): void => { get("status").textContent = text; };
@@ -154,6 +155,7 @@ fetch("/config.json").then(response => {
   ssh.required = !direct && !shared;
   get("ssh-label").hidden = direct || shared;
   get("target").textContent = config.target;
+  get('connection-label').title = config.target;
   get('power-target').textContent=`目标电脑：${config.target}`;
   get("transport-note").textContent = config.authorization ? '独立授权连接；设备配置不保存 Windows 或桌面密码。' : shared ? '监控、桌面和文件复用这台电脑的 SSH 连接。' : '画面通过现有加密连接传输。';
   if (config.requires_token && !accessToken) {
@@ -350,6 +352,7 @@ function openFileCenter():void{
   window.addEventListener('message',acknowledged);window.parent.postMessage({type:'gmssh-open-file-center',requestId},'*');
 }
 get('files').onclick=openFileCenter;
+installWorkspaceToolbar(instance, workspaceMessage);
 window.addEventListener('message',event=>{
   if(embedded&&event.source===window.parent&&event.data?.type==='gmssh-workspace-preferences'){
     const p=event.data.preferences;
