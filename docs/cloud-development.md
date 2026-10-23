@@ -2,7 +2,7 @@
 
 ## 代码入口
 
-仓库：`xinxinzai98/gmssh-windows-bridge`；本次交接分支：`feature/free-rustdesk-desktop`。选择这个分支开始，避免从尚未包含本轮改动的 `main` 开始。版本保持 `0.4.0a38`，本次是源码和开发流程交接，没有创建新的安装包或 Release。
+仓库：`xinxinzai98/gmssh-windows-bridge`；云端开发入口为默认分支 `main`。`0.4.0a38` 的开发改动及云端脚本已从 `feature/free-rustdesk-desktop` 整合到主分支，新任务从 `main` 建立工作分支。版本保持 `0.4.0a38`，本次是源码和开发流程交接，没有创建新的安装包或 Release。
 
 已纳入单 App 构建：从使用者已安装的原版导入未修改资源，增强端运行时使用包内 `vendor.asar`。首页已移除极目账号登录、账号云同步、顶部版本提示和独立工作区按钮；设置移到左下角，文件中心按钮颜色已修正。设备认证、终端、桌面和文件功能继续保留。
 
@@ -39,4 +39,4 @@ bash tools/cloud_check.sh full
 
 可直接用于下一次云端任务的交接提示：
 
-> 继续 `feature/free-rustdesk-desktop` 的 GMSSH 增强扩展开发。先读 `AGENTS.md`、`CONTRIBUTING.md`、`docs/cloud-development.md` 和相关验证记录，运行 `bash tools/cloud_check.sh quick` 建立基线。只做源码、构建和合成回归，保持一个增强 App 的架构，不引入本机配置或凭据，不连接真实设备、不部署。先检查 Mac 菜单旧名称与 Electron helper 的关系，给出可验证的最小修复；“两行合一行”尚未定位，暂不改动。提交前运行相关检查及 `full`，区分通过、平台跳过与待实机验收，更新必要说明并提交 PR，不直接改 `main`。
+> 从 `main` 建立工作分支，继续 GMSSH 增强扩展开发。先读 `AGENTS.md`、`CONTRIBUTING.md`、`docs/cloud-development.md` 和相关验证记录，运行 `bash tools/cloud_check.sh quick` 建立基线。只做源码、构建和合成回归，保持一个增强 App 的架构，不引入本机配置或凭据，不连接真实设备、不部署。先检查 Mac 菜单旧名称与 Electron helper 的关系，给出可验证的最小修复；“两行合一行”尚未定位，暂不改动。提交前运行相关检查及 `full`，区分通过、平台跳过与待实机验收，更新必要说明并提交 PR，不直接改 `main`。
