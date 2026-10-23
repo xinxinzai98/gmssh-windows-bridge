@@ -28,6 +28,8 @@ Mac 首装需要访问 GitHub/PyPI 准备独立 Python 和依赖；已有受支�
 
 ## 更新现有 Mac 增强端
 
+已发布 a39 的更新器会拒绝 `local.gmssh.windows.launcher.preview.unlock225`。后续源码修复提供保留该标识的原位兼容路径，详见[兼容修复与本机待验](macos-updater-compatibility.md)；旧下载包不含此修复，请勿手工修改应用标识绕过检查。
+
 1. 从菜单正常退出增强端，等待文件任务保存；更新期间保持客户端关闭。
 2. 下载并完整解压 `GMSSH-Mac-Setup-0.4.0a39.zip`，双击 `Update GMSSH.command`。此入口只支持现有 0.4.0a38 增强端；自定义 App 路径可在终端使用 `bash 'Update GMSSH.command' --app '/完整路径/增强端.app'`。
 3. 更新器核对离线包、现有应用与独立运行环境，保存旧组件，再更新 wheel 中的自有组件和增强 ASAR，校验签名及配置。它复用包内原版资源，因此无需恢复已停用的原版 App。

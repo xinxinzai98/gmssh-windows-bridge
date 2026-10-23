@@ -9,6 +9,7 @@ import argparse
 import base64
 import csv
 from contextlib import contextmanager
+from email.parser import BytesParser
 import hashlib
 import io
 import json
@@ -28,6 +29,10 @@ from .macos_launcher import write_asar
 
 BASE_VERSION = '0.4.0a38'
 APP_ID = 'local.gmssh.windows.launcher'
+# This known a38 preview uses the same updater layout. Keep its identity in place:
+# changing it could change macOS permissions and helper/keychain associations.
+# Other preview suffixes require their own compatibility verification.
+SUPPORTED_APP_IDS = frozenset({APP_ID, 'local.gmssh.windows.launcher.preview.unlock225'})
 PACKAGE = 'gmssh_windows_bridge'
 APP_FILES = ('Contents/Resources/app.asar', 'Contents/Info.plist',
              'Contents/MacOS/GMSSH', 'Contents/_CodeSignature/CodeResources')
@@ -154,8 +159,15 @@ def inspect(app, recovery=None):
     if not recovery:
         run(['/usr/bin/codesign', '--verify', '--deep', '--strict', app])
     info = plistlib.loads((source / 'Contents/Info.plist').read_bytes())
-    if info.get('CFBundleIdentifier') != APP_ID or info.get('GMSSHBridgeVersion') not in (BASE_VERSION, __version__):
-        raise ValueError('此更新器只支持 0.4.0a38 的现有增强端，请保留当前应用。')
+    version = info.get('GMSSHBridgeVersion')
+    if version not in (BASE_VERSION, __version__):
+        raise ValueError(f'不支持的增强端版本：{version!r}。仅支持从 {BASE_VERSION} 更新，'
+                         f'或回退本更新器生成的 {__version__}，请保留当前应用。')
+    app_id = info.get('CFBundleIdentifier')
+    if not isinstance(app_id, str) or app_id not in SUPPORTED_APP_IDS:
+        raise ValueError(f'不支持的应用标识：{app_id!r}。'
+                         '仅支持标准增强端及已确认的 preview.unlock225 预览版；请勿修改标识绕过检查。')
+    executable_uuid(source / 'Contents/MacOS/GMSSH')
     files, digest = read_asar(source / APP_FILES[0])
     if info['ElectronAsarIntegrity']['Resources/app.asar']['hash'] != digest:
         raise ValueError('App 元数据与增强 ASAR 不一致。')
@@ -166,6 +178,13 @@ def inspect(app, recovery=None):
     prefix, site = runtime_layout(python)
     if not recovery:
         tree_is_regular(site / PACKAGE)
+        installed = site / f'{PACKAGE}-{version}.dist-info'
+        tree_is_regular(installed)
+        regular(installed / 'METADATA')
+        metadata = BytesParser().parsebytes((installed / 'METADATA').read_bytes())
+        if (metadata.get('Name', '').replace('_', '-') != PACKAGE.replace('_', '-')
+                or metadata.get('Version') != version):
+            raise ValueError('独立运行环境版本与现有增强端不一致，请保留当前应用。')
     regular(app / 'Contents/Resources/launcher-entitlements.plist')
     ensure_stopped(app)
     return {'app': app, 'info': info, 'files': files, 'python': python, 'prefix': prefix, 'site': site}
@@ -280,6 +299,10 @@ def apply(state, wheel_files, dist):
                 run(['/usr/bin/codesign', '--force', '--sign', '-', '--entitlements',
                      app / 'Contents/Resources/launcher-entitlements.plist', app])
                 run(['/usr/bin/codesign', '--verify', '--deep', '--strict', app])
+                signed_info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
+                if any(signed_info.get(key) != state['info'].get(key)
+                       for key in ('CFBundleIdentifier', 'CFBundleName')):
+                    raise ValueError('应用标识或 helper 名称发生变化，已停止更新。')
                 if executable_uuid(app / 'Contents/MacOS/GMSSH') != original_uuid:
                     raise ValueError('主程序 UUID 发生变化，已停止更新。')
                 if read_asar(app / APP_FILES[0])[0]['launcher-config.json'] != state['files']['launcher-config.json']:
@@ -312,7 +335,8 @@ def main():
                 restore(state, expected)
             print('已恢复更新前的客户端与组件；应用保持关闭。')
         elif args.check:
-            print('更新前置检查通过；未修改客户端或运行环境。')
+            print('更新前置检查通过：' + state['info']['CFBundleIdentifier']
+                  + '；将原位更新并保留应用标识。未修改客户端或运行环境。')
         else:
             backup = apply(state, wheel_files, dist)
             print('更新完成：' + __version__ + '。请打开原来的增强端查看新界面。')

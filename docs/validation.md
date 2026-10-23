@@ -1,5 +1,15 @@
 # 验证记录
 
+## 2026-10-23：a38 预览标识、临时路径夹具与 Vite 修复
+
+- 针对已知 `local.gmssh.windows.launcher.preview.unlock225` a38 客户端提供原位兼容，与标准标识共用签名、ASAR、独立环境和版本元数据检查；前置检查增加主程序 UUID 验证。不改应用标识、helper 名称、配置或运行环境路径，签名后若身份发生变化则恢复备份。版本不支持与标识不支持分别报错，其他预览后缀仍拒绝。
+- 更新器测试扩为两种标识各 14 项，共 28 项，在 Linux 默认临时目录下通过；覆盖真实 `inspect()` 前置检查路径、失败恢复、当前新包／签名不完整时的备份恢复和显式 CLI 回退。仅模拟 Mac 签名与进程调用，不是 Mac 原生验收。
+- 夹具根路径改为 `Path(self.temporary.name).resolve()`。在合成临时目录中建立 `var -> private/var` 链接，让子进程通过别名使用临时目录：旧夹具的指定恢复测试复现“回退记录不属于此客户端和运行环境”，修复后的 28 项通过。产品恢复记录的路径比较未改动；该证据说明夹具路径不一致，不能证明真实回退失败。默认 macOS `/var/folders` 路径测试仍待在 Mac 执行，未用 `TMPDIR=/private/tmp` 替代。
+- Vite 开发依赖和锁文件从 `7.3.6` 更新为 `7.3.7`，保留其他依赖版本与平台元数据。升级前 `npm audit` 报告 Vite 问题，升级后报告 0 个漏洞，干净 `npm ci --ignore-scripts` 通过。TypeScript/Vite 重建完成，`gmssh_windows_bridge/desktop_web/` 与原提交逐字节一致；未人工改动生成文件。没有据开发依赖告警推断已打包客户端受影响。
+- `bash tools/cloud_check.sh full` 在 Linux 云端工作区一次通过：Python 225 项中 211 通过、14 项平台跳过；Node 172 项中 169 通过、3 项真实挂载条件跳过；Go 接入／解包、10 项 Python/Go 回环联调及公开源码检查通过。另跑合成浏览器 62 项通过。复用既有 Python 依赖和 Go 1.27.2，使用可写的 Go 构建缓存。
+- 独立核实 [GitHub Actions 39972938556](https://github.com/xinxinzai98/gmssh-windows-bridge/actions/runs/39972938556)：9 个 job 均无执行步骤，失败注解为 `The job was not started because your account is locked due to a billing issue.`。账户侧解除计费限制后仍须重跑修复提交的 CI；上述工作区结果不是 GitHub CI 通过。
+- 本轮只修复源码并准备评审，不覆盖已发布 a39 的下载文件。真实 Mac 安装、原生签名、升级后的界面和恢复验收仍待本机完成，具体步骤见[更新器兼容修复](macos-updater-compatibility.md)。
+
 ## 2026-10-23：0.4.0a39 Mac 更新包
 
 - 版本更新为 0.4.0a39，增加 `Update GMSSH.command` 和离线更新模块。现有 0.4.0a38 增强端复用其独立运行环境，校验 wheel 的 RECORD、ASAR 内容和应用签名，保留连接配置、原版资源、主程序 UUID 和钥匙串路径。替换前保存旧包、元数据、ASAR、Info.plist、签名资源及主程序，签名／核验失败时回退；提供显式回退入口和内核互斥锁。
