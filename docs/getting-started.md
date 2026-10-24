@@ -1,6 +1,6 @@
 # 安装与接入
 
-本页描述 **0.4.0a39 Mac 控制端 Alpha 候选**，发行状态和附件以 [GitHub Releases](https://github.com/xinxinzai98/gmssh-windows-bridge/releases) 为准。本轮提供 Mac ZIP、wheel 和源码，Windows 服务端沿用既有安装，未生成新的 Windows 安装器；历史公开 Windows 包仍为 0.4.0a8。下载时核对文件名、版本和同目录的 `SHA256SUMS`。基座验收范围为 **GMSSH 2.0.4 Apple Silicon Mac、Windows 11 x64、两端内置本地磁盘**；此次新更新器尚未做 Mac 原生安装验收，保持 Alpha。具体见[本版说明](release-0.4.0a39.md)。
+本页描述 **0.4.0a40 Mac 控制端 Alpha 修复版**，发行状态和附件以 [GitHub Releases](https://github.com/xinxinzai98/gmssh-windows-bridge/releases) 为准。本轮提供 Mac ZIP、wheel 和源码，Windows 服务端沿用既有安装，未生成新的 Windows 安装器；历史公开 Windows 包仍为 0.4.0a8。下载时核对文件名、版本和同目录的 `SHA256SUMS`。基座验收范围为 **GMSSH 2.0.4 Apple Silicon Mac、Windows 11 x64、两端内置本地磁盘**；本版更新器的实际原生验收范围见 Release 验证记录，保持 Alpha。具体见[本版说明](release-0.4.0a40.md)。
 
 ## Windows 安装或升级
 
@@ -28,16 +28,16 @@ Mac 首装需要访问 GitHub/PyPI 准备独立 Python 和依赖；已有受支�
 
 ## 更新现有 Mac 增强端
 
-已发布 a39 的更新器会拒绝 `local.gmssh.windows.launcher.preview.unlock225`。后续源码修复提供保留该标识的原位兼容路径，详见[兼容修复与本机待验](macos-updater-compatibility.md)；旧下载包不含此修复，请勿手工修改应用标识绕过检查。
+已发布 a39 的更新器会拒绝 `local.gmssh.windows.launcher.preview.unlock225`；a40 提供保留该标识的原位兼容路径，详见[兼容范围](macos-updater-compatibility.md)。仅支持现有 a38 的标准标识及此已知预览标识，已安装 a39 和其他预览版仍不在本次更新范围；请勿手工修改版本或标识绕过检查。
 
 1. 从菜单正常退出增强端，等待文件任务保存；更新期间保持客户端关闭。
-2. 下载并完整解压 `GMSSH-Mac-Setup-0.4.0a39.zip`，双击 `Update GMSSH.command`。此入口只支持现有 0.4.0a38 增强端；自定义 App 路径可在终端使用 `bash 'Update GMSSH.command' --app '/完整路径/增强端.app'`。
+2. 下载并完整解压 `GMSSH-Mac-Setup-0.4.0a40.zip`，双击 `Update GMSSH.command`。此入口只支持上述现有 0.4.0a38 增强端；自定义 App 路径可在终端使用 `bash 'Update GMSSH.command' --app '/完整路径/增强端.app'`。
 3. 更新器核对离线包、现有应用与独立运行环境，保存旧组件，再更新 wheel 中的自有组件和增强 ASAR，校验签名及配置。它复用包内原版资源，因此无需恢复已停用的原版 App。
 4. 显示更新完成后，打开原来的客户端确认单行工具栏。连接配置、设备身份和钥匙串仍使用原路径；更新器不会自动启动或连接设备。
 
-可使用 `bash 'Update GMSSH.command' --check` 只检查前置条件。更新失败时自动恢复已替换内容；若更新被中断，保留现场和回退目录。正常退出客户端后，可用 `bash 'Update GMSSH.command' --rollback '更新器显示的完整回退目录'` 恢复原组件。回退目录位于现有独立运行环境的 `.gmssh-updates/0.4.0a39`，包含本机数据，不上传到仓库。
+可使用 `bash 'Update GMSSH.command' --check` 只检查前置条件。更新失败时自动恢复已替换内容；若更新被中断，保留现场和回退目录。正常退出客户端后，可用 `bash 'Update GMSSH.command' --rollback '更新器显示的完整回退目录'` 恢复原组件。回退目录位于现有独立运行环境的 `.gmssh-updates/0.4.0a40`，包含本机数据，不上传到仓库。
 
-更新包需要现有的 Python 启动更新工具，不另装或替换运行环境；共享／系统 Python、其他增强端版本及无法核验的应用会被拒绝。新更新流程当前有合成文件事务与回退覆盖，原生签名和真实桌面显示仍需在 Mac 上确认。
+更新包需要现有的 Python 启动更新工具，不另装或替换运行环境；共享／系统 Python、其他增强端版本及无法核验的应用会被拒绝。源码测试中的签名调用为模拟，原生签名、升级及回退结果在 Release 中单独记录。
 
 ## 添加设备：授权码、二维码或手动填写
 

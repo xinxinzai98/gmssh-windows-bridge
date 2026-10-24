@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="https://github.com/xinxinzai98/gmssh-windows-bridge/releases">下载 Alpha</a> ·
-  <a href="docs/release-0.4.0a39.md">0.4a39 Mac 更新</a> ·
+  <a href="docs/release-0.4.0a40.md">0.4a40 Mac 更新</a> ·
   <a href="docs/getting-started.md">安装指南</a> ·
   <a href="docs/cli.md">CLI 文档</a> ·
   <a href="docs/upgrade-plan.md">升级方案</a> ·
@@ -17,7 +17,7 @@
 
 在 GMSSH / 极目 Linux 桌面中统一使用 Windows 的**资源监控、PowerShell、文件互传和远程桌面**。Windows 端提供一体化后台服务与托盘，macOS 端提供增强设备列表和桌面工作区，并保留原有 Linux 设备入口。
 
-> **当前 Mac 更新候选：0.4.0a39 · Alpha；发行状态及附件以 Releases 为准。** 本轮将远程桌面的两行工具栏合为一行，并提供现有 0.4.0a38 增强端的离线更新入口。正常退出客户端后，解压 Mac ZIP 并运行 `Update GMSSH.command`，保留现有配置、凭据和运行环境。新更新流程已做合成回退测试，Mac 原生安装仍待验收。本轮未提供新的 Windows 安装器，历史公开 Windows 包仍为 0.4.0a8。本项目是非官方兼容扩展，基座验收以 GMSSH 2.0.4 为准。具体范围见[本版说明](docs/release-0.4.0a39.md)、[安装指南](docs/getting-started.md)及[验证记录](docs/validation.md)。
+> **当前 Mac 修复版：0.4.0a40 · Alpha；发行状态及附件以 Releases 为准。** 修复现有 0.4.0a38 标准增强端和已知 `preview.unlock225` 预览版的原位更新兼容，保留应用标识、配置、凭据、独立运行环境和主程序 UUID；修复 Mac 临时路径测试，升级 Vite 开发依赖。正常退出客户端后，解压 Mac ZIP 并运行 `Update GMSSH.command`。本轮没有新的 Windows 安装器，也不支持从已安装 a39 直接更新；实际验收范围见[本版说明](docs/release-0.4.0a40.md)、[安装指南](docs/getting-started.md)和 Release。本项目是非官方兼容扩展，基座验收以 GMSSH 2.0.4 为准。
 
 ## 主要功能
 
@@ -37,14 +37,14 @@
 
 ## 下载
 
-从 [Releases](https://github.com/xinxinzai98/gmssh-windows-bridge/releases) 获取已经发布的安装文件。**下表仍是旧版 0.4.0a8；0.4.0a38 候选没有公开下载地址。** 不要按新候选说明假定旧包具备全部功能。
+从 [Releases](https://github.com/xinxinzai98/gmssh-windows-bridge/releases) 获取已发布文件。Mac 修复版为 0.4.0a40；Windows 历史公开安装器仍为 0.4.0a8，现用 Windows 服务端沿用已有安装。
 
 | 平台 / 内容 | 下载 | 说明 |
 |---|---|---|
 | Windows x64 | [Windows 安装程序](https://github.com/xinxinzai98/gmssh-windows-bridge/releases/download/v0.4.0a8/GMSSH-Windows-Setup-0.4.0a8.exe) | 内含离线 SSH 和桌面引擎；缺少所需 VC++ 运行库时从微软官方获取 |
-| macOS | [Mac 安装包](https://github.com/xinxinzai98/gmssh-windows-bridge/releases/download/v0.4.0a8/GMSSH-Mac-Setup-0.4.0a8.zip) | 依赖官方 GMSSH 2.0.4，在使用者本机生成增强入口 |
-| 源码 | [源码 ZIP](https://github.com/xinxinzai98/gmssh-windows-bridge/releases/download/v0.4.0a8/GMSSH-Source-0.4.0a8.zip) | 版本对应源码；开发请使用仓库并参阅[贡献指南](CONTRIBUTING.md) |
-| 校验 | [SHA256SUMS](https://github.com/xinxinzai98/gmssh-windows-bridge/releases/download/v0.4.0a8/SHA256SUMS) | 用于核对发布附件完整性 |
+| macOS | [Mac 修复版发布页](https://github.com/xinxinzai98/gmssh-windows-bridge/releases/tag/v0.4.0a40) | 首装依赖官方 GMSSH 2.0.4；更新复用已支持的 a38 增强端 |
+| 源码与 wheel | [0.4.0a40 发布文件](https://github.com/xinxinzai98/gmssh-windows-bridge/releases/tag/v0.4.0a40) | 与修复版对应；开发请参阅[贡献指南](CONTRIBUTING.md) |
+| 校验 | [发布页中的 SHA256SUMS](https://github.com/xinxinzai98/gmssh-windows-bridge/releases/tag/v0.4.0a40) | 使用同一版本清单核对下载文件 |
 
 ## 快速接入
 
