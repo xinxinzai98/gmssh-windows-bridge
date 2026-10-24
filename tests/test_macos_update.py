@@ -21,10 +21,14 @@ from gmssh_windows_bridge.macos_launcher import write_asar
 
 @unittest.skipUnless(os.name == 'posix', 'Mac updater requires POSIX ownership and locking')
 class MacUpdateTests(unittest.TestCase):
+    app_id = 'local.gmssh.windows.launcher'
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
+        # macOS may expose its default temporary directory through /var -> /private/var.
+        # Use the same canonical paths as inspect() in the synthetic runtime state.
+        self.root = Path(self.temporary.name).resolve()
         self.app = self.root / 'Enhanced.app'
         self.prefix = self.root / 'runtime'
         self.site = self.prefix / 'lib/python3.12/site-packages'
@@ -34,6 +38,8 @@ class MacUpdateTests(unittest.TestCase):
         for name in (update.PACKAGE, self.old_dist):
             (self.site / name).mkdir()
             (self.site / name / 'original.txt').write_text('original-runtime')
+        (self.site / self.old_dist / 'METADATA').write_text(
+            'Name: gmssh-windows-bridge\nVersion: ' + update.BASE_VERSION + '\n')
         for name in update.APP_FILES:
             path = self.app / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -45,7 +51,7 @@ class MacUpdateTests(unittest.TestCase):
                       'profile': '/synthetic/profile', 'custom': 'preserve-exactly'}).encode(),
                       'gmssh-workspace.js': b'original-workspace', 'other.js': b'original-wrapper'}
         digest = write_asar(self.app / update.APP_FILES[0], self.files)
-        self.info = {'CFBundleIdentifier': update.APP_ID, 'CFBundleName': 'Original helper name',
+        self.info = {'CFBundleIdentifier': self.app_id, 'CFBundleName': 'Original helper name',
                      'GMSSHBridgeVersion': update.BASE_VERSION, 'ElectronAsarIntegrity': {
                          'Resources/app.asar': {'algorithm': 'SHA256', 'hash': digest},
                          'Resources/vendor.asar': {'hash': 'unchanged-vendor'}}}
@@ -62,6 +68,9 @@ class MacUpdateTests(unittest.TestCase):
     def fake_run(self, args):
         if str(args[0]) == '/bin/ps':
             return ''
+        if str(args[0]) == '/synthetic/python' and 'sysconfig.get_path' in str(args[-1]):
+            return json.dumps({'prefix': str(self.prefix), 'base': str(self.root / 'base-python'),
+                               'site': str(self.site), 'version': [3, 12]})
         if '--force' in args:
             (self.app / 'Contents/_CodeSignature/CodeResources').write_bytes(b'new-code-resources')
             with (self.app / 'Contents/MacOS/GMSSH').open('ab') as handle:
@@ -81,13 +90,17 @@ class MacUpdateTests(unittest.TestCase):
 
     def test_updates_in_place_preserving_config_vendor_identity_and_recoverable_runtime(self):
         with patch.object(update, 'run', side_effect=self.fake_run):
-            backup = update.apply(self.state, self.new_files, self.dist)
+            state = update.inspect(self.app)
+            self.assertEqual(state['prefix'], self.prefix)
+            self.assertEqual(state['site'], self.site)
+            backup = update.apply(state, self.new_files, self.dist)
         files, digest = update.read_asar(self.app / update.APP_FILES[0])
         self.assertEqual(files['gmssh-workspace.js'], b'new-workspace')
         self.assertEqual(files['launcher-config.json'], self.files['launcher-config.json'])
         self.assertEqual(files['other.js'], b'original-wrapper')
         info = plistlib.loads((self.app / 'Contents/Info.plist').read_bytes())
         self.assertEqual(info['GMSSHBridgeVersion'], __version__)
+        self.assertEqual(info['CFBundleIdentifier'], self.app_id)
         self.assertEqual(info['CFBundleName'], self.info['CFBundleName'])
         self.assertEqual(info['ElectronAsarIntegrity']['Resources/app.asar']['hash'], digest)
         self.assertEqual(info['ElectronAsarIntegrity']['Resources/vendor.asar'], self.info['ElectronAsarIntegrity']['Resources/vendor.asar'])
@@ -101,6 +114,20 @@ class MacUpdateTests(unittest.TestCase):
         self.fail_signing = True
         with patch.object(update, 'run', side_effect=self.fake_run):
             with self.assertRaises(subprocess.CalledProcessError):
+                update.apply(self.state, self.new_files, self.dist)
+        self.assert_restored()
+
+    def test_identifier_change_during_signing_restores_original_app_and_runtime(self):
+        def changed_identity(args):
+            result = self.fake_run(args)
+            if '--force' in args:
+                info = plistlib.loads((self.app / 'Contents/Info.plist').read_bytes())
+                info['CFBundleIdentifier'] = 'com.unexpected.replacement'
+                (self.app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
+            return result
+
+        with patch.object(update, 'run', side_effect=changed_identity):
+            with self.assertRaisesRegex(ValueError, '应用标识'):
                 update.apply(self.state, self.new_files, self.dist)
         self.assert_restored()
 
@@ -137,8 +164,44 @@ class MacUpdateTests(unittest.TestCase):
         self.info['GMSSHBridgeVersion'] = '0.4.0a8'
         (self.app / 'Contents/Info.plist').write_bytes(plistlib.dumps(self.info))
         with patch.object(update, 'run', side_effect=self.fake_run):
-            with self.assertRaisesRegex(ValueError, '0.4.0a38'):
+            with self.assertRaisesRegex(ValueError, '版本.*0.4.0a8.*0.4.0a38'):
                 update.inspect(self.app)
+
+    def test_unrecognized_preview_identifiers_are_not_accepted_by_prefix(self):
+        for app_id in ('com.gmssh.com', 'local.gmssh.windows.launcher.preview',
+                       'local.gmssh.windows.launcher.preview.unlock226',
+                       'local.gmssh.windows.launcher.preview.unlock225.other', '', ['invalid-id']):
+            with self.subTest(app_id=app_id):
+                info = dict(self.info, CFBundleIdentifier=app_id)
+                (self.app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
+                with patch.object(update, 'run', side_effect=self.fake_run):
+                    with self.assertRaisesRegex(ValueError, '应用标识'):
+                        update.inspect(self.app)
+                self.assertFalse((self.prefix / '.gmssh-updates').exists())
+
+    def test_preflight_still_requires_valid_signature_and_matching_asar(self):
+        with patch.object(update, 'run', side_effect=subprocess.CalledProcessError(1, ['codesign'])):
+            with self.assertRaises(subprocess.CalledProcessError):
+                update.inspect(self.app)
+        self.info['ElectronAsarIntegrity']['Resources/app.asar']['hash'] = 'unexpected-header'
+        (self.app / 'Contents/Info.plist').write_bytes(plistlib.dumps(self.info))
+        with patch.object(update, 'run', side_effect=self.fake_run):
+            with self.assertRaisesRegex(ValueError, 'ASAR'):
+                update.inspect(self.app)
+        self.assertFalse((self.prefix / '.gmssh-updates').exists())
+
+    def test_preflight_requires_recoverable_runtime_version_and_executable_uuid(self):
+        metadata = self.site / self.old_dist / 'METADATA'
+        original = metadata.read_bytes()
+        metadata.write_text('Name: gmssh-windows-bridge\nVersion: 0.4.0a8\n')
+        with patch.object(update, 'run', side_effect=self.fake_run):
+            with self.assertRaisesRegex(ValueError, '运行环境版本'):
+                update.inspect(self.app)
+            metadata.write_bytes(original)
+            (self.app / 'Contents/MacOS/GMSSH').write_bytes(b'not-a-mach-o-executable')
+            with self.assertRaisesRegex(ValueError, 'Mach-O'):
+                update.inspect(self.app)
+        self.assertFalse((self.prefix / '.gmssh-updates').exists())
 
     def test_shared_and_external_python_package_locations_are_not_modified(self):
         for value in ({'prefix': str(self.prefix), 'base': str(self.prefix), 'site': str(self.site), 'version': [3, 12]},
@@ -157,6 +220,15 @@ class MacUpdateTests(unittest.TestCase):
                 patch.object(update, 'runtime_layout', return_value=(self.prefix, self.site)):
             state = update.inspect(self.app, recovery=backup)
             update.restore(state, backup)
+        self.assert_restored()
+
+    def test_explicit_cli_rollback_restores_identity_config_and_runtime(self):
+        wheel = self.wheel()
+        with patch.object(update, 'run', side_effect=self.fake_run):
+            backup = update.apply(update.inspect(self.app), self.new_files, self.dist)
+            args = ['update', '--wheel', str(wheel), '--app', str(self.app), '--rollback', str(backup)]
+            with patch.object(sys, 'argv', args), patch.object(sys, 'platform', 'darwin'):
+                self.assertEqual(update.main(), 0)
         self.assert_restored()
 
     def wheel(self, extra=None, changed=False):
@@ -190,15 +262,22 @@ class MacUpdateTests(unittest.TestCase):
         self.assertFalse((self.root / 'escape.py').exists())
 
     def test_check_only_does_not_apply_and_non_mac_execution_is_refused(self):
-        args = ['update', '--wheel', str(self.wheel()), '--check']
+        args = ['update', '--wheel', str(self.wheel()), '--app', str(self.app), '--check']
         with patch.object(sys, 'argv', args), patch.object(sys, 'platform', 'darwin'), \
-                patch.object(update, 'inspect', return_value=self.state), patch.object(update, 'apply') as apply:
+                patch.object(update, 'run', side_effect=self.fake_run), patch.object(update, 'apply') as apply:
             self.assertEqual(update.main(), 0)
             apply.assert_not_called()
+        self.assertFalse((self.prefix / '.gmssh-updates').exists())
+        self.assertEqual({name: (self.app / name).read_bytes() for name in update.APP_FILES}, self.original_app)
+        self.assertEqual((self.site / update.PACKAGE / 'original.txt').read_text(), 'original-runtime')
         with patch.object(sys, 'argv', args), patch.object(sys, 'platform', 'linux'):
             with self.assertRaises(SystemExit) as result:
                 update.main()
             self.assertEqual(result.exception.code, 1)
+
+
+class KnownPreviewMacUpdateTests(MacUpdateTests):
+    app_id = 'local.gmssh.windows.launcher.preview.unlock225'
 
 
 if __name__ == '__main__':
