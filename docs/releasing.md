@@ -1,8 +1,8 @@
 # 发布检查
 
-## 0.4.0a39 Mac 控制端 Alpha 候选
+## 0.4.0a40 Mac 控制端 Alpha 候选
 
-当前整理对象为 0.4.0a39 Mac 控制端，发行状态以 Releases 为准。新增现有 0.4.0a38 的更新入口，包内有首装和更新命令；本次用户授权发布 Mac 更新，不附带新的 Windows 安装器。本地构建与净化检查不代表 GitHub CI 已通过，新更新器尚未做原生安装。具体范围见[本版说明](release-0.4.0a39.md)。
+当前整理对象为 0.4.0a40 Mac 控制端，发行状态以 Releases 为准。修复现有 0.4.0a38 标准标识及已知 preview.unlock225 预览标识的原位更新入口，包内有首装和更新命令；本次用户授权发布 Mac 更新，不附带新的 Windows 安装器。本地构建与净化检查不代表 GitHub CI 已通过，原生验收结果与适用范围单独记录在 Release。具体范围见[本版说明](release-0.4.0a40.md)。
 
 普通使用者入口见[安装与接入](getting-started.md)。源码留在 Git；可执行安装包、源码 ZIP、wheel 与 SHA-256 清单放到 GitHub 的Alpha 预发布 Release。发布范围只包含项目源码目录和新构建的通用附件，保留开发者现有环境。
 
@@ -68,7 +68,7 @@ Windows 内部引擎保留 RustDesk 的原始二进制，不声称自己实现�
 ```bash
 python -m unittest discover -s tests -v
 python -m pip wheel . --no-deps --wheel-dir dist
-python -m pip install --force-reinstall --no-deps dist/gmssh_windows_bridge-0.4.0a39-py3-none-any.whl
+python -m pip install --force-reinstall --no-deps dist/gmssh_windows_bridge-0.4.0a40-py3-none-any.whl
 python -I -m gmssh_windows_bridge --help
 python -I -m gmssh_windows_bridge --version
 ```
@@ -79,8 +79,8 @@ CI 的 Linux Go 任务还会安装本项目的 Python 桌面依赖，并运行 `
 
 ## 候选交付清单
 
-- `GMSSH-Mac-Setup-0.4.0a39.zip`：本项目 wheel、首装／更新命令、固定依赖和使用说明；不包含完整 App 或设备配置。首装入口保留已有同名 App，更新入口仅支持现有 0.4.0a38 独立增强端。
-- `GMSSH-Source-0.4.0a39.zip`、同版本 wheel、说明和 `SHA256SUMS`：从允许的源码边界导出，逐项核对版本及内容。
+- `GMSSH-Mac-Setup-0.4.0a40.zip`：本项目 wheel、首装／更新命令、固定依赖和使用说明；不包含完整 App 或设备配置。首装入口保留已有同名 App，更新入口仅支持现有 0.4.0a38 独立增强端。
+- `GMSSH-Source-0.4.0a40.zip`、同版本 wheel、说明和 `SHA256SUMS`：从允许的源码边界导出，逐项核对版本及内容。
 - 本次 Mac 更新不附带新 Windows 安装器；Windows 端继续使用既有安装。重新发布 Windows 安装器时，另按上方两端依赖和原生验收流程构建核验。
 
 从干净源码目录重建 Web 资源，核对其与提交候选相同，再构建 wheel 和 Windows helper。安装器与源码、离线组件、桌面引擎及隐私检查都通过后，才把附件列为本地可交付候选。源码改动后须重新导出，不能只换旧文件名或校验值。提交、推送、创建标签与 Release 仍按各自授权执行；当前候选没有可宣称通过的远端 CI 运行。

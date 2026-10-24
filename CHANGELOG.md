@@ -1,11 +1,11 @@
 # Changelog
 
-## Unreleased — a38 updater compatibility repair
+## 0.4.0a40 — a38 updater compatibility repair
 
 - Support in-place updates of the specifically identified `local.gmssh.windows.launcher.preview.unlock225` a38 app alongside the standard identifier. Keep both identifiers unchanged, distinguish unsupported versions from unsupported identifiers, and check the recoverable runtime metadata and executable UUID before updating. Preserve signature/ASAR checks and restore the original application and runtime if signing changes its identity.
 - Canonicalize the synthetic Mac updater fixture's temporary root so default macOS `/var` aliases agree with inspected paths. Exercise both identities through preflight, failed-update recovery and explicit rollback; this fixture correction does not establish a defect in native rollback.
 - Upgrade the Vite development dependency from 7.3.6 to 7.3.7 and refresh its lock entry. This does not establish exposure in already packaged clients.
-- These source repairs are not part of the published v0.4.0a39 downloads. Native Mac verification and GitHub CI remain separate; account billing restrictions must be resolved on GitHub.
+- These repairs are distributed in new 0.4.0a40 Mac artifacts; the v0.4.0a39 downloads are unchanged. The updater supports the two known a38 identities, not existing a39 installations. Native Mac verification and GitHub CI remain separate; see the Release for the verification completed for each package.
 
 ## 0.4.0a39 — Mac controller Alpha candidate
 
