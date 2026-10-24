@@ -196,6 +196,7 @@ def build(root, output, wheel, windows_bundle=None, windows_setup=None, deny_val
     source_manifest = json.dumps({'version': version, 'files': file_hashes}, ensure_ascii=False, indent=2).encode()
     write_zip(output / f'GMSSH-Source-{version}.zip', {**files, 'PUBLIC-SOURCE-MANIFEST.json': source_manifest})
     mac = {'Install GMSSH.command': files['install/macos/Install GMSSH.command'],
+           'Update GMSSH.command': files['install/macos/Update GMSSH.command'],
            'requirements-macos.txt': files['install/macos/requirements-macos.txt'],
            'python-runtime.plist': files['install/macos/python-runtime.plist'],
            'README.txt': files['docs/getting-started.md'], 'LICENSE': files['LICENSE'], wheel.name: wheel.read_bytes()}

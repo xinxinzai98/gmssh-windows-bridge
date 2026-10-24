@@ -1,13 +1,13 @@
 # 发布检查
 
-## 0.4.0a38 Alpha 收尾候选
+## 0.4.0a39 Mac 控制端 Alpha 候选
 
-当前整理对象为 0.4.0a38，尚未创建公开 Release。公开附件仍为 0.4.0a8；本地构建与净化检查不代表 GitHub CI 已通过。功能、设备实测和已知限制统一见[候选说明](release-0.4.0a38.md)。本轮不修改现有设备或日常运行环境。
+当前整理对象为 0.4.0a39 Mac 控制端，发行状态以 Releases 为准。新增现有 0.4.0a38 的更新入口，包内有首装和更新命令；本次用户授权发布 Mac 更新，不附带新的 Windows 安装器。本地构建与净化检查不代表 GitHub CI 已通过，新更新器尚未做原生安装。具体范围见[本版说明](release-0.4.0a39.md)。
 
 普通使用者入口见[安装与接入](getting-started.md)。源码留在 Git；可执行安装包、源码 ZIP、wheel 与 SHA-256 清单放到 GitHub 的Alpha 预发布 Release。发布范围只包含项目源码目录和新构建的通用附件，保留开发者现有环境。
 
 - `tools/build_share_bundle.py` 从允许的源码目录创建导出包，排除用户配置、密钥、数据库、日志、应用副本和构建缓存。它检查开发者绝对路径、私钥格式和访问令牌格式；可用仓库外的私有字符串清单进一步检查已知设备信息。检查不代替人工审查。
-- Mac ZIP 只包含本项目 wheel、安装命令、依赖版本和说明。使用者本机生成的 `.app` 包含其自身路径，属于安装结果，不得再拿来作为通用 Release 附件。
+- Mac ZIP 只包含本项目 wheel、首装／更新命令、依赖版本和说明。现有 0.4.0a38 更新复用其独立环境，备份自有组件、增强 ASAR、签名资源与主程序后替换，保留配置、原版资源和 UUID；失败恢复旧内容。使用者本机生成的 `.app` 属于安装结果，不作为通用附件。
 - 公共 Windows 包使用 `--public-release --runtime-source microsoft`，强制 `LocalSubnet`、无指定电脑或预设设备模式，且不捆绑 VC++ 安装文件。0.4.0a33 在运行时核对既有服务后提供保留接入；保留模式不安装运行库。新装时已满足要求的运行库直接复用，否则从固定微软 HTTPS 地址获取并核对 SHA-256 和签名。
 - 未取得对应许可时不发布完整原版 GMSSH Mac 程序。0.4.0a34 固定使用 RustDesk `1.5.1+68` nightly 引擎，保持原文件，旁边提供 [AGPL-3.0](https://github.com/rustdesk/rustdesk/blob/53996e3c404ea5083df0775057e4149e49102084/LICENCE) 与[对应源码和构建说明](https://github.com/rustdesk/rustdesk/tree/53996e3c404ea5083df0775057e4149e49102084)，包括引用的子模块。微软运行库的[再分发限制](https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files)是公共包改用官方获取的原因。
 
@@ -68,7 +68,7 @@ Windows 内部引擎保留 RustDesk 的原始二进制，不声称自己实现�
 ```bash
 python -m unittest discover -s tests -v
 python -m pip wheel . --no-deps --wheel-dir dist
-python -m pip install --force-reinstall --no-deps dist/gmssh_windows_bridge-0.4.0a38-py3-none-any.whl
+python -m pip install --force-reinstall --no-deps dist/gmssh_windows_bridge-0.4.0a39-py3-none-any.whl
 python -I -m gmssh_windows_bridge --help
 python -I -m gmssh_windows_bridge --version
 ```
@@ -79,8 +79,8 @@ CI 的 Linux Go 任务还会安装本项目的 Python 桌面依赖，并运行 `
 
 ## 候选交付清单
 
-- `GMSSH-Windows-Setup-0.4.0a38.exe`：通用局域网完整安装器，包含已核验的离线 OpenSSH 与固定桌面引擎，缺少 VC++ 时从微软获取；无指定电脑或预设连接。
-- `GMSSH-Mac-Setup-0.4.0a38.zip`：本项目 wheel、首装命令、固定依赖和使用说明；不包含原版 GMSSH、发布者的完整 `.app` 或设备配置。已有同名增强端时首装脚本会停止，不覆盖现有应用。
-- `GMSSH-Source-0.4.0a38.zip`、同版本 wheel、说明和 `SHA256SUMS`：从允许的源码边界导出，逐项核对版本及内容。
+- `GMSSH-Mac-Setup-0.4.0a39.zip`：本项目 wheel、首装／更新命令、固定依赖和使用说明；不包含完整 App 或设备配置。首装入口保留已有同名 App，更新入口仅支持现有 0.4.0a38 独立增强端。
+- `GMSSH-Source-0.4.0a39.zip`、同版本 wheel、说明和 `SHA256SUMS`：从允许的源码边界导出，逐项核对版本及内容。
+- 本次 Mac 更新不附带新 Windows 安装器；Windows 端继续使用既有安装。重新发布 Windows 安装器时，另按上方两端依赖和原生验收流程构建核验。
 
 从干净源码目录重建 Web 资源，核对其与提交候选相同，再构建 wheel 和 Windows helper。安装器与源码、离线组件、桌面引擎及隐私检查都通过后，才把附件列为本地可交付候选。源码改动后须重新导出，不能只换旧文件名或校验值。提交、推送、创建标签与 Release 仍按各自授权执行；当前候选没有可宣称通过的远端 CI 运行。

@@ -5,7 +5,7 @@ window.installGMSSHWorkspace=function({viewerUrl}){
   const call=(action,data={})=>window.electronAPI.invoke('render-to-main',{type:'gmssh-workspace',data:{action,data}}).then(reply=>{if(reply?.status!=='ok')throw Error(reply?.code||'WORKSPACE_UNAVAILABLE');return reply.data;});
   const defaults=()=>({layout:'desktop',ratio:.6,zoom:'fit',quality:'balanced',display:0});
   let saved={tabs:[],selected:null,devices:{}},selected=null,visible=false,disposed=false,paint=0,restoreTimer,historyTimer,paneMode='desktop';
-  const pinned=new Map(),nativeSessions=new Map(),desktopInstances=new Map();
+  const pinned=new Map(),nativeSessions=new Map(),desktopInstances=new Map(),toolbarInstances=new Map();
   const nodes=()=>window.gmsshHomeController?.filesDevices?.()||[],device=id=>nodes().find(n=>n.id===id),prefs=id=>saved.devices[id]||defaults();
   const root=make('section','gm-workspace');root.hidden=true;root.setAttribute('aria-label','设备工作区');
   const head=make('header','gm-workspace-head'),selector=make('select'),nav=make('nav','gm-workspace-modes'),tools=make('nav','gm-workspace-tools'),exits=make('div','gm-workspace-exits'),body=make('div','gm-workspace-body'),note=make('p','gm-workspace-note');selector.setAttribute('aria-label','切换设备工作区');nav.setAttribute('aria-label','工作区视图');tools.setAttribute('aria-label','设备工具');note.setAttribute('role','status');
@@ -21,6 +21,7 @@ window.installGMSSHWorkspace=function({viewerUrl}){
   const style=make('style');style.textContent=`
     .gm-workspace{position:fixed;inset:48px 0 0;z-index:2147482999;background:var(--gm-bg,#141414);color:var(--gm-text,#eee);font:13px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;display:flex;flex-direction:column;pointer-events:none}
     .gm-workspace[hidden]{display:none}.gm-workspace *{box-sizing:border-box}
+    .gm-workspace-desktop-toolbar>.gm-workspace-head{display:none}
     .gm-workspace-head{display:flex;align-items:center;gap:14px;min-height:54px;padding:8px 16px;background:var(--gm-surface,#202020);border-bottom:1px solid var(--gm-line,#ffffff12);pointer-events:auto;flex:none}
     .gm-workspace-device{position:relative;flex:0 1 228px;min-width:120px}.gm-workspace-device select{appearance:none;-webkit-appearance:none;color-scheme:dark;width:100%;height:34px;padding:0 30px 0 34px;border:1px solid #ffffff14;border-radius:7px;background:#ffffff05;color:#eee;font:inherit;font-weight:550;text-overflow:ellipsis;cursor:pointer}
     .gm-workspace-device>.gm-ui-icon{position:absolute;width:16px;height:16px;right:10px;top:9px;pointer-events:none}.gm-workspace-device>.gm-workspace-device-icon{left:10px;right:auto}.gm-workspace-device select:hover{background:#ffffff09}
@@ -35,7 +36,19 @@ window.installGMSSHWorkspace=function({viewerUrl}){
     @media(max-width:640px){.gm-workspace-head{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:8px 10px}.gm-workspace-device{grid-area:1/1;min-width:0}.gm-workspace-exits{grid-area:1/2;border-left:0;padding-left:0;justify-self:end}.gm-workspace-modes{grid-area:2/1;overflow-x:auto;min-width:0;scrollbar-width:thin}.gm-workspace-head .gm-workspace-modes .gm-ui-button{padding:0 8px}.gm-workspace-tools{grid-area:2/2;justify-self:end}}
   `;
   document.head.append(style);
-  function mount(){const host=document.querySelector('.tabs-container');if(visible){const bottom=host?.getBoundingClientRect().bottom||48;root.style.top=Math.max(40,bottom)+'px';layout();}}
+  function mount(){const host=document.querySelector('.tabs-container');syncToolbar();if(visible){const bottom=host?.getBoundingClientRect().bottom||48;root.style.top=Math.max(40,bottom)+'px';layout();}}
+  function syncToolbar(){
+    let merged=false;
+    for(const [id,entry] of toolbarInstances){
+      const frame=window.gmsshWindowsControllers?.get(id)?.frame();
+      if(frame!==entry.frame||!frame?.isConnected){toolbarInstances.delete(id);continue;}
+      const active=visible&&selected===id&&paneMode==='desktop'&&device(id)?.windows===true;
+      const data={type:'gmssh-workspace-toolbar',instance:entry.instance,active,...(active?{selected:id,devices:saved.tabs.filter(value=>device(value)).map(value=>({id:value,name:String(device(value).name).slice(0,200)})),terminal:device(id).permissions?.terminal!==false}:{})};
+      const signature=JSON.stringify(data);if(entry.signature!==signature){frame.contentWindow?.postMessage(data,new URL(frame.src).origin);entry.signature=signature;}
+      if(active)merged=true;
+    }
+    root.classList.toggle('gm-workspace-desktop-toolbar',merged);
+  }
   async function persist(){if(disposed)return;try{await call('layout',{tabs:saved.tabs,selected:saved.selected,devices:saved.devices});}catch{note.textContent='工作区布局未能保存，请检查本机存储空间和权限。';}}
   function restorePins(){for(const [node,props] of pinned){for(const [key,[value,priority]] of props){if(value)node.style.setProperty(key,value,priority);else node.style.removeProperty(key);}node.removeAttribute('data-gmssh-workspace-view');}pinned.clear();}
   function pin(node,rect){
@@ -68,7 +81,7 @@ window.installGMSSHWorkspace=function({viewerUrl}){
     if(p.layout==='terminal'||split){const node=nativeView(selected,true);if(node){desired.add(node);pin(node,{left:split?area.left+Math.floor(area.width*p.ratio)+3:area.left,top:area.top,width:split?area.width-Math.floor(area.width*p.ratio)-3:area.width,height:area.height});trackNative(node,selected,'terminal');}}
     for(const [node,props] of pinned)if(!desired.has(node)){for(const [key,[value,priority]] of props){if(value)node.style.setProperty(key,value,priority);else node.style.removeProperty(key);}node.removeAttribute('data-gmssh-workspace-view');pinned.delete(node);}
   }
-  function sendPreferences(id){const frame=window.gmsshWindowsControllers?.get(id)?.frame();if(frame)frame.contentWindow?.postMessage({type:'gmssh-workspace-preferences',preferences:prefs(id)},new URL(frame.src).origin);}
+  function sendPreferences(id){const frame=window.gmsshWindowsControllers?.get(id)?.frame();if(frame){const origin=new URL(frame.src).origin;frame.contentWindow?.postMessage({type:'gmssh-workspace-preferences',preferences:prefs(id)},origin);frame.contentWindow?.postMessage({type:'gmssh-workspace-toolbar-request'},origin);}}
   async function open(id,mode){
     if(disposed||!device(id)||!/^[a-f0-9]{32}$/i.test(id))return;
     if(mode&&!['overview','desktop','terminal','split'].includes(mode))return;
@@ -79,16 +92,17 @@ window.installGMSSHWorkspace=function({viewerUrl}){
     selector.replaceChildren(...saved.tabs.map(value=>{const option=make('option','',device(value)?.name||'已移除的设备');option.value=value;return option;}));selector.value=id;
     selector.title=current.name;deviceIcon.src=new URL('ui-icons/'+(current.windows?'windows':'monitor')+'.svg',base).href;deviceIcon.style.filter=current.windows?'none':'';filesButton.disabled=!!permissions&&!permissions.files&&!permissions.files_read;
     for(const [key,b] of modes){b.setAttribute('aria-pressed',String(key===prefs(id).layout));b.disabled=!!permissions&&(key==='desktop'&&!permissions.view||key==='terminal'&&!permissions.terminal||key==='split'&&(!permissions.view||!permissions.terminal));}
+    if(!['desktop','split'].includes(prefs(id).layout))window.gmsshWindowsControllers?.get(id)?.hide();
     if(prefs(id).layout==='overview'){const pane=window.gmsshHomeController?.workspaceOverview?.(id);if(pane)body.append(pane);}
     if(['desktop','split'].includes(prefs(id).layout)){if(current.windows)window.gmsshWindowsControllers?.get(id)?.show?.();else window.gmsshHomeController?.openNative?.(id,'desktop');}
     if(['terminal','split'].includes(prefs(id).layout))window.gmsshHomeController?.openNative?.(id,'terminal');
     mount();sendPreferences(id);await persist();
   }
-  function hide(){visible=false;root.hidden=true;restorePins();clearInterval(historyTimer);}
+  function hide(){visible=false;root.hidden=true;syncToolbar();restorePins();clearInterval(historyTimer);}
   function closed(id){saved.tabs=saved.tabs.filter(value=>value!==id);if(saved.selected===id)saved.selected=saved.tabs.at(-1)||null;if(selected===id){selected=saved.selected;hide();}void persist();}
   function closeWorkspace(id){closed(id);}
   async function showHistory(){
-    if(!selected)return;paneMode='history';restorePins();for(const c of window.gmsshWindowsControllers?.values()||[])c.hide();body.replaceChildren();ratio.hidden=true;const epoch=++paint,container=make('div','gm-workspace-history');body.append(container);for(const [key,b] of modes)b.setAttribute('aria-pressed',String(key==='history'));
+    if(!selected)return;paneMode='history';syncToolbar();restorePins();for(const c of window.gmsshWindowsControllers?.values()||[])c.hide();body.replaceChildren();ratio.hidden=true;const epoch=++paint,container=make('div','gm-workspace-history');body.append(container);for(const [key,b] of modes)b.setAttribute('aria-pressed',String(key==='history'));
     const filter=make('select'),retention=make('select'),exportButton=button('导出连接历史',()=>call('export').then(()=>{note.textContent='连接历史已导出；设备配置和凭据请使用配置备份。';}).catch(()=>{note.textContent='历史导出未完成。';})),rows=make('div');filter.setAttribute('aria-label','筛选历史设备');retention.setAttribute('aria-label','连接历史保留时间');
     for(const [id,name] of [['','全部设备'],...nodes().map(n=>[n.id,n.name])]){const o=make('option','',name);o.value=id;filter.append(o);}filter.value=selected;for(const days of [7,30,90,365]){const o=make('option','',days+' 天');o.value=String(days);retention.append(o);}container.append(make('p','gm-muted','仅记录连接时间、结果和原因；原生终端的“已打开”表示窗口已打开，SSH 状态以终端内显示为准。'),filter,retention,exportButton,rows);
     const labels={connecting:'连接中',connected:'已连接',opened:'已打开原生窗口',failed:'连接失败',interrupted:'应用异常退出',completed:'已完成',disconnected:'已断开'},channels={desktop:'桌面',terminal:'终端',files:'文件',tools:'系统工具'};let limit=100,data;
@@ -101,7 +115,18 @@ window.installGMSSHWorkspace=function({viewerUrl}){
     if(event.data?.type!=='gmssh-workspace-desktop')return;
     for(const [id,c] of window.gmsshWindowsControllers||[]){const frame=c.frame();if(!frame||event.source!==frame.contentWindow||event.origin!==new URL(frame.src).origin)continue;
       const d=event.data,current=device(id);if(!current)return;
-      if(d.permissions){const p=d.permissions;if(['clipboard,files,input,power,terminal,view','clipboard,files,files_read,input,power,terminal,view'].includes(Object.keys(p).sort().join())&&Object.values(p).every(value=>typeof value==='boolean'))window.gmsshHomeController?.permissions?.(id,p);return;}
+      if(d.toolbarReady===true){if(typeof d.instance==='string'&&/^[\w-]{1,100}$/.test(d.instance)){toolbarInstances.set(id,{frame,instance:d.instance});mount();}return;}
+      if(d.workspaceAction){
+        const entry=toolbarInstances.get(id);if(!visible||selected!==id||paneMode!=='desktop'||entry?.frame!==frame||entry.instance!==d.instance)return;
+        if(d.workspaceAction==='mode'&&['overview','desktop','terminal','split'].includes(d.value))void open(id,d.value);
+        else if(d.workspaceAction==='device'&&saved.tabs.includes(d.value))void open(d.value);
+        else if(d.workspaceAction==='history')void showHistory();
+        else if(d.workspaceAction==='tools')window.gmsshToolsController?.open(id,'processes');
+        else if(d.workspaceAction==='home'){hide();document.querySelector('.tabs-home .tab-chip,.tab-chip--home')?.click();}
+        else if(d.workspaceAction==='close')closeWorkspace(id);
+        return;
+      }
+      if(d.permissions){const p=d.permissions;if(['clipboard,files,input,power,terminal,view','clipboard,files,files_read,input,power,terminal,view'].includes(Object.keys(p).sort().join())&&Object.values(p).every(value=>typeof value==='boolean')){window.gmsshHomeController?.permissions?.(id,p);mount();}return;}
       if(d.preferences){const p=d.preferences;if(['fit','100'].includes(p.zoom)&&['low','balanced','best'].includes(p.quality)&&Number.isInteger(p.display)&&p.display>=0&&p.display<=31){saved.devices[id]={...prefs(id),zoom:p.zoom,quality:p.quality,display:p.display};void persist();}return;}
       if(typeof d.instance!=='string'||!/^[\w-]{1,100}$/.test(d.instance)||!['connecting','connected','disconnected','failed'].includes(d.state))return;
       desktopInstances.set(id,d.instance);void call('session',{machineId:id,name:current.name,channel:'desktop',instance:d.instance,state:d.state,...(typeof d.reason==='string'&&/^[A-Z_]{1,48}$/.test(d.reason)?{reason:d.reason}:{})}).catch(()=>{note.textContent='连接历史未能保存。';});sendPreferences(id);return;

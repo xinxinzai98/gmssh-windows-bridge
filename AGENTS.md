@@ -22,6 +22,6 @@
 - Do not publish the original GMSSH bundle, installed apps, proprietary resources, or local runtimes. Run `python tools/build_share_bundle.py --check-only` before handoff and review the actual diff for private information.
 - Report passed checks, platform skips, and untested behavior separately. Do not claim that a local check is a successful cloud CI run or a release.
 
-## Pending UI clarification
+## UI scope
 
-The request to merge "two rows" into one has not been located. The user rejected the proposed tab/device bars, device name/status, and group/toolbar interpretations. Do not merge any of those rows without a screenshot identifying the intended elements. The local Mac menu's legacy name also needs helper-resolution analysis before changing `CFBundleName`.
+The user's annotated screenshot identifies the two rows as the device workspace navigation and the Windows desktop viewer toolbar below it. Merge these in Windows desktop mode; keep the native top-level tabs and reuse the existing viewer session. Test with synthetic devices, including cross-origin viewer messages and narrow windows. The local Mac menu's legacy name still needs helper-resolution analysis before changing `CFBundleName`.

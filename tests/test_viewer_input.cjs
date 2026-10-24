@@ -1,9 +1,12 @@
 const test=require('node:test'),assert=require('node:assert/strict'),path=require('node:path'),vm=require('node:vm');
 const esbuild=require('../desktop-web/node_modules/esbuild');
 const compiled=esbuild.build({entryPoints:[path.join(__dirname,'../desktop-web/src/main.ts')],bundle:true,platform:'node',format:'cjs',write:false,loader:{'.css':'empty'},plugins:[{
-  name:'mock-transports',setup(build){
-    build.onResolve({filter:/^\.\/(direct|operations)$/},args=>({path:args.path,namespace:'mock'}));
-    build.onLoad({filter:/.*/,namespace:'mock'},args=>({contents:args.path==='./direct'
+  name:'mock-transports-and-layout',setup(build){
+    // Real toolbar DOM and cross-origin messages are covered by workspace_toolbar_browser.py.
+    build.onResolve({filter:/^\.\/(direct|operations|workspace-toolbar)$/},args=>({path:args.path,namespace:'mock'}));
+    build.onLoad({filter:/.*/,namespace:'mock'},args=>({contents:args.path==='./workspace-toolbar'
+      ?'export function installWorkspaceToolbar(){}'
+      :args.path==='./direct'
       ?'export class DirectClient { constructor(canvas,events){this.events=events;this.connected=false;globalThis.setClient(this)} mouse(event){globalThis.recordMouse(event)} connect(...args){globalThis.recordConnect(args)} disconnect(){this.connected=false;this.events.stopped()} unlockWindows(password){globalThis.recordUnlock(password)} }'
       :'export class Operations { request(op,values){return globalThis.recordOperation(op,values)} close(){} }'}));
   }

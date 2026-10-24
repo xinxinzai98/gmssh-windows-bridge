@@ -1,6 +1,19 @@
 # Changelog
 
-## Unreleased
+## Unreleased — a38 updater compatibility repair
+
+- Support in-place updates of the specifically identified `local.gmssh.windows.launcher.preview.unlock225` a38 app alongside the standard identifier. Keep both identifiers unchanged, distinguish unsupported versions from unsupported identifiers, and check the recoverable runtime metadata and executable UUID before updating. Preserve signature/ASAR checks and restore the original application and runtime if signing changes its identity.
+- Canonicalize the synthetic Mac updater fixture's temporary root so default macOS `/var` aliases agree with inspected paths. Exercise both identities through preflight, failed-update recovery and explicit rollback; this fixture correction does not establish a defect in native rollback.
+- Upgrade the Vite development dependency from 7.3.6 to 7.3.7 and refresh its lock entry. This does not establish exposure in already packaged clients.
+- These source repairs are not part of the published v0.4.0a39 downloads. Native Mac verification and GitHub CI remain separate; account billing restrictions must be resolved on GitHub.
+
+## 0.4.0a39 — Mac controller Alpha candidate
+
+- Merge the Windows desktop workspace navigation and viewer toolbar into one responsive row. Keep device and text connection status visible, retain contextual file access, and place occasional controls in the existing menu without recreating viewer sessions.
+- Add an offline Mac update command for an existing 0.4.0a38 enhancement app. Reuse its isolated runtime, validate the wheel and ASAR, preserve the embedded configuration and executable UUID, back up replaced files, and restore the application and package if signing or verification fails.
+- Include the updater with the Mac ZIP and provide an explicit rollback command. This release scope is the Mac controller and public source; no new Windows installer is included. The new update transaction has synthetic coverage; native Mac installation remains unverified.
+
+### Earlier candidate work included in this source
 
 - Bundle the unchanged vendor resources inside one local enhancement app, preserve ASAR integrity and native protocol callbacks, and keep legacy external-resource configurations compatible. Hide legacy account/cloud-sync and version/workspace entries, move settings to the sidebar footer, and correct file-center button contrast while retaining device views and update-replacement protection.
 - Add portable repository guidance, Codex Cloud setup/check scripts and a bounded handoff. Keep live configurations and credentials local, include development instructions in public source exports, and ignore generated sync-conflict copies without removing them.

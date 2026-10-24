@@ -7,8 +7,8 @@
 <p align="center">面向局域网的 Windows 远程管理扩展</p>
 
 <p align="center">
-  <a href="https://github.com/xinxinzai98/gmssh-windows-bridge/releases/tag/v0.4.0a8">下载已发布 Alpha</a> ·
-  <a href="docs/release-0.4.0a38.md">0.4a38 收尾候选</a> ·
+  <a href="https://github.com/xinxinzai98/gmssh-windows-bridge/releases">下载 Alpha</a> ·
+  <a href="docs/release-0.4.0a39.md">0.4a39 Mac 更新</a> ·
   <a href="docs/getting-started.md">安装指南</a> ·
   <a href="docs/cli.md">CLI 文档</a> ·
   <a href="docs/upgrade-plan.md">升级方案</a> ·
@@ -17,7 +17,7 @@
 
 在 GMSSH / 极目 Linux 桌面中统一使用 Windows 的**资源监控、PowerShell、文件互传和远程桌面**。Windows 端提供一体化后台服务与托盘，macOS 端提供增强设备列表和桌面工作区，并保留原有 Linux 设备入口。
 
-> **已发布安装包：0.4.0a8 · Alpha。当前候选：0.4.0a38 · 尚未发布。** 本轮只收尾既有功能，修复桌面切换时的迟到事件和失败状态。针对一台反复超时的 Wi-Fi 测试机，ax/ac 往返对照支持采用该机的 ac 兼容设置；临时只读复测后，同机原生 Mac 客户端的持续连接、文件中心后台保持及完全退出重开自动连接均通过。后续修复监控并发占满时的立即拒绝，并补齐采集失败诊断，同机串行和并发查询对照通过。其他设备及未覆盖项目保留各自验收边界，保持 Alpha。本项目是非官方兼容扩展，基于已验收的 GMSSH 2.0.4。下方旧版下载包不包含候选新增功能；安装、已验项目与限制见[候选说明](docs/release-0.4.0a38.md)、[安装指南](docs/getting-started.md)及[验证记录](docs/validation.md)。
+> **当前 Mac 更新候选：0.4.0a39 · Alpha；发行状态及附件以 Releases 为准。** 本轮将远程桌面的两行工具栏合为一行，并提供现有 0.4.0a38 增强端的离线更新入口。正常退出客户端后，解压 Mac ZIP 并运行 `Update GMSSH.command`，保留现有配置、凭据和运行环境。新更新流程已做合成回退测试，Mac 原生安装仍待验收。本轮未提供新的 Windows 安装器，历史公开 Windows 包仍为 0.4.0a8。本项目是非官方兼容扩展，基座验收以 GMSSH 2.0.4 为准。具体范围见[本版说明](docs/release-0.4.0a39.md)、[安装指南](docs/getting-started.md)及[验证记录](docs/validation.md)。
 
 ## 主要功能
 
